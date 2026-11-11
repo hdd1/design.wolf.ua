@@ -5,7 +5,9 @@ namespace Design;
 /** Замовлення дизайну (design_orders): бриф і замовлення — одна сутність */
 final class Orders
 {
-    public static function create(int $customerId, int $productId, array $answers): int
+    public const MAX_TITLE = 255;
+
+    public static function create(int $customerId, int $productId, array $answers, string $title = ''): int
     {
         $product = Products::get($productId);
         if ($product === null) throw new BriefException('Продукт недоступний');
@@ -14,21 +16,22 @@ final class Orders
             'customer_id' => $customerId,
             'product_id' => $productId,
             'mode' => 1,
+            'title' => self::title($title),
             'status' => OrderStatus::DRAFT,
             'answers' => self::json(Brief::snapshot($product['questions'], $answers)),
         ]);
     }
 
     /** Питання — зі збереженого знімка, а не з продукту */
-    public static function updateDraft(int $orderId, int $customerId, array $answers): void
+    public static function updateDraft(int $orderId, int $customerId, array $answers, string $title = ''): void
     {
         $order = self::get($orderId, $customerId);
         if ($order === null || $order['status'] !== OrderStatus::DRAFT) {
             throw new BriefException('Замовлення не можна змінити');
         }
         $snapshot = Brief::snapshot($order['answers'], $answers);
-        Sql::exec('UPDATE design_orders SET answers = ? WHERE id = ? AND customer_id = ? AND status = ?',
-            [self::json($snapshot), $orderId, $customerId, OrderStatus::DRAFT]);
+        Sql::exec('UPDATE design_orders SET answers = ?, title = ? WHERE id = ? AND customer_id = ? AND status = ?',
+            [self::json($snapshot), self::title($title), $orderId, $customerId, OrderStatus::DRAFT]);
     }
 
     /** Чернетка → збір пропозицій. Повторна публікація нічого не змінює */
@@ -42,11 +45,11 @@ final class Orders
         throw new BriefException('Замовлення не можна опублікувати');
     }
 
-    /** @return array{id:int, status:int, product_name:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string}|null чуже — null */
+    /** @return array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string}|null чуже — null */
     public static function get(int $orderId, int $customerId): ?array
     {
         $r = Sql::one(
-            'SELECT o.id, o.status, p.name AS product_name, o.answers, o.created, o.published_at
+            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at
              FROM design_orders o JOIN design_products p ON p.id = o.product_id
              WHERE o.id = ? AND o.customer_id = ?', [$orderId, $customerId]);
         if ($r === null) return null;
@@ -60,11 +63,11 @@ final class Orders
         return $row;
     }
 
-    /** @return list<array{id:int, status:int, product_name:string, created:string, published_at:?string}> нові зверху */
+    /** @return list<array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, created:string, published_at:?string}> нові зверху */
     public static function forCustomer(int $customerId): array
     {
         $rows = Sql::all(
-            'SELECT o.id, o.status, p.name AS product_name, o.created, o.published_at
+            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.created, o.published_at
              FROM design_orders o JOIN design_products p ON p.id = o.product_id
              WHERE o.customer_id = ? ORDER BY o.id DESC', [$customerId]);
         return array_map([self::class, 'row'], $rows);
@@ -75,10 +78,20 @@ final class Orders
         return [
             'id' => (int)$r['id'],
             'status' => (int)$r['status'],
+            'mode' => (int)$r['mode'],
+            'product_id' => (int)$r['product_id'],
             'product_name' => (string)$r['product_name'],
+            'title' => (string)$r['title'] !== '' ? (string)$r['title'] : (string)$r['product_name'],
             'created' => (string)$r['created'],
             'published_at' => $r['published_at'] === null ? null : (string)$r['published_at'],
         ];
+    }
+
+    private static function title(string $title): string
+    {
+        $title = trim($title);
+        if (mb_strlen($title) > self::MAX_TITLE) throw new BriefException('Назва занадто довга');
+        return $title;
     }
 
     private static function json(array $snapshot): string

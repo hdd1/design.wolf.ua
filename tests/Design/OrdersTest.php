@@ -90,6 +90,26 @@ final class OrdersTest extends TestCase
         }
     }
 
+    public function test_title_saved_and_defaults_to_product_name(): void
+    {
+        $named = Orders::create(self::ME, $this->product(), $this->answers('А5'), "  Візитка для кав'ярні «Зерно» ");
+        $this->assertSame("Візитка для кав'ярні «Зерно»", Orders::get($named, self::ME)['title']);
+        $plain = Orders::create(self::ME, $this->product(), $this->answers('А5'));
+        $row = Orders::get($plain, self::ME);
+        $this->assertSame($row['product_name'], $row['title']);
+        $this->assertSame($this->product(), $row['product_id']);
+        $this->assertSame(1, $row['mode']);
+        Orders::updateDraft($plain, self::ME, $this->answers('А4'), 'Нова назва');
+        $titles = array_column(Orders::forCustomer(self::ME), 'title', 'id');
+        $this->assertSame('Нова назва', $titles[$plain]);
+    }
+
+    public function test_title_too_long_is_rejected(): void
+    {
+        $this->expectExceptionMessage('Назва занадто довга');
+        Orders::create(self::ME, $this->product(), $this->answers('А5'), str_repeat('я', 256));
+    }
+
     public function test_status_labels(): void
     {
         $this->assertSame('Збір пропозицій', OrderStatus::label(OrderStatus::COLLECTING));

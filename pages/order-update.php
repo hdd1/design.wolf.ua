@@ -11,13 +11,20 @@ use Design\Products;
 use Design\View;
 
 $me = Guard::customer();
-Guard::csrf($me);
+$fresh = Guard::csrfOk($me);
 $order = Orders::get((int)$params['id'], $me);
 if ($order === null) Http::notFound();
 $id = $order['id'];
 $action = (string)($_POST['action'] ?? '');
 
+// Чернетку вже опубліковано (стара вкладка, «Назад»): ведемо на сторінку замовлення
+if ($order['status'] !== OrderStatus::DRAFT && $action !== 'publish') Http::redirect("/orders/$id/", 302);
+
 if ($action === 'publish') {
+    if (!$fresh) {
+        View::render('layout', ['title' => 'Як обрати дизайнера', 'active' => 'brief', 'body' => View::fetch('brief-mode', ['orderId' => $id, 'csrf' => Csrf::token($me), 'error' => Guard::STALE])]);
+        exit;
+    }
     try {
         Orders::publish($id, $me);
     } catch (BriefException $e) {
@@ -27,9 +34,9 @@ if ($action === 'publish') {
     Http::redirect("/orders/$id/", 302);
 }
 
-if ($order['status'] !== OrderStatus::DRAFT) Http::notFound();
 [$answers, $title] = BriefPage::posted();
 try {
+    if (!$fresh) throw new BriefException(Guard::STALE);
     Orders::updateDraft($id, $me, $answers, $title);
 } catch (BriefException $e) {
     $fields = BriefPage::fromSnapshot($order['answers'], Products::get($order['product_id']));

@@ -8,13 +8,14 @@ use Design\Orders;
 use Design\Products;
 
 $me = Guard::customer();
-Guard::csrf($me);
+$fresh = Guard::csrfOk($me);
 
 $product = Products::get((int)($_POST['product_id'] ?? 0));
 if ($product === null) Http::notFound();
 [$answers, $title] = BriefPage::posted();
 
 try {
+    if (!$fresh) throw new BriefException(Guard::STALE);
     $id = Orders::create($me, $product['id'], $answers, $title);
 } catch (BriefException $e) {
     BriefPage::render([

@@ -36,4 +36,10 @@ final class AuthTest extends TestCase
     {
         $this->assertSame(0, Auth::customerId(self::cookie(8, 'pass', 'UA'), 'UA', [self::class, 'pass']));
     }
+
+    public function test_empty_password_is_guest(): void   // Final review: кука для клієнта з порожнім паролем підробляється без секрету
+    {
+        $forged = '7.' . hash_hmac('md5', '' . 'UA', '7');
+        $this->assertSame(0, Auth::customerId($forged, 'UA', static fn(int $id): ?string => ''));
+    }
 }

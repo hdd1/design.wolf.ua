@@ -5,6 +5,7 @@ use Design\View;
 <div class="container page"><div class="narrow">
   <?php View::render('partials/steps', ['step' => 3]) ?>
   <h1>Як обрати дизайнера?</h1>
+  <?php if (!empty($error)): ?><div class="alert-d error mt-3" role="alert"><i class="fal fa-exclamation-circle mt-1"></i><div class="fw-semibold"><?= View::e($error) ?></div></div><?php endif ?>
   <form method="post" action="/orders/<?= $orderId ?>" data-lock class="mt-4">
     <input type="hidden" name="csrf" value="<?= View::e($csrf) ?>">
     <div class="row g-4">

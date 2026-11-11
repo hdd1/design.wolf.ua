@@ -206,3 +206,4 @@ main{flex:1 0 auto}
 .why .item p{color:#D5D9DB;margin:0;font-size:.92rem}
 .join{background:var(--cream);border:1px solid var(--border);border-radius:var(--r-l);padding:var(--s-6)}
 @media (max-width:575px){.guest-actions .btn-primary{display:none}}
+.btn.is-sending{opacity:.65;pointer-events:none}

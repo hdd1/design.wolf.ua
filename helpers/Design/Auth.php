@@ -17,7 +17,8 @@ final class Auth
         }
         $id = (int)$m[1];
         $pass = $passwordOf($id);
-        if ($pass === null) return 0;
+        // Порожній пароль робить підпис відомим кожному (ключ — id): такий клієнт тут не входить
+        if ($pass === null || $pass === '') return 0;
         return hash_equals(hash_hmac('md5', $pass . $userAgent, (string)$id), $m[2]) ? $id : 0;
     }
 

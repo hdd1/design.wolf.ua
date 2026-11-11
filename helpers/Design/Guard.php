@@ -16,9 +16,13 @@ final class Guard
         exit;
     }
 
-    /** CSRF у POST: неправильний токен — 403 */
-    public static function csrf(int $customerId): void
+    public const STALE = 'Сесія застаріла: нічого не збережено. Перевірте відповіді і натисніть ще раз.';
+
+    /** CSRF у POST. Невірний токен: код 403, сторінка показує форму знову з уже введеним (нічого не зберігаємо) */
+    public static function csrfOk(int $customerId): bool
     {
-        if (!Csrf::check($customerId, (string)($_POST['csrf'] ?? ''))) Http::forbidden();
+        if (Csrf::check($customerId, (string)($_POST['csrf'] ?? ''))) return true;
+        http_response_code(403);
+        return false;
     }
 }

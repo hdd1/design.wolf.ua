@@ -21,10 +21,19 @@ document.querySelectorAll('[data-products]').forEach(function (form) {
   });
 });
 
+// Повторне надсилання відсікаємо прапорцем, а кнопки не вимикаємо: вимкнена кнопка не передає свій name/value,
+// а без SubmitEvent.submitter (Safari до 15.4) його нема чим відновити
 document.querySelectorAll('form[data-lock]').forEach(function (form) {
   form.addEventListener('submit', function (e) {
-    var by = e.submitter;
-    if (by && by.name) { var h = document.createElement('input'); h.type = 'hidden'; h.name = by.name; h.value = by.value; form.appendChild(h); }
-    form.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+    if (form.dataset.sending) { e.preventDefault(); return; }
+    form.dataset.sending = '1';
+    form.querySelectorAll('button').forEach(function (b) { b.classList.add('is-sending'); b.setAttribute('aria-disabled', 'true'); });
+  });
+});
+// Повернення «Назад» зі збереженої сторінки (bfcache): форма знову доступна
+window.addEventListener('pageshow', function () {
+  document.querySelectorAll('form[data-lock]').forEach(function (form) {
+    delete form.dataset.sending;
+    form.querySelectorAll('button').forEach(function (b) { b.classList.remove('is-sending'); b.removeAttribute('aria-disabled'); });
   });
 });

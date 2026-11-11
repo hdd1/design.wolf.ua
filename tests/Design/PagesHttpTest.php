@@ -140,7 +140,29 @@ final class PagesHttpTest extends TestCase
         $this->assertSame(302, $code);
         $this->assertSame("/orders/$id/", self::location($h));
         $this->assertSame(OrderStatus::COLLECTING, Orders::get($id, self::me())['status']);
-        $this->assertSame(404, self::fetch("/orders/$id/mode/", self::cookie())[0]);
+
+        // Final review: «Назад» після публікації — власне замовлення, не «404, інший акаунт»
+        [$code, $h] = self::fetch("/orders/$id/mode/", self::cookie());
+        $this->assertSame(302, $code);
+        $this->assertSame("/orders/$id/", self::location($h));
+        [$code, $h] = self::fetch("/orders/$id", self::cookie(), ['action' => 'draft', 'answers' => ['x'], 'csrf' => self::csrf($mode)]);
+        $this->assertSame(302, $code);
+        $this->assertSame("/orders/$id/", self::location($h));
+    }
+
+    public function test_stale_csrf_keeps_answers(): void   // Final review: прострочений токен не губить довгий бриф
+    {
+        [$pid, $answers] = self::brief('Довгий важливий текст брифу');
+        $before = (int)Sql::value('SELECT COUNT(*) FROM design_orders WHERE customer_id = ?', [self::me()]);
+        [$code, , $body] = self::fetch('/brief', self::cookie(), [
+            'product_id' => $pid, 'title' => 'Мій заголовок', 'answers' => $answers, 'csrf' => str_repeat('0', 64), 'action' => 'draft',
+        ]);
+        $this->assertSame(403, $code);
+        $this->assertStringContainsString('Довгий важливий текст брифу', $body);
+        $this->assertStringContainsString('Мій заголовок', $body);
+        $this->assertStringContainsString('Сесія застаріла', $body);
+        $this->assertNotSame('', self::csrf($body));
+        $this->assertSame($before, (int)Sql::value('SELECT COUNT(*) FROM design_orders WHERE customer_id = ?', [self::me()]));
     }
 
     public function test_next_goes_to_mode_step(): void

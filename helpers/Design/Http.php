@@ -26,6 +26,14 @@ final class Http
         exit;
     }
 
+    public static function forbidden(): never
+    {
+        http_response_code(403);
+        self::noStore();
+        View::render('message', ['title' => 'Сесія застаріла', 'text' => 'Оновіть сторінку і спробуйте ще раз.']);
+        exit;
+    }
+
     public static function notFound(): never
     {
         http_response_code(404);

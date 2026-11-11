@@ -14,6 +14,7 @@ final class RouterTest extends TestCase
         $this->assertSame('orders', Router::match('GET', '/orders/')['page']);
         $this->assertSame(['page' => 'order', 'params' => ['id' => '345']], Router::match('GET', '/orders/345/'));
         $this->assertSame('order-update', Router::match('POST', '/orders/345')['page']);
+        $this->assertSame(['page' => 'order-mode', 'params' => ['id' => '345']], Router::match('GET', '/orders/345/mode/'));
     }
 
     public function test_unknown_and_wrong_method_are_null(): void

@@ -15,6 +15,7 @@ final class Router
         ['POST', '#^/brief$#', 'brief-create'],
         ['GET', '#^/orders/$#', 'orders'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/$#', 'order'],
+        ['GET', '#^/orders/(?<id>' . self::ID . ')/mode/$#', 'order-mode'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')$#', 'order-update'],
     ];
 

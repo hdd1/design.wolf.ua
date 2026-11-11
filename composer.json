@@ -1,0 +1,11 @@
+{
+    "name": "hdd1/design.wolf.ua",
+    "description": "design.wolf.ua — Майстерня дизайну (dev tooling: tests only)",
+    "type": "project",
+    "require-dev": {
+        "phpunit/phpunit": "^9.6"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

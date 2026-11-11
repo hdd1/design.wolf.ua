@@ -1,0 +1,25 @@
+AddDefaultCharset utf-8
+php_value	default_charset UTF-8
+php_value	mbstring.internal_encoding UTF-8
+php_value	mbstring.detect_order UTF-8
+php_flag	magic_quotes_gpc off
+
+php_value post_max_size 1024M 
+php_value max_input_time 1728000 
+php_value max_execution_time 1728000
+
+php_value session.gc_maxlifetime 86400
+php_value session.cookie_lifetime 86400
+
+
+RewriteEngine	off
+RewriteRule	^index.php  - [L]
+RewriteCond	%{REQUEST_URI} !^/scripts/
+RewriteRule	!\.(js|ico|gif|jpg|jpeg|png|css|chm|doc|xls|zip|rar|pdf|svg|webp)$ /index.php
+
+
+
+
+
+
+

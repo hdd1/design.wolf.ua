@@ -56,7 +56,8 @@ final class Config
         return 'https://' . (self::isDev() ? 'dev.' : '') . 'adminka.wolf.ua';
     }
 
-    private static function isDev(): bool
+    /** dev-стенд: HTTP_HOST починається з «dev.» */
+    public static function isDev(): bool
     {
         return str_starts_with($_SERVER['HTTP_HOST'] ?? '', 'dev.');
     }

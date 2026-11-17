@@ -8,6 +8,13 @@ final class ImagesTest extends TestCase
 {
     /** CMYK-профіль для тесту вбудованого ICC; на dev лежить у сусідньому сайті */
     private const CMYK_ICC = '/home/connect/wolf.ua/img/icc/CoatedFOGRA39.icc';
+    /** Не-sRGB RGB-профілі (Adobe RGB, Display P3), шукаємо на диску; першого знайденого досить */
+    private const WIDE_ICC = [
+        '/home/connect/wolf.ua/img/icc/AdobeRGB1998.icc',
+        '/usr/share/color/icc/AdobeRGB1998.icc',
+        '/usr/share/color/icc/DisplayP3.icc',
+        '/usr/share/color/icc/colord/AdobeRGB1998.icc',
+    ];
 
     private string $tmp;
     private string $dir;
@@ -138,6 +145,92 @@ final class ImagesTest extends TestCase
     {
         $src = $this->image(15000, 10, 'png', 'wide.png');
         $this->assertRejected('Зображення завелике: до 12 000 px по стороні', fn() => Images::store($src, $this->dir, '1'));
+    }
+
+    public function test_rejects_extreme_aspect_ratio(): void
+    {
+        $src = $this->image(12000, 13, 'png', 'strip.png');
+        $this->assertRejected('Незвичні пропорції: сторони відрізняються більш ніж у 20 разів', fn() => Images::store($src, $this->dir, '1'));
+        $tall = $this->image(13, 300, 'jpeg', 'tall.jpg');
+        $this->assertRejected('Незвичні пропорції: сторони відрізняються більш ніж у 20 разів', fn() => Images::avatar($tall, $this->dir));
+    }
+
+    /** Рівно 1:20 ще можна; view замалий для картки — картка з основи, без помилки і точно 600×480 */
+    public function test_narrow_image_at_ratio_limit(): void
+    {
+        $src = $this->image(6000, 300, 'jpeg', 'pano.jpg');
+        $res = Images::store($src, $this->dir, '6');
+
+        $this->assertSame(['width' => 6000, 'height' => 300, 'file' => '6.jpg'], $res);
+        $this->assertSame([2000, 100, 'WEBP'], self::info("$this->dir/6-view.webp"));
+        $this->assertSame([600, 480, 'WEBP'], self::info("$this->dir/6-card.webp"));
+        $this->assertSame([320, 320, 'WEBP'], self::info("$this->dir/" . Images::avatar($src, $this->dir)));
+    }
+
+    /** JPEG декодується одразу зменшеним (jpeg:size), тож великий файл — швидко, а розміри копій ті самі */
+    public function test_large_jpeg_is_fast_and_sizes_exact(): void
+    {
+        $src = $this->image(8000, 6000, 'jpeg', 'big.jpg');
+        $t = microtime(true);
+        $res = Images::store($src, $this->dir, '10');
+        $elapsed = microtime(true) - $t;
+
+        $this->assertSame(['width' => 8000, 'height' => 6000, 'file' => '10.jpg'], $res);
+        $this->assertSame([2000, 1500, 'WEBP'], self::info("$this->dir/10-view.webp"));
+        $this->assertSame([600, 480, 'WEBP'], self::info("$this->dir/10-card.webp"));
+        $this->assertSame(md5_file($src), md5_file("$this->dir/10.jpg"));
+        // На dev: повне декодування ~2.0 с, з jpeg:size ~0.35 с; межа з запасом ~3×, але ловить повне декодування
+        $this->assertLessThan(1.2, $elapsed, sprintf('store() 8000×6000 JPEG: %.2f с', $elapsed));
+    }
+
+    /** Підказка розміру береться з файлу (до повороту), а розміри результату — після повороту за EXIF */
+    public function test_large_rotated_jpeg_keeps_true_sizes(): void
+    {
+        $src = $this->image(4000, 2000, 'jpeg', 'turned.jpg', function (Imagick $im) {
+            $im->setImageProfile('exif', self::exif(Imagick::ORIENTATION_RIGHTTOP));
+            $im->setImageOrientation(Imagick::ORIENTATION_RIGHTTOP);
+        });
+        $res = Images::store($src, $this->dir, '11');
+
+        $this->assertSame(['width' => 2000, 'height' => 4000, 'file' => '11.jpg'], $res);
+        $this->assertSame([1000, 2000, 'WEBP'], self::info("$this->dir/11-view.webp"));
+        $this->assertSame([600, 480, 'WEBP'], self::info("$this->dir/11-card.webp"));
+    }
+
+    /** RGB з вбудованим Adobe RGB / P3: без конвертації stripImage викине профіль і кольори зблякнуть */
+    public function test_wide_gamut_rgb_profile_converted_to_srgb(): void
+    {
+        $icc = null;
+        foreach (self::WIDE_ICC as $path) {
+            if (is_file($path)) { $icc = $path; break; }
+        }
+        if ($icc === null) $this->markTestSkipped('Немає не-sRGB ICC-профілю на диску: ' . implode(', ', self::WIDE_ICC));
+
+        $make = function (string $name, ?string $profile): string {
+            $im = new Imagick();
+            $im->newImage(200, 200, 'rgb(60,170,90)');
+            if ($profile) $im->profileImage('icc', file_get_contents($profile)); // лише вбудовує
+            $im->setImageFormat('png');
+            $path = $this->tmp . '/' . $name;
+            $im->writeImage("png:$path");
+            return $path;
+        };
+        $srgb = '/home/connect/wolf.ua/img/icc/sRGB2014.icc';
+        Images::store($make('plain.png', null), $this->dir, 'plain');
+        Images::store($make('wide.png', $icc), $this->dir, 'wide');
+
+        $px = fn(string $f) => (new Imagick("$this->dir/$f"))->getImagePixelColor(100, 100)->getColor();
+        $plain = $px('plain-view.webp');
+        $wide = $px('wide-view.webp');
+        $diff = fn(array $a, array $b) => abs($a['r'] - $b['r']) + abs($a['g'] - $b['g']) + abs($a['b'] - $b['b']);
+        // Adobe RGB (60,170,90) у sRGB ≈ (0,172,84): насиченіший зелений
+        $this->assertGreaterThan(30, $diff($plain, $wide), basename($icc) . ' має конвертуватись у sRGB: ' . json_encode([$plain, $wide]));
+        $this->assertSame([], (new Imagick("$this->dir/wide-card.webp"))->getImageProfiles('*', false));
+
+        if (is_file($srgb)) {          // уже sRGB-профіль — кольори не змінюються
+            Images::store($make('srgb.png', $srgb), $this->dir, 'srgb');
+            $this->assertLessThan(8, $diff($plain, $px('srgb-view.webp')), 'sRGB-профіль не має зсувати кольори');
+        }
     }
 
     public function test_rejects_missing_file(): void

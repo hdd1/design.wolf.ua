@@ -10,6 +10,8 @@ final class Images
 {
     public const MAX_BYTES = 20 * 1024 * 1024;
     public const MAX_SIDE = 12000;
+    /** Довша сторона не більше ніж у стільки разів за коротшу — інакше обрізка «по центру» вироджується */
+    public const MAX_RATIO = 20;
 
     private const CARD_W = 600;
     private const CARD_H = 480;
@@ -33,28 +35,30 @@ final class Images
      */
     public static function store(string $src, string $dir, string $base): array
     {
-        $ext = self::check($src);
-        $im = self::load($src);
+        $info = self::check($src);
+        $im = self::load($src, $info, self::VIEW_SIDE, self::CARD_W);
         $written = [];
         try {
             self::ensureDir($dir);
-            $file = "$base.$ext";
+            $file = "$base.{$info['ext']}";
             $written[] = "$dir/$file";
             if (!@copy($src, "$dir/$file")) throw new \RuntimeException("Не вдалося записати $dir/$file");
-
-            $card = clone $im;
-            $card->cropThumbnailImage(self::CARD_W, self::CARD_H);
-            $written[] = "$dir/$base-card.webp";
-            self::writeWebp($card, "$dir/$base-card.webp");
-            $card->clear();
 
             $view = clone $im;
             self::fitInto($view, self::VIEW_SIDE);
             $written[] = "$dir/$base-view.webp";
             self::writeWebp($view, "$dir/$base-view.webp");
+
+            // Картку — з уже зменшеного view, якщо його вистачає на 600×480 без збільшення (вузькі — з основи)
+            $fromView = $view->getImageWidth() >= self::CARD_W && $view->getImageHeight() >= self::CARD_H;
+            $card = $fromView ? $view : clone $im;
+            $card->cropThumbnailImage(self::CARD_W, self::CARD_H);
+            $written[] = "$dir/$base-card.webp";
+            self::writeWebp($card, "$dir/$base-card.webp");
+            $card->clear();
             $view->clear();
 
-            return ['width' => $im->getImageWidth(), 'height' => $im->getImageHeight(), 'file' => $file];
+            return ['width' => $info['width'], 'height' => $info['height'], 'file' => $file];
         } catch (\Throwable $e) {
             self::remove($written);
             throw $e;
@@ -69,8 +73,7 @@ final class Images
      */
     public static function avatar(string $src, string $dir): string
     {
-        self::check($src);
-        $im = self::load($src);
+        $im = self::load($src, self::check($src), self::AVATAR_SIDE, self::AVATAR_SIDE);
         $file = 'avatar-' . bin2hex(random_bytes(4)) . '.webp';
         try {
             self::ensureDir($dir);
@@ -85,8 +88,12 @@ final class Images
         }
     }
 
-    /** Розмір, тип і сторони — до повного декодування. Повертає розширення оригіналу. */
-    private static function check(string $src): string
+    /**
+     * Розмір, тип, сторони й пропорції — до повного декодування.
+     * @return array{ext:string, jpeg:bool, w:int, h:int, width:int, height:int}
+     *         w/h — як у файлі, width/height — після повороту за EXIF
+     */
+    private static function check(string $src): array
     {
         $bytes = is_file($src) && is_readable($src) ? filesize($src) : false;
         if ($bytes === false || $bytes === 0) throw new DesignerException(self::ERR_BROKEN);
@@ -109,6 +116,7 @@ final class Images
             $actual = strtoupper($ping->getImageFormat());
             $w = $ping->getImageWidth();
             $h = $ping->getImageHeight();
+            $orientation = $ping->getImageOrientation();
         } catch (\ImagickException $e) {
             throw new DesignerException(self::ERR_BROKEN);
         } finally {
@@ -117,13 +125,31 @@ final class Images
         }
         if ($actual !== $format || $w < 1 || $h < 1) throw new DesignerException(self::ERR_BROKEN);
         if (max($w, $h) > self::MAX_SIDE) throw new DesignerException('Зображення завелике: до 12 000 px по стороні');
-        return $ext;
+        if (max($w, $h) > self::MAX_RATIO * min($w, $h)) {
+            throw new DesignerException('Незвичні пропорції: сторони відрізняються більш ніж у 20 разів');
+        }
+        // LEFTTOP…LEFTBOTTOM (5–8) повертають на 90°
+        $turned = $orientation >= \Imagick::ORIENTATION_LEFTTOP && $orientation <= \Imagick::ORIENTATION_LEFTBOTTOM;
+        return [
+            'ext' => $ext, 'jpeg' => $format === 'JPEG', 'w' => $w, 'h' => $h,
+            'width' => $turned ? $h : $w, 'height' => $turned ? $w : $h,
+        ];
     }
 
-    /** Повне декодування і підготовка спільної основи для копій: поворот, sRGB, без метаданих */
-    private static function load(string $src): \Imagick
+    /**
+     * Декодування і підготовка спільної основи для копій: поворот, sRGB, без метаданих.
+     * JPEG декодується одразу зменшеним (DCT-масштаб libjpeg), але не менше ніж $needLong по довшій стороні
+     * і $needShort по коротшій (або оригінал, якщо він менший) — щоб копії не довелося збільшувати.
+     */
+    private static function load(string $src, array $info, int $needLong, int $needShort): \Imagick
     {
         $im = new \Imagick();
+        if ($info['jpeg']) {
+            $wide = $info['w'] >= $info['h'];
+            $hintW = min($info['w'], $wide ? $needLong : $needShort);
+            $hintH = min($info['h'], $wide ? $needShort : $needLong);
+            if ($hintW < $info['w'] && $hintH < $info['h']) $im->setOption('jpeg:size', "{$hintW}x{$hintH}");
+        }
         $fh = fopen($src, 'rb');
         try {
             $im->readImageFile($fh);
@@ -171,14 +197,20 @@ final class Images
         }
     }
 
-    /** CMYK → sRGB: з вбудованим ICC — через профілі (кольори як задумано), інакше — формулою */
+    /**
+     * До sRGB: вбудований не-sRGB профіль (CMYK, Adobe RGB, Display P3…) — конвертація через ICC, бо stripImage
+     * його далі викине і кольори зблякнуть; CMYK без профілю (або з битим) — формулою.
+     */
     private static function toSrgb(\Imagick $im): void
     {
-        if ($im->getImageColorspace() !== \Imagick::COLORSPACE_CMYK) return;
-        if ($im->getImageProfiles('icc', false)) {
-            $im->profileImage('icc', gzinflate(base64_decode(self::SRGB_ICC)));
+        if ($im->getImageProfiles('icc', false) && stripos((string)$im->getImageProperty('icc:description'), 'sRGB') === false) {
+            try {
+                $im->profileImage('icc', gzinflate(base64_decode(self::SRGB_ICC)));
+            } catch (\ImagickException $e) {
+                // битий або несумісний профіль — не привід відмовляти: лишаються кольори без профілю
+            }
         }
-        if ($im->getImageColorspace() !== \Imagick::COLORSPACE_SRGB) {
+        if ($im->getImageColorspace() === \Imagick::COLORSPACE_CMYK) {
             $im->transformImageColorspace(\Imagick::COLORSPACE_SRGB);
         }
     }

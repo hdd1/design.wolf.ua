@@ -481,4 +481,35 @@ final class DesignersTest extends TestCase
         $this->assertNull(Designers::publicProfile(self::A));                // BLOCKED
         $this->assertNull(Designers::publicProfile(self::C));                // немає
     }
+
+    /** Робота, яку зараз обробляє Images::store: file = '' */
+    private function inFlight(int $cid, int $n = 1): void
+    {
+        for ($i = 0; $i < $n; $i++) Sql::insert('design_portfolio', ['designer_id' => $cid, 'file' => '', 'pos' => 0]);
+    }
+
+    public function test_in_flight_works_not_counted_or_shown(): void
+    {
+        // submit: 2 готові + 5 у обробці — це все ще 2 роботи
+        Designers::start(self::B);
+        Designers::saveProfile(self::B, 'Тест', 'Про себе', '');
+        $this->works(self::B, 2);
+        $this->inFlight(self::B, 5);
+        $this->assertFails('Додайте щонайменше 3 роботи', fn() => Designers::submit(self::B));
+        $this->works(self::B, 1);
+        Designers::submit(self::B);
+        $rows = array_values(array_filter(Designers::forAdmin(DesignerStatus::PENDING), fn($r) => $r['customer_id'] === self::B));
+        $this->assertSame(3, $rows[0]['works']);                              // forAdmin теж без обробки
+
+        // catalog і publicProfile
+        $this->approved(self::A, 'Зюзя Форма');                               // 3 готові роботи
+        $this->inFlight(self::A, 2);
+        $item = Designers::catalog('Зюзя Форма', 1)['items'][0];
+        $this->assertCount(3, $item['works']);
+        $ready = array_map('intval', array_column(
+            Sql::all("SELECT id FROM design_portfolio WHERE designer_id = ? AND file <> '' ORDER BY pos, id", [self::A]), 'id'));
+        $this->assertSame($ready, $item['works']);
+        $p = Designers::publicProfile(self::A);
+        $this->assertSame(['1.jpg', '2.jpg', '3.jpg'], array_column($p['works'], 'file'));
+    }
 }

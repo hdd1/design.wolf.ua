@@ -274,4 +274,34 @@ final class PortfolioTest extends TestCase
         Portfolio::remove(self::A, $a);
         $this->assertSame(1, Portfolio::count(self::A));
     }
+
+    /** Рядок, який зараз обробляється (Images::store ще працює): file = '' */
+    private function inFlight(int $cid, int $n = 1): void
+    {
+        for ($i = 0; $i < $n; $i++) Sql::insert('design_portfolio', ['designer_id' => $cid, 'file' => '', 'pos' => 99]);
+    }
+
+    public function test_in_flight_rows_are_hidden_but_count_for_limit(): void
+    {
+        $this->designer(self::A, DesignerStatus::DRAFT);
+        [$a, $b] = $this->addMany(self::A, 2);
+        $this->inFlight(self::A);
+        $flightId = (int)Sql::value("SELECT id FROM design_portfolio WHERE designer_id = ? AND file = ''", [self::A]);
+
+        $this->assertSame([$a, $b], array_column(Portfolio::all(self::A), 'id'));
+        $this->assertSame([$a, $b], array_column(Portfolio::visible(self::A), 'id'));
+        $this->assertSame(2, Portfolio::count(self::A));
+
+        // reorder бачить лише готові роботи, а до робіт у обробці не дістатися
+        Portfolio::reorder(self::A, [$b, $a]);
+        $this->assertSame([$b, $a], array_column(Portfolio::all(self::A), 'id'));
+        $this->assertFails('Роботу не знайдено', fn() => Portfolio::remove(self::A, $flightId));
+        $this->assertFails('Роботу не знайдено', fn() => Portfolio::setShw(self::A, $flightId, false));
+        $this->assertSame(1, (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE id = ?', [$flightId]));
+
+        // 2 готові + 8 у обробці = 10: паралельні завантаження ліміт не обходять
+        $this->inFlight(self::A, 7);
+        $this->assertSame(2, Portfolio::count(self::A));
+        $this->assertFails('Уже 10 робіт — це максимум', fn() => Portfolio::add(self::A, $this->image()));
+    }
 }

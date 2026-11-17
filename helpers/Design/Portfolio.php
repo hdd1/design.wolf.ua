@@ -40,7 +40,9 @@ final class Portfolio
             $status = Sql::value('SELECT status FROM design_designers WHERE customer_id = ? FOR UPDATE', [$designerId]);
             $limit = self::limit($status === null ? null : (int)$status);
             if ($limit === null) throw new DesignerException(self::ERR_READONLY);
-            if (self::count($designerId) >= $limit) throw new DesignerException("Уже $limit робіт — це максимум");
+            // Ліміт рахуємо по всіх рядках, разом із тими, що ще обробляються (file = ''), — щоб паралельні завантаження його не обійшли
+            $total = (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ?', [$designerId]);
+            if ($total >= $limit) throw new DesignerException("Уже $limit робіт — це максимум");
 
             $pos = (int)Sql::value('SELECT COALESCE(MAX(pos), 0) FROM design_portfolio WHERE designer_id = ?', [$designerId]) + 1;
             $id = Sql::insert('design_portfolio', ['designer_id' => $designerId, 'file' => '', 'pos' => $pos]);
@@ -62,7 +64,7 @@ final class Portfolio
         return ['id' => $id];
     }
 
-    /** @return list<array{id:int, title:string, shw:bool, pos:int, width:int, height:int}> усі роботи в порядку показу */
+    /** @return list<array{id:int, title:string, shw:bool, pos:int, width:int, height:int}> усі готові роботи в порядку показу */
     public static function all(int $designerId): array
     {
         return self::list($designerId, '');
@@ -74,9 +76,10 @@ final class Portfolio
         return self::list($designerId, ' AND shw = 1');
     }
 
+    /** Готові роботи; ті, що ще обробляються (file = ''), не рахуються */
     public static function count(int $designerId): int
     {
-        return (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ?', [$designerId]);
+        return (int)Sql::value("SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ? AND file <> ''", [$designerId]);
     }
 
     /** @throws DesignerException */
@@ -119,7 +122,7 @@ final class Portfolio
         try {
             // Той самий замок, що й в add: набір робіт не зміниться між перевіркою й записом
             Sql::value('SELECT status FROM design_designers WHERE customer_id = ? FOR UPDATE', [$designerId]);
-            $have = array_map('intval', array_column(Sql::all('SELECT id FROM design_portfolio WHERE designer_id = ?', [$designerId]), 'id'));
+            $have = array_map('intval', array_column(Sql::all('SELECT id FROM design_portfolio WHERE designer_id = ? AND file <> \'\'', [$designerId]), 'id'));
             $want = $ids;
             sort($have);
             sort($want);
@@ -157,7 +160,7 @@ final class Portfolio
     private static function own(int $designerId, int $workId): array
     {
         self::assertEditable($designerId);
-        $row = Sql::one('SELECT id, file FROM design_portfolio WHERE id = ? AND designer_id = ?', [$workId, $designerId]);
+        $row = Sql::one('SELECT id, file FROM design_portfolio WHERE id = ? AND designer_id = ? AND file <> \'\'', [$workId, $designerId]);
         if ($row === null) throw new DesignerException(self::ERR_NOT_FOUND);
         return ['id' => (int)$row['id'], 'file' => (string)$row['file']];
     }
@@ -165,7 +168,7 @@ final class Portfolio
     private static function list(int $designerId, string $extra): array
     {
         $rows = Sql::all(
-            "SELECT id, title, shw, pos, width, height FROM design_portfolio WHERE designer_id = ?$extra ORDER BY pos, id",
+            "SELECT id, title, shw, pos, width, height FROM design_portfolio WHERE designer_id = ? AND file <> ''$extra ORDER BY pos, id",
             [$designerId]);
         return array_map(static fn(array $r) => [
             'id' => (int)$r['id'],

@@ -75,7 +75,7 @@ final class Designers
         }
         if (trim($row['name']) === '') throw new DesignerException('Вкажіть імʼя');
         if (trim($row['about']) === '') throw new DesignerException('Розкажіть про себе');
-        $works = (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ?', [$customerId]);
+        $works = (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ? AND file <> \'\'', [$customerId]);
         if ($works < self::APPLY_MIN) throw new DesignerException('Додайте щонайменше ' . self::APPLY_MIN . ' роботи');
         if ($works > self::APPLY_MAX) throw new DesignerException('У заявці — не більше ' . self::APPLY_MAX . ' робіт');
 
@@ -140,7 +140,7 @@ final class Designers
         if (!in_array($status, $allowed, true)) return [];
 
         $rows = Sql::all(
-            'SELECT ' . self::COLS . ', (SELECT COUNT(*) FROM design_portfolio p WHERE p.designer_id = d.customer_id) AS works
+            'SELECT ' . self::COLS . ', (SELECT COUNT(*) FROM design_portfolio p WHERE p.designer_id = d.customer_id AND p.file <> \'\') AS works
              FROM design_designers d WHERE d.status = ?
              ORDER BY d.submitted_at DESC, d.customer_id DESC', [$status]);
         return array_map(static fn(array $r): array => self::row($r) + ['works' => (int)$r['works']], $rows);
@@ -173,7 +173,7 @@ final class Designers
             $ids = array_map(static fn(array $r): int => (int)$r['customer_id'], $rows);
             $found = Sql::all(
                 'SELECT id, designer_id FROM design_portfolio
-                 WHERE shw = 1 AND designer_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')
+                 WHERE shw = 1 AND file <> \'\' AND designer_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')
                  ORDER BY pos, id', $ids);
             foreach ($found as $w) {
                 $works[(int)$w['designer_id']][] = (int)$w['id'];
@@ -196,7 +196,7 @@ final class Designers
             [$customerId, DesignerStatus::APPROVED]);
         if ($r === null) return null;
 
-        $works = Sql::all('SELECT id, title, file, width, height FROM design_portfolio WHERE designer_id = ? AND shw = 1 ORDER BY pos, id', [$customerId]);
+        $works = Sql::all('SELECT id, title, file, width, height FROM design_portfolio WHERE designer_id = ? AND shw = 1 AND file <> \'\' ORDER BY pos, id', [$customerId]);
         return [
             'customer_id' => (int)$r['customer_id'],
             'name' => (string)$r['name'],

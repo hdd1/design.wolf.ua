@@ -228,6 +228,8 @@ final class PagesHttpTest extends TestCase
     /** Тест завів анкету клієнта з нуля — tearDown її прибирає */
     private bool $ownsDesigner = false;
     private string $tmp = '';
+    /** @var list<int> дизайнери-двійники (999999401+) цього тесту: tearDown їх прибирає */
+    private array $fakes = [];
 
     /**
      * Для тестів, що пишуть (анкета, фото, роботи, порядок, профіль): лише коли в клієнта ще нічого немає.
@@ -257,6 +259,12 @@ final class PagesHttpTest extends TestCase
     protected function tearDown(): void
     {
         if ($this->tmp !== '') exec('rm -rf ' . escapeshellarg($this->tmp));
+        foreach ($this->fakes as $id) {
+            Sql::exec('DELETE FROM design_portfolio WHERE designer_id = ?', [$id]);
+            Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [$id]);
+            exec('rm -rf ' . escapeshellarg(Config::storageRoot() . "/portfolio/$id"));
+        }
+        $this->fakes = [];
         if (!$this->ownsDesigner) return;
         $this->ownsDesigner = false;
         $me = self::me();
@@ -496,5 +504,141 @@ final class PagesHttpTest extends TestCase
         $this->assertStringContainsString('href="/designer/" class="active">Мій профіль', $body);
         $this->assertStringNotContainsString('Стати дизайнером', $body);
         $this->assertStringNotContainsString('Місто', $body);
+    }
+
+    // ---- Етап 2, задача 7: каталог і профіль для клієнтів. Дизайнери-двійники 999999401+, клієнт 29 лише дивиться ----
+
+    private const FAKE_BASE = 999999401;
+    /** Схвалений (або іншого статусу) дизайнер з $works готовими роботами. Імʼя містить маркер для пошуку */
+    private function fakeDesigner(int $n, string $name, int $status = DesignerStatus::APPROVED, int $works = 0, string $about = 'Друкую все'): int
+    {
+        $id = self::FAKE_BASE + $n;
+        $this->fakes[] = $id;
+        Sql::exec('DELETE FROM design_portfolio WHERE designer_id = ?', [$id]);
+        Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [$id]);
+        Sql::exec('INSERT INTO design_designers (customer_id, status, name, about, link) VALUES (?, ?, ?, ?, ?)',
+            [$id, $status, $name, $about, 'https://behance.net/fake' . $n]);
+        if ($works > 0) {
+            // Portfolio::add дозволяє роботи лише в чернетці і схваленому — для інших статусів додаємо під тимчасовим статусом APPROVED
+            Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::APPROVED, $id]);
+            $this->tmp = $this->tmp !== '' ? $this->tmp : sys_get_temp_dir() . '/design-http-' . bin2hex(random_bytes(4));
+            @mkdir($this->tmp, 0777, true);
+            for ($i = 1; $i <= $works; $i++) {
+                $file = $this->jpeg("f$n-$i.jpg");
+                $w = \Design\Portfolio::add($id, $file);
+                Sql::exec('UPDATE design_portfolio SET title = ? WHERE id = ?', ["Робота $n-$i <i>", $w['id']]);
+            }
+            Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [$status, $id]);
+        }
+        return $id;
+    }
+
+    public function test_catalog_requires_login(): void
+    {
+        [$code, , $body] = self::fetch('/designers/');
+        $this->assertSame(401, $code);
+        $this->assertStringContainsString('увійдіть на wolf.ua', $body);
+        $id = $this->fakeDesigner(1, 'Гість Невидимий');
+        $this->assertSame(401, self::fetch("/designers/$id/")[0]);
+    }
+
+    public function test_catalog_shows_approved_only(): void
+    {
+        $ok = $this->fakeDesigner(2, 'Зразковий Тестовий', DesignerStatus::APPROVED, 4, 'Візитки й <script>alert(1)</script> меню');
+        $pending = $this->fakeDesigner(3, 'Тестовий На розгляді', DesignerStatus::PENDING);
+        $blocked = $this->fakeDesigner(4, 'Тестовий Заблокований', DesignerStatus::BLOCKED);
+        $draft = $this->fakeDesigner(5, 'Тестовий Чернетка', DesignerStatus::DRAFT);
+
+        [$code, , $body] = self::fetch('/designers/?q=' . urlencode('Тестов'), self::cookie());
+        $this->assertSame(200, $code);
+        $this->assertStringContainsString('Дизайнери Майстерні', $body);
+        $this->assertStringContainsString('Зразковий Тестовий', $body);
+        $this->assertStringContainsString("href=\"/designers/$ok/\"", $body);
+        $this->assertStringContainsString('Переглянути', $body);
+        $this->assertStringContainsString('Візитки й &lt;script&gt;alert(1)&lt;/script&gt; меню', $body);
+        $this->assertStringNotContainsString('<script>alert(1)', $body);
+        foreach (['На розгляді', 'Заблокований', 'Чернетка'] as $hidden) $this->assertStringNotContainsString($hidden, $body);
+        foreach ([$pending, $blocked, $draft] as $id) $this->assertStringNotContainsString("/designers/$id/", $body);
+        // лише 3 картки робіт, без рейтингу, замовлень, міста
+        $this->assertSame(3, preg_match_all('#<img[^>]+src="/media/' . $ok . '/\d+-card"#', $body));
+        $main = substr($body, strpos($body, '<main>'));    // у шапці є «Мої замовлення»
+        foreach (['замовлен', 'Замовити у', 'Місто'] as $banned) $this->assertStringNotContainsString($banned, $main);
+        $this->assertDoesNotMatchRegularExpression('#fa-star|рейтинг#iu', substr($body, strpos($body, '<main>')));
+        $this->assertStringContainsString('href="/designers/" class="active">Дизайнери', $body);
+
+        // картинка картки справді віддається
+        preg_match('#/media/' . $ok . '/\d+-card#', $body, $m);
+        $this->assertSame(200, self::fetch($m[0], self::cookie())[0]);
+    }
+
+    public function test_catalog_search_and_empty_state(): void
+    {
+        $this->fakeDesigner(6, 'Пошуковий Альфа');
+        $this->fakeDesigner(7, 'Пошуковий Бета');
+        [, , $body] = self::fetch('/designers/?q=' . urlencode('Пошуковий Бета'), self::cookie());
+        $this->assertStringContainsString('Пошуковий Бета', $body);
+        $this->assertStringNotContainsString('Пошуковий Альфа', $body);
+        $this->assertStringContainsString('value="Пошуковий Бета"', $body);
+
+        [$code, , $body] = self::fetch('/designers/?q=' . urlencode('Ніхто "><b>x'), self::cookie());
+        $this->assertSame(200, $code);
+        $this->assertStringContainsString('Нікого не знайшли. Спробуйте інше імʼя', $body);
+        $this->assertStringContainsString('value="Ніхто &quot;&gt;&lt;b&gt;x"', $body);
+        $this->assertStringNotContainsString('<b>x', $body);
+    }
+
+    public function test_catalog_pagination_keeps_query(): void
+    {
+        for ($i = 0; $i < Designers::PER_PAGE + 2; $i++) $this->fakeDesigner(10 + $i, 'Сторінковий ' . sprintf('%02d', $i));
+        [, , $p1] = self::fetch('/designers/?q=' . urlencode('Сторінковий'), self::cookie());
+        $this->assertSame(Designers::PER_PAGE, substr_count($p1, 'class="designer-card'));
+        $this->assertStringContainsString('class="pager"', $p1);
+        $this->assertStringContainsString('href="/designers/?q=%D0%A1%D1%82%D0%BE%D1%80%D1%96%D0%BD%D0%BA%D0%BE%D0%B2%D0%B8%D0%B9&amp;page=2"', $p1);
+        [, , $p2] = self::fetch('/designers/?q=' . urlencode('Сторінковий') . '&page=2', self::cookie());
+        $this->assertSame(2, substr_count($p2, 'class="designer-card'));
+        // сторінка поза межами — не помилка, а порожня сторінка
+        $this->assertSame(200, self::fetch('/designers/?q=' . urlencode('Сторінковий') . '&page=99', self::cookie())[0]);
+        [, , $one] = self::fetch('/designers/?q=' . urlencode('Сторінковий 01'), self::cookie());
+        $this->assertStringNotContainsString('class="pager"', $one);
+    }
+
+    public function test_unapproved_profile_is_404(): void
+    {
+        foreach ([DesignerStatus::DRAFT, DesignerStatus::PENDING, DesignerStatus::REJECTED, DesignerStatus::BLOCKED] as $i => $st) {
+            $id = $this->fakeDesigner(40 + $i, 'Прихований ' . $i, $st);
+            $this->assertSame(404, self::fetch("/designers/$id/", self::cookie())[0], "статус $st");
+        }
+        $this->assertSame(404, self::fetch('/designers/999999499/', self::cookie())[0]);
+    }
+
+    public function test_public_profile_escapes_html(): void
+    {
+        $id = $this->fakeDesigner(50, "Олег О'Ніл <b>", DesignerStatus::APPROVED, 2, 'Про <i>себе</i>');
+        [$code, , $body] = self::fetch("/designers/$id/", self::cookie());
+        $this->assertSame(200, $code);
+        $this->assertStringContainsString('Олег О&#039;Ніл &lt;b&gt;', $body);
+        $this->assertStringNotContainsString('<b>', substr($body, strpos($body, '<main>')));
+        $this->assertStringContainsString('Про &lt;i&gt;себе&lt;/i&gt;', $body);
+        $this->assertStringContainsString('Робота 50-1 &lt;i&gt;', $body);
+        $this->assertStringNotContainsString('<i>', preg_replace('#<i class="[^"]*"></i>#', '', substr($body, strpos($body, '<main>'))));
+        $this->assertStringContainsString('Портфоліо · 2 роботи', $body);
+        $this->assertStringContainsString('href="https://behance.net/fake50"', $body);
+        $this->assertStringContainsString('rel="noopener nofollow ugc"', $body);
+        $this->assertStringContainsString('Усі дизайнери', $body);
+        $this->assertStringContainsString('data-bs-toggle="modal"', $body);
+        $this->assertMatchesRegularExpression('#/media/' . $id . '/\d+-view#', $body);
+        foreach (['замовлен', 'Замовити у'] as $banned) $this->assertStringNotContainsString($banned, substr($body, strpos($body, '<main>')));
+        $this->assertStringContainsString('href="/designers/" class="active">Дизайнери', $body);
+    }
+
+    public function test_public_profile_hides_hidden_works_and_initials(): void
+    {
+        $id = $this->fakeDesigner(51, 'Іван Петренко', DesignerStatus::APPROVED, 2);
+        $hidden = (int)Sql::value('SELECT MIN(id) FROM design_portfolio WHERE designer_id = ?', [$id]);
+        Sql::exec('UPDATE design_portfolio SET shw = 0 WHERE id = ?', [$hidden]);
+        [, , $body] = self::fetch("/designers/$id/", self::cookie());
+        $this->assertStringNotContainsString("/media/$id/$hidden-", $body);
+        $this->assertStringContainsString('Портфоліо · 1 робота', $body);
+        $this->assertStringContainsString('>ІП<', $body);   // ініціали, фото немає
     }
 }

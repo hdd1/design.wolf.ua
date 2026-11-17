@@ -23,6 +23,8 @@ final class Router
         ['POST', '#^/designer/works/order$#', 'designer-works-order'],
         ['POST', '#^/designer/works/(?<id>' . self::ID . ')$#', 'designer-work'],
         ['POST', '#^/designer/photo$#', 'designer-photo'],
+        ['GET', '#^/designers/$#', 'designers'],
+        ['GET', '#^/designers/(?<id>' . self::ID . ')/$#', 'designer-public'],
         // Без розширення: nginx-локація статики (\.jpg|png…$) такий шлях не перехоплює. Оригінали сюди не потрапляють
         ['GET', '#^/media/(?<designer>' . self::ID . ')/(?<name>\d{1,9}-(?:card|view)|avatar-[0-9a-f]{8})$#', 'media'],
     ];

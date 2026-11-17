@@ -223,25 +223,25 @@ final class PagesHttpTest extends TestCase
         $this->assertStringContainsString("№$draft", $body);
     }
 
-    // ---- Етап 2: сторінки дизайнера. Клієнт 29 — справжній акаунт: прибираємо лише створене тестом ----
+    // ---- Етап 2: сторінки дизайнера. Клієнт 29 — справжній акаунт: тести, що пишуть, працюють лише з чистого місця ----
 
-    /** @var array|null|false рядок design_designers до тесту; false — тест дизайнера не торкався */
-    private $designerBefore = false;
-    /** @var list<int> */
-    private array $worksBefore = [];
+    /** Тест завів анкету клієнта з нуля — tearDown її прибирає */
+    private bool $ownsDesigner = false;
     private string $tmp = '';
 
-    /** Запам'ятати, що було в клієнта до тесту; анкету в незмінюваному статусі не чіпаємо */
+    /**
+     * Для тестів, що пишуть (анкета, фото, роботи, порядок, профіль): лише коли в клієнта ще нічого немає.
+     * Є анкета, роботи чи папка робіт — пропуск: справжні дані власника не чіпаємо і не «відновлюємо».
+     */
     private function designer(): int
     {
         $me = self::me();
-        $this->designerBefore = Designers::get($me);
-        $this->worksBefore = self::workIds($me);
-        $editable = [DesignerStatus::DRAFT, DesignerStatus::REJECTED, DesignerStatus::APPROVED];
-        if ($this->designerBefore !== null && !in_array($this->designerBefore['status'], $editable, true)) {
-            $this->designerBefore = false;
-            $this->markTestSkipped('Анкета клієнта зараз не змінюється — тест її не чіпає');
+        if (Designers::get($me) !== null
+            || (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ?', [$me]) > 0
+            || file_exists(Config::storageRoot() . "/portfolio/$me")) {
+            $this->markTestSkipped("у клієнта $me вже є профіль дизайнера — тест не чіпає справжні дані");
         }
+        $this->ownsDesigner = true;
         $this->tmp = sys_get_temp_dir() . '/design-http-' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
         return $me;
@@ -253,31 +253,16 @@ final class PagesHttpTest extends TestCase
         return array_map('intval', array_column(Sql::all('SELECT id FROM design_portfolio WHERE designer_id = ?', [$me]), 'id'));
     }
 
+    /** Прибирає лише те, що тест завів з нуля: анкету, роботи і папку portfolio/<id> */
     protected function tearDown(): void
     {
         if ($this->tmp !== '') exec('rm -rf ' . escapeshellarg($this->tmp));
-        if ($this->designerBefore === false) return;
+        if (!$this->ownsDesigner) return;
+        $this->ownsDesigner = false;
         $me = self::me();
-        $dir = Config::storageRoot() . "/portfolio/$me";
-        $before = $this->designerBefore;
-        $this->designerBefore = false;
-
-        foreach (array_diff(self::workIds($me), $this->worksBefore) as $id) {
-            Sql::exec('DELETE FROM design_portfolio WHERE id = ? AND designer_id = ?', [$id, $me]);
-            foreach (["$id-card.webp", "$id-view.webp", "$id.jpg", "$id.png"] as $f) {
-                if (is_file("$dir/$f")) unlink("$dir/$f");
-            }
-        }
-        $photo = (string)Sql::value('SELECT photo FROM design_designers WHERE customer_id = ?', [$me]);
-        if ($photo !== '' && $photo !== ($before['photo'] ?? '') && is_file("$dir/" . basename($photo))) unlink("$dir/" . basename($photo));
-
-        if ($before === null) {
-            Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [$me]);
-            if (is_dir($dir) && $this->worksBefore === [] && count(scandir($dir)) === 2) rmdir($dir);
-        } else {
-            Sql::exec('UPDATE design_designers SET status = ?, name = ?, about = ?, link = ?, photo = ?, reject_comment = ? WHERE customer_id = ?',
-                [$before['status'], $before['name'], $before['about'], $before['link'], $before['photo'], $before['reject_comment'], $me]);
-        }
+        Sql::exec('DELETE FROM design_portfolio WHERE designer_id = ?', [$me]);
+        Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [$me]);
+        exec('rm -rf ' . escapeshellarg(Config::storageRoot() . "/portfolio/$me"));
     }
 
     private function jpeg(string $name = 'work.jpg'): string
@@ -330,7 +315,6 @@ final class PagesHttpTest extends TestCase
     public function test_apply_form_prefilled_and_has_no_city(): void
     {
         $me = $this->designer();
-        if ($this->designerBefore !== null) $this->markTestSkipped('У клієнта вже є анкета — форму з акаунта не перевірити');
         [$body, $csrf] = $this->designerPage();
         $this->assertSame(DesignerStatus::DRAFT, Designers::status($me));
         $this->assertStringContainsString('Заявка в дизайнери Майстерні', $body);
@@ -356,7 +340,7 @@ final class PagesHttpTest extends TestCase
         [$code, $json] = self::upload('/designer/works', "{$this->tmp}/logo.jpg", $csrf);
         $this->assertSame(422, $code);
         $this->assertSame(['error' => 'Файл пошкоджений або це не картинка'], $json);
-        $this->assertSame($this->worksBefore, self::workIds($me));
+        $this->assertSame([], self::workIds($me));
     }
 
     public function test_upload_without_csrf_is_403(): void
@@ -366,7 +350,7 @@ final class PagesHttpTest extends TestCase
         [$code, $json] = self::upload('/designer/works', $this->jpeg(), '');
         $this->assertSame(403, $code);
         $this->assertSame('Сесія застаріла — оновіть сторінку', $json['error']);
-        $this->assertSame($this->worksBefore, self::workIds($me));
+        $this->assertSame([], self::workIds($me));
     }
 
     public function test_upload_ok_returns_media_urls(): void

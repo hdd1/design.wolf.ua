@@ -13,6 +13,9 @@ final class Designers
     public const PER_PAGE = 24;
 
     private const ERR_CHANGED = 'Статус заявки вже змінився — оновіть сторінку';
+    private const ERR_LOCKED = 'Профіль зараз не можна змінити';
+    /** Статуси, у яких дизайнер сам змінює профіль */
+    public const EDITABLE = [DesignerStatus::DRAFT, DesignerStatus::REJECTED, DesignerStatus::APPROVED];
     private const ERR_LINK = 'Посилання має бути адресою сайту, напр. behance.net/імʼя';
     private const COLS = 'customer_id, status, name, about, link, photo, rating, reject_comment, created, submitted_at, reviewed_at, reviewed_by';
 
@@ -52,16 +55,41 @@ final class Designers
         if (mb_strlen($about) > self::ABOUT_MAX) throw new DesignerException('Про себе — не більше ' . self::ABOUT_MAX . ' символів');
         $link = self::normalizeLink($link);
 
-        $editable = [DesignerStatus::DRAFT, DesignerStatus::REJECTED, DesignerStatus::APPROVED];
-        if (!in_array(self::status($customerId), $editable, true)) {
-            throw new DesignerException('Профіль зараз не можна змінити');
-        }
+        if (!in_array(self::status($customerId), self::EDITABLE, true)) throw new DesignerException(self::ERR_LOCKED);
         Sql::exec('UPDATE design_designers SET name = ?, about = ?, link = ? WHERE customer_id = ? AND status IN (?, ?, ?)',
-            array_merge([$name, $about, $link, $customerId], $editable));
+            array_merge([$name, $about, $link, $customerId], self::EDITABLE));
         // 0 рядків — або текст не змінився, або статус встиг змінитися (заблокували, подали заявку)
-        if (!in_array(self::status($customerId), $editable, true)) {
-            throw new DesignerException('Профіль зараз не можна змінити');
+        if (!in_array(self::status($customerId), self::EDITABLE, true)) throw new DesignerException(self::ERR_LOCKED);
+    }
+
+    /**
+     * Нове фото профілю з завантаженого файлу: квадрат WebP у папці робіт, попереднє фото видаляється.
+     * @return string імʼя для Media::url: «avatar-<8 hex>»
+     * @throws DesignerException статус не дозволяє або файл не підходить (старе фото лишається)
+     */
+    public static function setPhoto(int $customerId, string $tmp): string
+    {
+        // Перевірка до обробки картинки — щоб не робити зайвої роботи; остаточна — під замком
+        if (!in_array(self::status($customerId), self::EDITABLE, true)) throw new DesignerException(self::ERR_LOCKED);
+
+        $dir = Portfolio::dir($customerId);
+        $file = Images::avatar($tmp, $dir);
+        $pdo = Sql::pdo();
+        $pdo->beginTransaction();
+        try {
+            // Замок рядка: два одночасні завантаження не залишать осиротілого файлу
+            $row = Sql::one('SELECT status, photo FROM design_designers WHERE customer_id = ? FOR UPDATE', [$customerId]);
+            if ($row === null || !in_array((int)$row['status'], self::EDITABLE, true)) throw new DesignerException(self::ERR_LOCKED);
+            Sql::exec('UPDATE design_designers SET photo = ? WHERE customer_id = ?', [$file, $customerId]);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            if (is_file("$dir/$file")) @unlink("$dir/$file");
+            throw $e;
         }
+        $old = basename((string)$row['photo']);
+        if ($old !== '' && $old !== $file && is_file("$dir/$old")) @unlink("$dir/$old");
+        return substr($file, 0, -strlen('.webp'));
     }
 
     /** Чернетка / відхилена → на розгляд. Повторна подача на розгляді нічого не робить і не шле зайвого сповіщення */

@@ -88,6 +88,15 @@ final class Images
         }
     }
 
+    /** «Файл завеликий: 48 МБ. Максимум — 20 МБ»; розмір невідомий (відкинув сервер) — без числа */
+    public static function tooBig(?int $bytes): string
+    {
+        $max = self::MAX_BYTES / 1048576;
+        return $bytes !== null && $bytes > 0
+            ? sprintf('Файл завеликий: %d МБ. Максимум — %d МБ', (int)ceil($bytes / 1048576), $max)
+            : sprintf('Файл завеликий. Максимум — %d МБ', $max);
+    }
+
     /**
      * Розмір, тип, сторони й пропорції — до повного декодування.
      * @return array{ext:string, jpeg:bool, w:int, h:int, width:int, height:int}
@@ -97,10 +106,7 @@ final class Images
     {
         $bytes = is_file($src) && is_readable($src) ? filesize($src) : false;
         if ($bytes === false || $bytes === 0) throw new DesignerException(self::ERR_BROKEN);
-        if ($bytes > self::MAX_BYTES) {
-            throw new DesignerException(sprintf('Файл завеликий: %d МБ. Максимум — %d МБ',
-                (int)ceil($bytes / 1048576), self::MAX_BYTES / 1048576));
-        }
+        if ($bytes > self::MAX_BYTES) throw new DesignerException(self::tooBig($bytes));
 
         // Тип — за сигнатурою силами PHP, щоб Imagick не підбирав кодек (SVG, MVG, PS…) до чужого файлу
         $info = @getimagesize($src);

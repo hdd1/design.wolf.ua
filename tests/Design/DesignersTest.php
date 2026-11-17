@@ -512,4 +512,71 @@ final class DesignersTest extends TestCase
         $p = Designers::publicProfile(self::A);
         $this->assertSame(['1.jpg', '2.jpg', '3.jpg'], array_column($p['works'], 'file'));
     }
+
+    /** Тимчасове сховище з JPEG-картинкою для тестів аватара: $test(шлях до картинки, корінь сховища) */
+    private function avatarStorage(callable $test): void
+    {
+        $old = getenv('DESIGN_STORAGE_ROOT');
+        $root = sys_get_temp_dir() . '/design-avatar-' . bin2hex(random_bytes(4));
+        mkdir($root, 0777, true);
+        putenv('DESIGN_STORAGE_ROOT=' . $root);
+        try {
+            $im = new Imagick();
+            $im->newPseudoImage(500, 400, 'gradient:red-blue');
+            $im->setImageFormat('jpeg');
+            $im->writeImage("jpeg:$root/src.jpg");
+            $im->clear();
+            $test("$root/src.jpg", $root);
+        } finally {
+            putenv($old === false ? 'DESIGN_STORAGE_ROOT' : 'DESIGN_STORAGE_ROOT=' . $old);
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
+    public function test_set_photo_saves_avatar_and_removes_previous(): void
+    {
+        $this->avatarStorage(function (string $src, string $root): void {
+            $dir = "$root/portfolio/" . self::A;
+            Designers::start(self::A);
+            $first = Designers::setPhoto(self::A, $src);
+            $this->assertMatchesRegularExpression('/^avatar-[0-9a-f]{8}$/', $first);
+            $this->assertSame("$first.webp", Designers::get(self::A)['photo']);
+            $this->assertFileExists("$dir/$first.webp");
+            $this->assertFileExists($src);                                       // тимчасовий файл не чіпаємо
+
+            Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::APPROVED, self::A]);
+            $second = Designers::setPhoto(self::A, $src);
+            $this->assertNotSame($first, $second);
+            $this->assertSame("$second.webp", Designers::get(self::A)['photo']);
+            $this->assertFileDoesNotExist("$dir/$first.webp");
+            $this->assertFileExists("$dir/$second.webp");
+        });
+    }
+
+    public function test_set_photo_only_when_editable(): void
+    {
+        $this->avatarStorage(function (string $src, string $root): void {
+            $this->assertFails('Профіль зараз не можна змінити', fn() => Designers::setPhoto(self::A, $src));   // немає анкети
+            Designers::start(self::A);
+            foreach ([DesignerStatus::PENDING, DesignerStatus::BLOCKED] as $st) {
+                Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [$st, self::A]);
+                $this->assertFails('Профіль зараз не можна змінити', fn() => Designers::setPhoto(self::A, $src));
+            }
+            Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::REJECTED, self::A]);
+            Designers::setPhoto(self::A, $src);
+            $this->assertCount(1, glob("$root/portfolio/" . self::A . '/avatar-*.webp'));
+        });
+    }
+
+    public function test_set_photo_bad_file_keeps_old(): void
+    {
+        $this->avatarStorage(function (string $src, string $root): void {
+            Designers::start(self::A);
+            $old = Designers::setPhoto(self::A, $src);
+            file_put_contents("$root/bad.jpg", 'не картинка');
+            $this->assertFails('Файл пошкоджений або це не картинка', fn() => Designers::setPhoto(self::A, "$root/bad.jpg"));
+            $this->assertSame("$old.webp", Designers::get(self::A)['photo']);
+            $this->assertSame(["$root/portfolio/" . self::A . "/$old.webp"], glob("$root/portfolio/" . self::A . '/avatar-*.webp'));
+        });
+    }
 }

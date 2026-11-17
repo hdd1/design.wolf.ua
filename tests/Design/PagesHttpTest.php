@@ -1,5 +1,8 @@
 <?php
 
+use Design\Config;
+use Design\Designers;
+use Design\DesignerStatus;
 use Design\Orders;
 use Design\OrderStatus;
 use Design\Products;
@@ -40,8 +43,8 @@ final class PagesHttpTest extends TestCase
         return 'wolfid=' . $id . '.' . hash_hmac('md5', $pass . self::UA, (string)$id);
     }
 
-    /** @return array{0:int,1:string,2:string} код, заголовки, тело */
-    private static function fetch(string $path, string $cookie = '', ?array $post = null): array
+    /** @return array{0:int,1:string,2:string} код, заголовки, тело. $multipart — multipart/form-data (з CURLFile) */
+    private static function fetch(string $path, string $cookie = '', ?array $post = null, bool $multipart = false): array
     {
         $ch = curl_init('https://dev.design.wolf.ua' . $path);
         $opts = [
@@ -55,7 +58,7 @@ final class PagesHttpTest extends TestCase
         ];
         if ($post !== null) {
             $opts[CURLOPT_POST] = true;
-            $opts[CURLOPT_POSTFIELDS] = http_build_query($post);
+            $opts[CURLOPT_POSTFIELDS] = $multipart ? $post : http_build_query($post);
         }
         curl_setopt_array($ch, $opts);
         $raw = curl_exec($ch);
@@ -218,5 +221,296 @@ final class PagesHttpTest extends TestCase
         $this->assertStringContainsString('Ваш хід', $body);
         $this->assertStringContainsString('Чекаємо іншу сторону', $body);
         $this->assertStringContainsString("№$draft", $body);
+    }
+
+    // ---- Етап 2: сторінки дизайнера. Клієнт 29 — справжній акаунт: прибираємо лише створене тестом ----
+
+    /** @var array|null|false рядок design_designers до тесту; false — тест дизайнера не торкався */
+    private $designerBefore = false;
+    /** @var list<int> */
+    private array $worksBefore = [];
+    private string $tmp = '';
+
+    /** Запам'ятати, що було в клієнта до тесту; анкету в незмінюваному статусі не чіпаємо */
+    private function designer(): int
+    {
+        $me = self::me();
+        $this->designerBefore = Designers::get($me);
+        $this->worksBefore = self::workIds($me);
+        $editable = [DesignerStatus::DRAFT, DesignerStatus::REJECTED, DesignerStatus::APPROVED];
+        if ($this->designerBefore !== null && !in_array($this->designerBefore['status'], $editable, true)) {
+            $this->designerBefore = false;
+            $this->markTestSkipped('Анкета клієнта зараз не змінюється — тест її не чіпає');
+        }
+        $this->tmp = sys_get_temp_dir() . '/design-http-' . bin2hex(random_bytes(4));
+        mkdir($this->tmp, 0777, true);
+        return $me;
+    }
+
+    /** @return list<int> усі рядки робіт, разом з тими, що в обробці */
+    private static function workIds(int $me): array
+    {
+        return array_map('intval', array_column(Sql::all('SELECT id FROM design_portfolio WHERE designer_id = ?', [$me]), 'id'));
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->tmp !== '') exec('rm -rf ' . escapeshellarg($this->tmp));
+        if ($this->designerBefore === false) return;
+        $me = self::me();
+        $dir = Config::storageRoot() . "/portfolio/$me";
+        $before = $this->designerBefore;
+        $this->designerBefore = false;
+
+        foreach (array_diff(self::workIds($me), $this->worksBefore) as $id) {
+            Sql::exec('DELETE FROM design_portfolio WHERE id = ? AND designer_id = ?', [$id, $me]);
+            foreach (["$id-card.webp", "$id-view.webp", "$id.jpg", "$id.png"] as $f) {
+                if (is_file("$dir/$f")) unlink("$dir/$f");
+            }
+        }
+        $photo = (string)Sql::value('SELECT photo FROM design_designers WHERE customer_id = ?', [$me]);
+        if ($photo !== '' && $photo !== ($before['photo'] ?? '') && is_file("$dir/" . basename($photo))) unlink("$dir/" . basename($photo));
+
+        if ($before === null) {
+            Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [$me]);
+            if (is_dir($dir) && $this->worksBefore === [] && count(scandir($dir)) === 2) rmdir($dir);
+        } else {
+            Sql::exec('UPDATE design_designers SET status = ?, name = ?, about = ?, link = ?, photo = ?, reject_comment = ? WHERE customer_id = ?',
+                [$before['status'], $before['name'], $before['about'], $before['link'], $before['photo'], $before['reject_comment'], $me]);
+        }
+    }
+
+    private function jpeg(string $name = 'work.jpg'): string
+    {
+        $im = new Imagick();
+        $im->newPseudoImage(800, 600, 'gradient:orange-blue');
+        $im->setImageFormat('jpeg');
+        $im->writeImage("jpeg:{$this->tmp}/$name");
+        $im->clear();
+        return "{$this->tmp}/$name";
+    }
+
+    private static function setStatus(int $me, int $status, string $comment = ''): void
+    {
+        Sql::exec('UPDATE design_designers SET status = ?, reject_comment = ? WHERE customer_id = ?', [$status, $comment, $me]);
+    }
+
+    /** Сторінка /designer/ (заводить чернетку) і її CSRF */
+    private function designerPage(string $query = ''): array
+    {
+        [$code, , $body] = self::fetch('/designer/' . $query, self::cookie());
+        $this->assertSame(200, $code);
+        return [$body, self::csrf($body)];
+    }
+
+    /** @return array{0:int,1:array} код і JSON */
+    private static function upload(string $path, string $file, string $csrf, string $mime = 'image/jpeg'): array
+    {
+        $post = ['file' => new CURLFile($file, $mime, basename($file))];
+        if ($csrf !== '') $post['csrf'] = $csrf;
+        [$code, , $body] = self::fetch($path, self::cookie(), $post, true);
+        return [$code, (array)json_decode($body, true)];
+    }
+
+    private function uploadWork(string $csrf): int
+    {
+        [$code, $json] = self::upload('/designer/works', $this->jpeg(), $csrf);
+        $this->assertSame(200, $code, json_encode($json, JSON_UNESCAPED_UNICODE));
+        return (int)$json['id'];
+    }
+
+    public function test_designer_page_requires_login(): void
+    {
+        [$code, , $body] = self::fetch('/designer/');
+        $this->assertSame(401, $code);
+        $this->assertStringContainsString('увійдіть на wolf.ua', $body);
+        $this->assertSame(401, self::fetch('/designer/works', '', ['csrf' => 'x'])[0]);
+    }
+
+    public function test_apply_form_prefilled_and_has_no_city(): void
+    {
+        $me = $this->designer();
+        if ($this->designerBefore !== null) $this->markTestSkipped('У клієнта вже є анкета — форму з акаунта не перевірити');
+        [$body, $csrf] = $this->designerPage();
+        $this->assertSame(DesignerStatus::DRAFT, Designers::status($me));
+        $this->assertStringContainsString('Заявка в дизайнери Майстерні', $body);
+        $name = Designers::get($me)['name'];
+        if ($name !== '') $this->assertStringContainsString('value="' . htmlspecialchars($name, ENT_QUOTES) . '"', $body);
+        $this->assertStringContainsString('name="about"', $body);
+        $this->assertStringContainsString('name="link"', $body);
+        $this->assertStringContainsString('Роботи для портфоліо', $body);
+        $this->assertStringContainsString('data-csrf="' . $csrf . '"', $body);
+        $this->assertStringContainsString('/assets/js/designer.js', $body);
+        $this->assertStringContainsString('href="/designer/" class="active">Стати дизайнером', $body);
+        $this->assertStringContainsString('href="/designers/"', $body);
+        $this->assertStringNotContainsString('Місто', $body);
+        $this->assertStringNotContainsString('city', $body);
+        $this->assertNotSame('', $csrf);
+    }
+
+    public function test_upload_rejects_text_file(): void
+    {
+        $me = $this->designer();
+        [, $csrf] = $this->designerPage();
+        file_put_contents("{$this->tmp}/logo.jpg", 'це текст, а не картинка');
+        [$code, $json] = self::upload('/designer/works', "{$this->tmp}/logo.jpg", $csrf);
+        $this->assertSame(422, $code);
+        $this->assertSame(['error' => 'Файл пошкоджений або це не картинка'], $json);
+        $this->assertSame($this->worksBefore, self::workIds($me));
+    }
+
+    public function test_upload_without_csrf_is_403(): void
+    {
+        $me = $this->designer();
+        $this->designerPage();
+        [$code, $json] = self::upload('/designer/works', $this->jpeg(), '');
+        $this->assertSame(403, $code);
+        $this->assertSame('Сесія застаріла — оновіть сторінку', $json['error']);
+        $this->assertSame($this->worksBefore, self::workIds($me));
+    }
+
+    public function test_upload_ok_returns_media_urls(): void
+    {
+        $me = $this->designer();
+        [, $csrf] = $this->designerPage();
+        $before = \Design\Portfolio::count($me);
+        [$code, $json] = self::upload('/designer/works', $this->jpeg(), $csrf);
+        $this->assertSame(200, $code);
+        $id = (int)$json['id'];
+        $this->assertGreaterThan(0, $id);
+        $this->assertSame(['id' => $id, 'card' => "/media/$me/$id-card", 'view' => "/media/$me/$id-view", 'count' => $before + 1], $json);
+
+        // /media через nginx: 200 і WebP (закриває перевірку з задачі 5)
+        [$code, $h, $img] = self::fetch($json['card'], self::cookie());
+        $this->assertSame(200, $code);
+        $this->assertMatchesRegularExpression('#^content-type:\s*image/webp\s*$#mi', $h);
+        $this->assertSame('RIFF', substr($img, 0, 4));
+        $this->assertSame('WEBP', substr($img, 8, 4));
+        $this->assertSame(200, self::fetch($json['view'], self::cookie())[0]);
+        $this->assertSame(404, self::fetch($json['card'])[0]);                      // гостю — ні
+    }
+
+    public function test_work_title_hide_order_delete(): void
+    {
+        $me = $this->designer();
+        [, $csrf] = $this->designerPage();
+        $a = $this->uploadWork($csrf);
+        $b = $this->uploadWork($csrf);
+        $post = fn(string $path, array $data) => self::fetch($path, self::cookie(), $data + ['csrf' => $csrf]);
+
+        [$code, , $body] = $post("/designer/works/$a", ['action' => 'title', 'title' => '  Візитки «Зерно» <b>  ']);
+        $this->assertSame(200, $code);
+        $this->assertSame(['ok' => true, 'title' => 'Візитки «Зерно» <b>'], json_decode($body, true));
+        $this->assertSame('Візитки «Зерно» <b>', Sql::value('SELECT title FROM design_portfolio WHERE id = ?', [$a]));
+
+        [$code] = $post("/designer/works/$a", ['action' => 'shw', 'on' => '0']);
+        $this->assertSame(200, $code);
+        $this->assertSame(0, (int)Sql::value('SELECT shw FROM design_portfolio WHERE id = ?', [$a]));
+
+        $ids = array_column(\Design\Portfolio::all($me), 'id');
+        $reordered = array_merge([$b], array_values(array_diff($ids, [$b])));
+        [$code, , $body] = $post('/designer/works/order', ['ids' => $reordered]);
+        $this->assertSame(200, $code, $body);
+        $this->assertSame($reordered, array_column(\Design\Portfolio::all($me), 'id'));
+        [$code, , $body] = $post('/designer/works/order', ['ids' => [$b]]);
+        $this->assertSame(422, $code);
+        $this->assertSame('Список робіт змінився — оновіть сторінку', json_decode($body, true)['error']);
+
+        [$code, , $body] = $post("/designer/works/$b", ['action' => 'delete']);
+        $this->assertSame(200, $code);
+        $this->assertSame(['ok' => true, 'count' => count($ids) - 1], json_decode($body, true));
+        $this->assertNull(Sql::one('SELECT id FROM design_portfolio WHERE id = ?', [$b]));
+        $this->assertFileDoesNotExist(Config::storageRoot() . "/portfolio/$me/$b-card.webp");
+
+        [$code, , $body] = $post("/designer/works/$b", ['action' => 'delete']);
+        $this->assertSame(422, $code);
+        $this->assertSame('Роботу не знайдено', json_decode($body, true)['error']);
+        $this->assertSame(403, self::fetch("/designer/works/$a", self::cookie(), ['action' => 'delete'])[0]);
+        $this->assertNotNull(Sql::one('SELECT id FROM design_portfolio WHERE id = ?', [$a]));
+    }
+
+    public function test_photo_upload(): void
+    {
+        $me = $this->designer();
+        [, $csrf] = $this->designerPage();
+        [$code, $json] = self::upload('/designer/photo', $this->jpeg('me.jpg'), $csrf);
+        $this->assertSame(200, $code, json_encode($json, JSON_UNESCAPED_UNICODE));
+        $this->assertMatchesRegularExpression("#^/media/$me/avatar-[0-9a-f]{8}$#", $json['photo']);
+        $this->assertSame(basename($json['photo']) . '.webp', Designers::get($me)['photo']);
+        [$code, $h] = self::fetch($json['photo'], self::cookie());
+        $this->assertSame(200, $code);
+        $this->assertMatchesRegularExpression('#^content-type:\s*image/webp\s*$#mi', $h);
+    }
+
+    public function test_save_keeps_input_on_error_then_saves(): void
+    {
+        $me = $this->designer();
+        [, $csrf] = $this->designerPage();
+        $was = Designers::get($me);
+        [$code, , $body] = self::fetch('/designer', self::cookie(), [
+            'csrf' => $csrf, 'action' => 'save', 'name' => "Олег О'Ніл <b>", 'about' => 'Друкую <i>все</i>', 'link' => 'javascript:alert(1)',
+        ]);
+        $this->assertSame(200, $code);
+        $this->assertStringContainsString('Посилання має бути адресою сайту', $body);
+        $this->assertStringContainsString('value="Олег О&#039;Ніл &lt;b&gt;"', $body);
+        $this->assertStringContainsString('Друкую &lt;i&gt;все&lt;/i&gt;</textarea>', $body);
+        $this->assertStringContainsString('value="javascript:alert(1)"', $body);
+        $this->assertSame($was, Designers::get($me));
+
+        [$code, $h] = self::fetch('/designer', self::cookie(), [
+            'csrf' => $csrf, 'action' => 'save', 'name' => "Олег О'Ніл", 'about' => 'Друкую все', 'link' => 'behance.net/oleg',
+        ]);
+        $this->assertSame(302, $code);
+        $this->assertSame('/designer/?saved=1', self::location($h));
+        $d = Designers::get($me);
+        $this->assertSame(["Олег О'Ніл", 'Друкую все', 'https://behance.net/oleg'], [$d['name'], $d['about'], $d['link']]);
+
+        // Прострочений CSRF: 403, введене на місці, нічого не збережено
+        [$code, , $body] = self::fetch('/designer', self::cookie(), ['csrf' => str_repeat('0', 64), 'action' => 'save', 'name' => 'Інше', 'about' => 'Нове', 'link' => '']);
+        $this->assertSame(403, $code);
+        $this->assertStringContainsString('Сесія застаріла', $body);
+        $this->assertStringContainsString('value="Інше"', $body);
+        $this->assertSame($d, Designers::get($me));
+    }
+
+    public function test_state_pages(): void
+    {
+        $me = $this->designer();
+        [, $csrf] = $this->designerPage();
+
+        self::setStatus($me, DesignerStatus::REJECTED, 'Додайте фото <надрукованих> робіт');
+        [$body] = $this->designerPage();
+        $this->assertStringContainsString('Додайте фото &lt;надрукованих&gt; робіт', $body);
+        $this->assertStringContainsString('Оновити і подати знову', $body);
+        $this->assertStringContainsString('name="about"', $body);
+
+        self::setStatus($me, DesignerStatus::PENDING);
+        [$body] = $this->designerPage();
+        $this->assertStringContainsString('Заявку на розгляді', $body);
+        $this->assertStringNotContainsString('name="about"', $body);
+        [$code, $json] = self::upload('/designer/works', $this->jpeg(), $csrf);
+        $this->assertSame(422, $code);
+        $this->assertSame('Зараз роботи не можна змінювати', $json['error']);
+
+        self::setStatus($me, DesignerStatus::BLOCKED);
+        [$body] = $this->designerPage();
+        $this->assertStringContainsString('Профіль заблоковано', $body);
+        $main = substr($body, strpos($body, '<main>'), strpos($body, '</main>') - strpos($body, '<main>'));
+        $this->assertStringNotContainsString('<button', $main);
+        $this->assertStringNotContainsString('btn', $main);
+
+        self::setStatus($me, DesignerStatus::APPROVED);
+        [$body] = $this->designerPage('?approved=1');
+        $this->assertStringContainsString('Вітаємо, ви дизайнер Майстерні!', $body);
+        $this->assertStringContainsString('Заповнити профіль', $body);
+        [$body] = $this->designerPage();
+        $this->assertStringContainsString('<h1>Мій профіль</h1>', $body);
+        $this->assertStringContainsString("href=\"/designers/$me/\"", $body);
+        $this->assertStringContainsString('Як бачать клієнти', $body);
+        $this->assertStringContainsString('Зберегти зміни', $body);
+        $this->assertStringContainsString('sortablejs-1.15.6/Sortable.min.js', $body);
+        $this->assertStringContainsString('href="/designer/" class="active">Мій профіль', $body);
+        $this->assertStringNotContainsString('Стати дизайнером', $body);
+        $this->assertStringNotContainsString('Місто', $body);
     }
 }

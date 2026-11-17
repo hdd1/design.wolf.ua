@@ -37,4 +37,18 @@ final class RouterTest extends TestCase
         $this->assertNull(Router::match('POST', '/media/1/2-card'));
         $this->assertNull(Router::withSlash('/media/1/2-card'));
     }
+
+    public function test_designer_routes(): void
+    {
+        $this->assertSame(['page' => 'designer', 'params' => []], Router::match('GET', '/designer/'));
+        $this->assertSame('designer-save', Router::match('POST', '/designer')['page']);
+        $this->assertSame('designer-work-add', Router::match('POST', '/designer/works')['page']);
+        $this->assertSame(['page' => 'designer-works-order', 'params' => []], Router::match('POST', '/designer/works/order'));
+        $this->assertSame(['page' => 'designer-work', 'params' => ['id' => '345']], Router::match('POST', '/designer/works/345'));
+        $this->assertSame('designer-photo', Router::match('POST', '/designer/photo')['page']);
+        $this->assertNull(Router::match('GET', '/designer/works'));
+        $this->assertNull(Router::match('POST', '/designer/works/abc'));
+        $this->assertNull(Router::match('POST', '/designer/'));
+        $this->assertSame('/designer/', Router::withSlash('/designer'));
+    }
 }

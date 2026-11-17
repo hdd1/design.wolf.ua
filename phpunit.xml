@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="tests/bootstrap.php"
+         colors="false"
+         failOnWarning="true">
+    <testsuites>
+        <testsuite name="Design">
+            <directory>tests/Design</directory>
+        </testsuite>
+    </testsuites>
+    <php>
+        <!-- Тесты не создают секрет в хранилище -->
+        <env name="DESIGN_CSRF_SECRET" value="phpunit-only-secret-0123456789abcdef0123456789abcdef"/>
+    </php>
+</phpunit>

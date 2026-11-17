@@ -377,98 +377,77 @@ final class OrdersTest extends TestCase
 - [ ] **Step 4: Запустить — проходят.** Expected: PASS.
 - [ ] **Step 5: Commit** — `git commit -m "Бриф і замовлення: чернетка, публікація, знімок питань"`.
 
-### Task 5: Страницы брифа и заказов
+### Task 5: Данные под макеты (доработка 2026-11-11)
+
+Макеты Pencil (`docs/design/pencil/design.wolf.ua.pen`, скриншоты — `/home/dev-ai/notes/design-wolf-ua-screens/`) добавили к этапу 1: фото и подпись у карточки продукта, пояснение под вопросом, название заказа, «чей ход», баланс и инициалы в шапке. Решения владельца 2026-11-11: название — необязательное поле в начале шага 2 (пусто → имя продукта); шаг 3 — карточка «Одразу обрати» видна, но неактивна с пометкой «Незабаром»; тестовый клиент — `customers.id = 29`.
 
 **Files:**
-- Create: `pages/brief-products.php`, `pages/brief-form.php`, `pages/brief-create.php`, `pages/orders.php`, `pages/order.php`, `pages/order-update.php`, `helpers/Design/Guard.php`
-- Create: `views/brief-products.php`, `views/brief-form.php`, `views/orders.php`, `views/order.php`, `views/login-required.php`, `assets/design.css`, `assets/design.js`
-- Test: `tests/Design/PagesHttpTest.php` (`@group http`)
+- Create: `docs/sql/stage1b.sql` (владелец запускает на dev)
+- Modify: `helpers/Design/Products.php`, `helpers/Design/Orders.php`, `helpers/Design/OrderStatus.php`
+- Create: `helpers/Design/Customers.php`
+- Test: `tests/Design/ProductsTest.php`, `tests/Design/OrdersTest.php`, `tests/Design/OrderStatusTest.php`, `tests/Design/CustomersTest.php` (`@group db`)
 
 **Interfaces:**
-- Consumes: `Auth::current()`, `Csrf::token/check`, `Products::visible/get`, `Orders::*`, `Brief` (задачи 1, 3, 4).
-- Produces: `Guard::customer(): int` — id вошедшего; гость → `views/login-required.php` (текст «Щоб створити бриф, увійдіть на wolf.ua» и ссылка `Config::loginUrl($текущий адрес)`) с кодом 401 и `exit`.
+- Produces:
+  - `Products::visible(): list<array{id:int, name:string, description:string, image:string}>`; `Products::get()` — плюс `description`, `image`; `questions()` — элементы `{q, note, hint}` (`note` и `hint` по умолчанию `''`).
+  - `Orders::create(int $customerId, int $productId, array $answers, string $title = ''): int`, `Orders::updateDraft(int $orderId, int $customerId, array $answers, string $title = ''): void`. Название: `trim`, не длиннее 255 символов (`mb_strlen`), иначе `BriefException('Назва занадто довга')`. В `get()` и `forCustomer()` — `title` (пусто → `product_name`), `product_id`, `mode`.
+  - `OrderStatus::turn(int $status, int $offers = 0, int $layouts = 0): array{mine:bool, text:string}` — «чей ход» для клиента:
 
-Поведение страниц:
-- `GET /brief/` — карточки `Products::visible()`, «Інше» последним.
-- `GET /brief/{product}/` — форма: для каждого вопроса подпись `q` и `<textarea placeholder="hint">`; скрытый/нет продукта → `Http::notFound()`. Две кнопки: «Зберегти чернетку» и «Опублікувати».
-- `POST /brief` — поля `product_id`, `answers[]`, `csrf`, `action` (`draft`|`publish`). Неверный CSRF → 403. `BriefException` → форма снова, с сообщением и уже введёнными ответами. Успех → redirect `/orders/{id}/`.
-- `GET /orders/` — таблица: №, продукт, статус (`OrderStatus::label`), дата.
-- `GET /orders/{id}/` — чужой/нет → 404. Черновик — та же форма по снимку, `POST /orders/{id}` (`action` `draft`|`publish`). Опубликованный — вопросы и ответы только для чтения; ответы — через `View::e` и `nl2br`.
-- `assets/design.js`: на `submit` формы — `disabled` всем кнопкам этой формы.
+    | Статус | mine | text |
+    |---|---|---|
+    | DRAFT | true | «Ваш хід: допишіть і опублікуйте бриф» |
+    | COLLECTING, 0 пропозиций | false | «Чекаємо пропозицій від дизайнерів» |
+    | COLLECTING, N > 0 | true | «Ваш хід: оберіть дизайнера · N пропозицій» (склонение: 1 пропозиція, 2–4 пропозиції, 5+ пропозицій) |
+    | WAITING_DESIGNER | false | «Чекаємо відповіді дизайнера» |
+    | IN_WORK, 0 макетов | false | «Дизайнер працює над макетами» |
+    | IN_WORK, макеты есть | true | «Ваш хід: перевірте макети і натисніть «Купую»» |
+    | AWAITING_INVOICE | false | «Чекаємо оплату рахунку — макети відкриються після неї» |
+    | PURCHASED | false | «Готово · макети у вашій хмарі wolf.ua» |
+    | REWORK | false | «Дизайнер працює над змінами» |
+    | CANCELLED | false | «Скасовано» |
+  - `Customers::header(int $id): ?array{name:string, short:string, initials:string, balance:int}` — `short` = «Олена М.», `initials` = «ОМ», `balance` = `round(customers.inv_sum)`; нет клиента → `null`.
 
-- [ ] **Step 1: Написать падающий HTTP-тест**
+- [ ] **Step 1: Падающие тесты** — `test_visible_has_description_and_image`, `test_questions_parsing` (с `note`), `test_title_saved_and_defaults_to_product_name`, `test_title_too_long_is_rejected`, `test_turn_table` (все строки таблицы, включая 1/3/5 пропозиций), `test_header_of_customer_29` (непустые `name`, `initials` из 1–2 заглавных букв, `balance` — `int`) и `test_header_of_unknown_is_null`.
+- [ ] **Step 2: Запустить — падают.** `vendor/bin/phpunit` Expected: FAIL (нет колонок/методов).
+- [ ] **Step 3: Владелец запускает `docs/sql/stage1b.sql` на dev** (копия `/home/dev-ai/notes/design-stage1b.sql`).
+- [ ] **Step 4: Реализовать** по Interfaces.
+- [ ] **Step 5: Запустить — проходят.** `vendor/bin/phpunit` Expected: PASS.
+- [ ] **Step 6: Commit** — `Дані під макети: фото і підпис продукту, назва замовлення, «чий хід», шапка`.
 
-Как `calendar.wolf.ua/tests/Cal2/ShowcaseHttpTest.php`: `fetch(string $path, string $cookie = '', ?array $post = null)` через `https://dev.design.wolf.ua` с `CURLOPT_RESOLVE` на 127.0.0.1. Тестовый клиент — `getenv('DESIGN_TEST_CUSTOMER_ID')`: кука `wolfid` строится из его `customer_pass` и User-Agent запроса (`DesignTest/1`).
+### Task 6: Страницы этапа 1 по макетам
 
-```php
-/** @group http */
-final class PagesHttpTest extends TestCase
-{
-    public function test_guest_sees_login_required(): void
-    {
-        [$code, , $body] = self::fetch('/brief/');
-        $this->assertSame(401, $code);
-        $this->assertStringContainsString('увійдіть на wolf.ua', $body);
-    }
+Экраны: 6.1 Головна, 6.1 Гість, 6.2 Бриф крок 1–3 (с ошибкой и «чернетку збережено»), 6.3 Мої замовлення (и пусто), 6.4 «ще немає пропозицій» — как вид опубликованного брифа, 6.10 404. Каждый — 1440 и 390 px.
 
-    public function test_brief_list_and_form(): void
-    {
-        [$code, , $body] = self::fetch('/brief/', self::cookie());
-        $this->assertSame(200, $code);
-        $this->assertStringContainsString('Інше', $body);
-    }
+**Files:**
+- Modify: `helpers/Design/Router.php`, `views/layout.php`, `assets/css/app.css`, `pages/home.php`, `views/home.php`, `views/404.php`
+- Create: `helpers/Design/Guard.php`, `pages/brief-products.php`, `pages/brief-form.php`, `pages/brief-create.php`, `pages/orders.php`, `pages/order.php`, `pages/order-mode.php`, `pages/order-update.php`, `views/brief-steps.php`, `views/brief-products.php`, `views/brief-form.php`, `views/brief-mode.php`, `views/orders.php`, `views/order.php`, `views/login-required.php`, `assets/js/brief.js`
+- Test: `tests/Design/RouterTest.php`, `tests/Design/PagesHttpTest.php` (`@group http`)
 
-    public function test_hidden_product_form_is_404(): void      // Review Focus 5
-    {
-        $this->assertSame(404, self::fetch('/brief/999999999/', self::cookie())[0]);
-    }
+**Interfaces:**
+- Consumes: всё из задач 1, 3, 4, 5.
+- Produces: маршруты (к семи из задачи 1 добавляется `GET /orders/{id}/mode/` → `order-mode`); `Guard::customer(): int` (гость → `views/login-required.php`, код 401).
 
-    public function test_create_without_csrf_is_403(): void
-    {
-        $this->assertSame(403, self::fetch('/brief', self::cookie(), ['product_id' => 1, 'answers' => ['x'], 'action' => 'draft'])[0]);
-    }
+Поведение:
+- **Шапка** (`layout.php`): логотип wolf + «Майстерня дизайну / друкарня wolf.ua»; меню «Новий бриф · Мої замовлення · Дизайнери» (последний пункт до этапа 2 — неактивный текст); баланс «Баланс 2 450 грн» и инициалы с коротким именем (`Customers::header`). Гостю — кнопка «Увійти» (`Config::loginUrl`).
+- **Шаг 1** `GET /brief/`: карточки `Products::visible()` с фото (`/assets/img/products/<image>`) и подписью; у «Інше» вместо фото — знак «+». Выбор карточки → кнопка «Далі: питання» ведёт на `/brief/{id}/`.
+- **Шаг 2** `GET /brief/{product}/` (новый) или `GET /orders/{id}/` для черновика: «<Продукт> · змінити» (ссылка на шаг 1, только для нового брифа), заголовок «Розкажіть про <продукт в винительном падеже, пока — название продукта строчными>», необязательное поле «Назва замовлення» (пример «Візитка для кавʼярні «Зерно»»), вопросы: подпись `q`, серая строка `note`, `<textarea placeholder="hint">`; справа блок «Як написати бриф» (4 пункта из макета). Кнопки «Назад», «Зберегти чернетку», «Далі: як обрати дизайнера». POST: `/brief` (новый) или `/orders/{id}` (черновик), поля `title`, `answers[]`, `csrf`, `action` = `draft` | `next`. `draft` → редирект на `/orders/{id}/?saved=1` (тост «Чернетку збережено. Її видно в «Мої замовлення»» и метка «Чернетку збережено о HH:MM»); `next` → `/orders/{id}/mode/`. `BriefException` → та же форма с введённым и сообщением над формой (как экран «помилка»).
+- **Шаг 3** `GET /orders/{id}/mode/` (только черновик своего клиента, иначе 404): карточка «Зібрати пропозиції» выбрана; «Одразу обрати дизайнера» — неактивна, пометка «Незабаром». «Назад» → `/orders/{id}/`, «Зберегти чернетку» → `/orders/`, «Опублікувати бриф» → POST `/orders/{id}` `action=publish` → `/orders/{id}/`.
+- **Заказ после публикации** `GET /orders/{id}/`: по экрану 6.4 «ще немає пропозицій»: бриф только для чтения (название, продукт, вопросы и ответы — `View::e` + `nl2br`), бейдж статуса, строка «чей ход».
+- **Мої замовлення** `GET /orders/`: две группы — «Ваш хід (N)» и «Чекаємо іншу сторону або завершено (N)» по `OrderStatus::turn()`; строка: «№id · дата», название, бейдж статуса с иконкой, строка хода, «Дизайнера ще не обрано», «—». Пусто — экран «Ще немає замовлень». Кнопка «+ Створити бриф».
+- **404** — по экрану 6.10.
+- `assets/js/brief.js`: выбор карточки на шаге 1; блокировка кнопок на `submit`; закрытие тоста.
+- Вёрстка — Bootstrap 5 + `app.css` по токенам `.pen`, 1440 и 390 px.
 
-    /** Ответы по числу вопросов первого продукта: первый — $first, остальные пустые */
-    private static function answers(string $first): array
-    {
-        $pid = Products::visible()[0]['id'];
-        return [$pid, array_merge([$first], array_fill(0, count(Products::get($pid)['questions']) - 1, ''))];
-    }
-
-    public function test_foreign_order_page_is_404(): void         // Review Focus 1
-    {
-        [$pid, $a] = self::answers('А5');
-        $foreign = Orders::create(999999002, $pid, $a);
-        $this->assertSame(404, self::fetch("/orders/$foreign/", self::cookie())[0]);
-    }
-
-    public function test_order_page_escapes_html(): void           // Review Focus 2
-    {
-        [$pid, $a] = self::answers('<script>alert(1)</script>');
-        $id = Orders::create((int)getenv('DESIGN_TEST_CUSTOMER_ID'), $pid, $a);
-        Orders::publish($id, (int)getenv('DESIGN_TEST_CUSTOMER_ID'));
-        [$code, , $body] = self::fetch("/orders/$id/", self::cookie());
-        $this->assertSame(200, $code);
-        $this->assertStringContainsString('&lt;script&gt;alert(1)&lt;/script&gt;', $body);
-        $this->assertStringNotContainsString('<script>alert(1)', $body);
-    }
-
-    public static function tearDownAfterClass(): void
-    {
-        Sql::exec('DELETE FROM design_orders WHERE customer_id IN (?, ?)', [(int)getenv('DESIGN_TEST_CUSTOMER_ID'), 999999002]);
-    }
-}
-```
-
-- [ ] **Step 2: Запустить — падают.** Run: `DESIGN_TEST_CUSTOMER_ID=<id> vendor/bin/phpunit --group http` Expected: FAIL (404 на маршрутах без страниц).
-- [ ] **Step 3: Реализовать страницы, шаблоны, `Guard`, assets** по поведению выше. Вёрстка — Bootstrap 5, без своих фреймворков.
-- [ ] **Step 4: Запустить — проходят.** Run: `DESIGN_TEST_CUSTOMER_ID=<id> vendor/bin/phpunit` (все группы). Expected: PASS.
-- [ ] **Step 5: Ручная проверка в браузере** — войти на dev.wolf.ua тестовым клиентом, открыть `https://dev.design.wolf.ua/brief/`, создать черновик с апострофом, опубликовать, двойной клик по «Опублікувати» не создаёт дубль.
-- [ ] **Step 6: Commit** — `git commit -m "Сторінки брифу і моїх замовлень"`.
+- [ ] **Step 1: Падающие тесты.** `RouterTest` — маршрут `order-mode`. `PagesHttpTest` (как `calendar.wolf.ua/tests/Cal2/ShowcaseHttpTest.php`, клиент `DESIGN_TEST_CUSTOMER_ID=29`, кука `wolfid` из его `customer_pass` и UA `DesignTest/1`): `test_guest_sees_login_required` (401, «увійдіть на wolf.ua»), `test_brief_products_page` (200, «Інше», «vizytka.webp»), `test_hidden_product_form_is_404`, `test_create_without_csrf_is_403`, `test_draft_then_mode_then_publish` (POST draft → 302 на `/orders/{id}/?saved=1`; страница содержит «Чернетку збережено»; GET `/orders/{id}/mode/` 200 и «Незабаром»; POST publish → статус COLLECTING), `test_empty_answers_show_error` (200 и «Заповніть хоча б одну відповідь», заказ не создан), `test_foreign_order_page_is_404`, `test_order_page_escapes_html`, `test_orders_groups` («Ваш хід», «Чекаємо іншу сторону»). Удаление созданных заказов — в `tearDownAfterClass`.
+- [ ] **Step 2: Запустить — падают.** `DESIGN_TEST_CUSTOMER_ID=29 vendor/bin/phpunit` Expected: FAIL.
+- [ ] **Step 3: Реализовать** страницы, шаблоны, стили, JS.
+- [ ] **Step 4: Запустить — проходят.** Expected: PASS.
+- [ ] **Step 5: Скриншоты** 1440 и 390 px через Playwright (`/opt/pw-browsers/chromium` не нужен — `require('playwright')`) с кукой клиента 29 и сравнение глазами с макетами; расхождения поправить.
+- [ ] **Step 6: Commit** — `Сторінки етапу 1 за макетами`.
 
 ## Вопросы до старта (к владельцу)
 
-1. **Адрес входа wolf.ua с возвратом.** Куда вести гостя, чтобы после входа он вернулся на design? Пока `Config::loginUrl()` ведёт на главную wolf.ua.
+1. **Адрес входа wolf.ua с возвратом.** (не ответили — гостя ведём на главную wolf.ua, строку «повернемо вас» не показываем) Куда вести гостя, чтобы после входа он вернулся на design? Пока `Config::loginUrl()` ведёт на главную wolf.ua.
 2. **Тестовый клиент на dev** — какой `customers.id` использовать для HTTP-тестов.
 3. **DNS `dev.design.wolf.ua`** в Cloudflare — завести так же, как `dev.calendar.wolf.ua`.
 4. **Репозиторий** `hdd1/design.wolf.ua` — создать пустым на GitHub к первому пушу.

@@ -17,6 +17,8 @@ final class Router
         ['GET', '#^/orders/(?<id>' . self::ID . ')/$#', 'order'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/mode/$#', 'order-mode'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')$#', 'order-update'],
+        // Без розширення: nginx-локація статики (\.jpg|png…$) такий шлях не перехоплює. Оригінали сюди не потрапляють
+        ['GET', '#^/media/(?<designer>' . self::ID . ')/(?<name>\d{1,9}-(?:card|view)|avatar-[0-9a-f]{8})$#', 'media'],
     ];
 
     /** @return array{page:string,params:array<string,string>}|null */

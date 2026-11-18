@@ -28,6 +28,16 @@ final class Media
         return \ImageGlobal::encode($file);
     }
 
+    /**
+     * Застаріле: adminka до 2026-11-19; TTL ігнорується.
+     * Лишається, щоб design і adminka можна було викотити в будь-якому порядку (стара adminka кличе signedUrl).
+     * @deprecated використовуйте Media::url
+     */
+    public static function signedUrl(int $designerId, string $name, int $ttl = 3600, ?int $now = null): string
+    {
+        return self::url($designerId, $name);
+    }
+
     /** Шлях до файлу в сховищі */
     public static function path(int $designerId, string $name): string
     {

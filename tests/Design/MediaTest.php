@@ -16,9 +16,12 @@ final class MediaTest extends TestCase
     private string $root;
     /** @var list<string> симлінки cloud-links, створені тестом */
     private array $links = [];
+    /** @var array{dirs: array<string, true>, links: array<string, true>} стан cloud-links/ci до тесту */
+    private array $cdn;
 
     protected function setUp(): void
     {
+        $this->cdn = CdnLinksGuard::snapshot();
         $this->oldRoot = getenv('DESIGN_STORAGE_ROOT');
         $this->oldServerName = $_SERVER['SERVER_NAME'] ?? null;
         $this->root = sys_get_temp_dir() . '/design-media-' . bin2hex(random_bytes(4));
@@ -32,6 +35,8 @@ final class MediaTest extends TestCase
         foreach ($this->links as $l) {
             if (is_link($l)) unlink($l);
         }
+        // шарди xx/yy/zz, які encode створив від користувача тесту (root), — інакше php-fpm не зможе в них писати
+        CdnLinksGuard::cleanup($this->cdn);
         foreach (glob($this->root . '/portfolio/*/*') ?: [] as $f) unlink($f);
         foreach (glob($this->root . '/portfolio/*') ?: [] as $d) rmdir($d);
         @rmdir($this->root . '/portfolio');
@@ -109,6 +114,17 @@ final class MediaTest extends TestCase
         rmdir($this->root . '/portfolio');
         $this->assertSame('', Media::url(12, '345-card'));
         $this->assertDirectoryDoesNotExist($this->root . '/portfolio');
+    }
+
+    /** Застарілий signedUrl (adminka до 2026-11-19) — той самий URL, TTL і $now ігноруються: design і adminka можна викотити в будь-якому порядку */
+    public function test_signed_url_is_deprecated_alias_of_url(): void
+    {
+        $this->file('345-card.webp');
+        $url = Media::url(12, '345-card');
+        $this->links[] = self::LINKS . substr($url, strlen(self::CDN_DEV));
+        $this->assertSame($url, Media::signedUrl(12, '345-card'));
+        $this->assertSame($url, Media::signedUrl(12, '345-card', 60, 1700000000));
+        $this->assertSame('', Media::signedUrl(12, '345'));
     }
 
     public function test_path(): void

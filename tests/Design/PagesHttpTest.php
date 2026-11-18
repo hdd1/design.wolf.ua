@@ -720,6 +720,7 @@ final class PagesHttpTest extends TestCase
         [, , $body] = self::fetch("/designers/$id/", self::cookie());
         // адреси прихованої роботи сторінка не виводить (закритість — тим, що посилання немає)
         $_SERVER['SERVER_NAME'] = 'dev.design.wolf.ua';
+        $cdn = CdnLinksGuard::snapshot();
         try {
             foreach (['card', 'view'] as $kind) {
                 $url = \Design\Media::url($id, "$hidden-$kind");
@@ -728,6 +729,7 @@ final class PagesHttpTest extends TestCase
             }
         } finally {
             unset($_SERVER['SERVER_NAME']);
+            CdnLinksGuard::cleanup($cdn);   // симлінки й шарди, створені в процесі тесту (root)
         }
         $this->assertStringContainsString('Портфоліо · 1 робота', $body);
         $this->assertStringContainsString('>ІП<', $body);   // ініціали, фото немає

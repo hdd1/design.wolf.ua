@@ -71,4 +71,20 @@ final class RouterTest extends TestCase
         $this->assertNull(Router::match('PUT', '/offers/345/messages'));
         $this->assertNull(Router::withSlash('/offers/345/messages'));
     }
+
+    public function test_designer_offer_routes(): void
+    {
+        $this->assertSame(['page' => 'feed', 'params' => []], Router::match('GET', '/feed/'));
+        $this->assertSame(['page' => 'feed-order', 'params' => ['id' => '345']], Router::match('GET', '/feed/345/'));
+        $this->assertSame(['page' => 'feed-offer', 'params' => ['id' => '345']], Router::match('POST', '/feed/345'));
+        $this->assertSame(['page' => 'my-offers', 'params' => []], Router::match('GET', '/my-offers/'));
+        $this->assertNull(Router::match('POST', '/feed/'));
+        $this->assertNull(Router::match('POST', '/feed/345/'));
+        $this->assertNull(Router::match('GET', '/feed/abc/'));
+        $this->assertNull(Router::match('GET', '/feed/1234567890/'));
+        $this->assertNull(Router::match('POST', '/my-offers/'));
+        $this->assertSame('/feed/', Router::withSlash('/feed'));
+        $this->assertSame('/feed/345/', Router::withSlash('/feed/345'));
+        $this->assertSame('/my-offers/', Router::withSlash('/my-offers'));
+    }
 }

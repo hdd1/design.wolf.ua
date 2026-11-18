@@ -27,6 +27,10 @@ final class Router
         ['GET', '#^/designers/(?<id>' . self::ID . ')/$#', 'designer-public'],
         ['GET', '#^/offers/(?<id>' . self::ID . ')/messages$#', 'offer-messages'],
         ['POST', '#^/offers/(?<id>' . self::ID . ')/messages$#', 'offer-message-add'],
+        ['GET', '#^/feed/$#', 'feed'],
+        ['GET', '#^/feed/(?<id>' . self::ID . ')/$#', 'feed-order'],
+        ['POST', '#^/feed/(?<id>' . self::ID . ')$#', 'feed-offer'],
+        ['GET', '#^/my-offers/$#', 'my-offers'],
     ];
 
     /** @return array{page:string,params:array<string,string>}|null */

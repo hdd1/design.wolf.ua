@@ -307,6 +307,14 @@ final class Offers
         return $r === null ? null : self::row($r);
     }
 
+    /** Пропозиція (будь-якого статусу) цього дизайнера на замовлення — у вигляді get(); немає — null */
+    public static function forDesigner(int $orderId, int $designerId): ?array
+    {
+        $r = Sql::one('SELECT ' . self::COLS . ' FROM design_offers f JOIN design_orders o ON o.id = f.order_id
+                       WHERE f.order_id = ? AND f.designer_id = ?', [$orderId, $designerId]);
+        return $r === null ? null : self::row($r);
+    }
+
     /**
      * Хто й як може бути в листуванні пропозиції: клієнт замовлення або дизайнер пропозиції, інакше null.
      * Писати — поки пропозиція запрошена / надіслана / обрана і замовлення не скасоване; після вибору — лише в обраній

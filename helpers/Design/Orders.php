@@ -52,7 +52,24 @@ final class Orders
             'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at
              FROM design_orders o JOIN design_products p ON p.id = o.product_id
              WHERE o.id = ? AND o.customer_id = ?', [$orderId, $customerId]);
-        if ($r === null) return null;
+        return $r === null ? null : self::withAnswers($r);
+    }
+
+    /**
+     * Замовлення без перевірки власника — для сторінки дизайнера (хто що бачить, вирішує сторінка)
+     * @return array{id:int, customer_id:int, status:int, mode:int, product_id:int, product_name:string, title:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string}|null
+     */
+    public static function find(int $orderId): ?array
+    {
+        $r = Sql::one(
+            'SELECT o.id, o.customer_id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at
+             FROM design_orders o JOIN design_products p ON p.id = o.product_id
+             WHERE o.id = ?', [$orderId]);
+        return $r === null ? null : ['customer_id' => (int)$r['customer_id']] + self::withAnswers($r);
+    }
+
+    private static function withAnswers(array $r): array
+    {
         $row = self::row($r);
         // Колонка JSON у MySQL сама переставляє ключі — повертаємо пари у вигляді {q, a}
         $answers = json_decode((string)$r['answers'], true);

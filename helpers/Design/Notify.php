@@ -2,12 +2,9 @@
 
 namespace Design;
 
-/** Сповіщення через api2 (sms/add): повідомлення на сайті wolf.ua і SMS */
+/** Сповіщення через спільну систему api2 (sms/add, CalcApiGlobal): повідомлення на сайті wolf.ua і SMS */
 final class Notify
 {
-    private const CONNECT_TIMEOUT = 3;
-    private const TIMEOUT = 5;
-
     /** @var list<array> що «відправлено» при DESIGN_NOTIFY=off (тести); у бойовому режимі не наповнюється */
     public static array $sent = [];
 
@@ -25,7 +22,7 @@ final class Notify
             return;
         }
         try {
-            $result = self::$transport !== null ? (self::$transport)($params) : self::post($params);
+            $result = self::$transport !== null ? (self::$transport)($params) : \CalcApiGlobal::post('sms/add', $params);
         } catch (\Throwable $e) {
             self::fail($params, $e->getMessage());
             return;
@@ -34,34 +31,6 @@ final class Notify
         if (!is_array($result) || !empty($result['error'])) {
             self::fail($params, is_string($result) ? $result : (is_array($result) ? json_encode($result, JSON_UNESCAPED_UNICODE) : ''));
         }
-    }
-
-    /** Той самий запит, що CalcApiGlobal::post, але з таймаутами: api2 завис би — не повісимо php-fpm */
-    private static function post(array $params)
-    {
-        $params['request_ip'] = \CalcApiGlobal::getIP();
-        $url = 'https://' . (Config::isDev() ? 'dev.' : '') . 'api2.wolf.ua/api/sms/add';
-
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'authorization: ' . \CalcApiGlobal::globalToken()]);
-        curl_setopt($ch, CURLOPT_HEADER, 0);
-        curl_setopt($ch, CURLOPT_POST, 1);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($params, JSON_NUMERIC_CHECK));
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::CONNECT_TIMEOUT);
-        curl_setopt($ch, CURLOPT_TIMEOUT, self::TIMEOUT);
-        if (Config::isDev()) {
-            // як у CalcApiGlobal: на dev сертифікат api2 не перевіряється
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        }
-        $raw = curl_exec($ch);
-        curl_close($ch);
-
-        if ($raw === false) return false;
-        $decoded = json_decode((string)$raw, true);
-        return is_array($decoded) ? $decoded : (string)$raw;
     }
 
     private static function fail(array $params, string $reason): void

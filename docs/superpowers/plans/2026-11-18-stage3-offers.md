@@ -140,6 +140,23 @@
 - [ ] **Step 2–4:** падают → реализовать → проходят.
 - [ ] **Step 5: Commit** — «Листування: відправка і опитування».
 
+### Task 5a: Картинки портфолио через i.fastcdn (решение владельца 2026-11-18)
+
+**Files:**
+- Modify: `helpers/Design/Media.php`, `helpers/Design/Portfolio.php`, `helpers/Design/Images.php`, `helpers/Design/Router.php`, `tests/Design/RouterTest.php`, `tests/Design/MediaTest.php`, тесты страниц, где проверяется `/media/…`
+- Delete: `pages/media.php` (маршрут `/media/…` убрать)
+- Modify (adminka, ветка `feature/shulaev`): `pages/design-applications.php` — `Media::signedUrl` → `Media::url`
+
+**Interfaces:**
+- `Media::url(int $designerId, string $name): string` — сигнатура прежняя (все вызовы в views/pages не меняются); возвращает `\ImageGlobal::encode(<путь к .webp>)` — как `Cal2\View::cdn()` в calendar (`require_once '/home/connect/cdn.wolf.ua/helpers/ImageGlobal.php'`), т. е. `https://{dev.}i.fastcdn.kiev.ua/ci/ab/cd/ef/….webp`. Имена — только `{workId}-card`, `{workId}-view`, `avatar-<8 hex>`; оригиналы `.jpg/.png` **никогда** не кодируются.
+- `Media::signedUrl`, `Media::canView` и маршрут `/media/…` удаляются; `Media::path` остаётся, если нужен.
+- Права: папки портфолио — `0755` (`Portfolio::dir`, `Images`), файлы — `0644` (явный `chmod` после записи). На проде nginx работает от `nginx` и читает только «other»; `design_storage` там уже 755, `csrf.secret` 640 — не трогать.
+- Скрытые работы и не одобренные дизайнеры закрыты тем, что их ссылки не выводятся (каталог, профиль); существующие тесты страниц на это остаются.
+
+- [ ] **Step 1: Тесты** — `MediaTest`: `test_url_is_fastcdn_ci_webp` (путь начинается с `https://dev.i.fastcdn.kiev.ua/ci/` при `SERVER_NAME=dev.design.wolf.ua`, оканчивается `.webp`, симлинк в `/home/connect/cloud-links/ci/` указывает на нужный файл), `test_original_never_encoded`; `Portfolio`/`Images`: новые файлы `0644`, папки `0755`; `RouterTest`: `/media/1/2-card` → null; HTTP: картинка из `Media::url` отдаётся `dev.i.fastcdn.kiev.ua` (curl с `--resolve` на 127.0.0.1) 200 `image/webp`.
+- [ ] **Step 2–4:** падают → реализовать → проходят (весь набор).
+- [ ] **Step 5: Commit** — design: «Картинки портфоліо через i.fastcdn»; adminka: только `pages/design-applications.php`, «Майстерня дизайну: картинки заявок через i.fastcdn».
+
 ### Task 6: Страницы дизайнера
 
 **Files:**

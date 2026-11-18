@@ -39,8 +39,9 @@ $href = static fn(int $p): string => View::e('/designers/' . ($q !== '' || $p > 
             <?php if ($d['about'] !== ''): ?><p class="about"><?= View::e($d['about']) ?></p><?php else: ?><div class="about"></div><?php endif ?>
             <div class="thumbs">
               <?php for ($i = 0; $i < 3; $i++): ?>
-                <?php if (isset($d['works'][$i])): ?>
-                  <a class="thumb" href="<?= $url ?>" tabindex="-1" aria-hidden="true"><img src="<?= View::e(Media::url($d['customer_id'], $d['works'][$i] . '-card')) ?>" alt="" loading="lazy"></a>
+                <?php $thumb = isset($d['works'][$i]) ? Media::url($d['customer_id'], $d['works'][$i] . '-card') : '' ?>
+                <?php if ($thumb !== ''): ?>
+                  <a class="thumb" href="<?= $url ?>" tabindex="-1" aria-hidden="true"><img src="<?= View::e($thumb) ?>" alt="" loading="lazy"></a>
                 <?php else: ?><span class="thumb empty"></span><?php endif ?>
               <?php endfor ?>
             </div>

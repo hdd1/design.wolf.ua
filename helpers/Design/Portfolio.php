@@ -21,9 +21,7 @@ final class Portfolio
     public static function dir(int $designerId): string
     {
         $dir = Config::storageRoot() . "/portfolio/$designerId";
-        if (!is_dir($dir) && !@mkdir($dir, 0770, true) && !is_dir($dir)) {
-            throw new \RuntimeException("Не вдалося створити папку $dir");
-        }
+        Images::ensureDir($dir);
         return $dir;
     }
 

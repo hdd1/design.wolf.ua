@@ -68,6 +68,45 @@ final class PagesHttpTest extends TestCase
         return [$code, substr($raw, 0, $hs), substr($raw, $hs)];
     }
 
+    /** Картинка з CDN (dev.i.fastcdn.kiev.ua) через локальний nginx; адреса — абсолютна, як її віддає Media::url */
+    private static function fetchCdn(string $url): array
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RESOLVE        => ['dev.i.fastcdn.kiev.ua:443:127.0.0.1'],
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER         => true,
+            CURLOPT_USERAGENT      => self::UA,
+        ]);
+        $raw = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $hs = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        curl_close($ch);
+        return [$code, substr((string)$raw, 0, $hs), substr((string)$raw, $hs)];
+    }
+
+    /** Адреса WebP-картинки портфоліо на dev CDN */
+    private const CDN_RE = 'https://dev\.i\.fastcdn\.kiev\.ua/ci/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]+\.webp';
+
+    /** Картинка по адресі CDN віддається як 200 image/webp */
+    private function assertCdnWebp(string $url): void
+    {
+        $this->assertMatchesRegularExpression('#^' . self::CDN_RE . '$#', $url);
+        [$code, $h, $img] = self::fetchCdn($url);
+        $this->assertSame(200, $code, $url);
+        $this->assertMatchesRegularExpression('#^content-type:\s*image/webp\s*$#mi', $h);
+        $this->assertSame('RIFF', substr($img, 0, 4));
+        $this->assertSame('WEBP', substr($img, 8, 4));
+    }
+
+    /** Симлінки cloud-links/ci, які сторінки створили для файлів дизайнера (Media::url) */
+    private static function dropCdnLinks(int $designerId): void
+    {
+        exec('find /home/connect/cloud-links/ci -lname ' . escapeshellarg(Config::storageRoot() . "/portfolio/$designerId/*") . ' -delete');
+    }
+
     private static function csrf(string $html): string
     {
         return preg_match('/name="csrf" value="([0-9a-f]{64})"/', $html, $m) ? $m[1] : '';
@@ -262,6 +301,7 @@ final class PagesHttpTest extends TestCase
         foreach ($this->fakes as $id) {
             Sql::exec('DELETE FROM design_portfolio WHERE designer_id = ?', [$id]);
             Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [$id]);
+            self::dropCdnLinks($id);
             exec('rm -rf ' . escapeshellarg(Config::storageRoot() . "/portfolio/$id"));
         }
         $this->fakes = [];
@@ -270,6 +310,7 @@ final class PagesHttpTest extends TestCase
         $me = self::me();
         Sql::exec('DELETE FROM design_portfolio WHERE designer_id = ?', [$me]);
         Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [$me]);
+        self::dropCdnLinks($me);
         exec('rm -rf ' . escapeshellarg(Config::storageRoot() . "/portfolio/$me"));
     }
 
@@ -361,7 +402,7 @@ final class PagesHttpTest extends TestCase
         $this->assertSame([], self::workIds($me));
     }
 
-    public function test_upload_ok_returns_media_urls(): void
+    public function test_upload_ok_returns_cdn_urls(): void
     {
         $me = $this->designer();
         [, $csrf] = $this->designerPage();
@@ -370,16 +411,15 @@ final class PagesHttpTest extends TestCase
         $this->assertSame(200, $code);
         $id = (int)$json['id'];
         $this->assertGreaterThan(0, $id);
-        $this->assertSame(['id' => $id, 'card' => "/media/$me/$id-card", 'view' => "/media/$me/$id-view", 'count' => $before + 1], $json);
+        $this->assertSame(['id', 'card', 'view', 'count'], array_keys($json));
+        $this->assertSame($before + 1, $json['count']);
+        $this->assertNotSame($json['card'], $json['view']);
 
-        // /media через nginx: 200 і WebP (закриває перевірку з задачі 5)
-        [$code, $h, $img] = self::fetch($json['card'], self::cookie());
-        $this->assertSame(200, $code);
-        $this->assertMatchesRegularExpression('#^content-type:\s*image/webp\s*$#mi', $h);
-        $this->assertSame('RIFF', substr($img, 0, 4));
-        $this->assertSame('WEBP', substr($img, 8, 4));
-        $this->assertSame(200, self::fetch($json['view'], self::cookie())[0]);
-        $this->assertSame(404, self::fetch($json['card'])[0]);                      // гостю — ні
+        // Картинки віддає i.fastcdn: 200 і WebP
+        $this->assertCdnWebp($json['card']);
+        $this->assertCdnWebp($json['view']);
+        // Оригінал URL не має: симлінків на нього немає
+        $this->assertSame('', trim((string)shell_exec('find /home/connect/cloud-links/ci -lname ' . escapeshellarg(Config::storageRoot() . "/portfolio/$me/$id.*"))));
     }
 
     public function test_work_title_hide_order_delete(): void
@@ -427,11 +467,9 @@ final class PagesHttpTest extends TestCase
         [, $csrf] = $this->designerPage();
         [$code, $json] = self::upload('/designer/photo', $this->jpeg('me.jpg'), $csrf);
         $this->assertSame(200, $code, json_encode($json, JSON_UNESCAPED_UNICODE));
-        $this->assertMatchesRegularExpression("#^/media/$me/avatar-[0-9a-f]{8}$#", $json['photo']);
-        $this->assertSame(basename($json['photo']) . '.webp', Designers::get($me)['photo']);
-        [$code, $h] = self::fetch($json['photo'], self::cookie());
-        $this->assertSame(200, $code);
-        $this->assertMatchesRegularExpression('#^content-type:\s*image/webp\s*$#mi', $h);
+        $this->assertCdnWebp($json['photo']);
+        $link = '/home/connect/cloud-links/' . substr($json['photo'], strlen('https://dev.i.fastcdn.kiev.ua/'));
+        $this->assertSame(Config::storageRoot() . "/portfolio/$me/" . Designers::get($me)['photo'], readlink($link));
     }
 
     public function test_save_keeps_input_on_error_then_saves(): void
@@ -601,15 +639,15 @@ final class PagesHttpTest extends TestCase
         foreach (['На розгляді', 'Заблокований', 'Чернетка'] as $hidden) $this->assertStringNotContainsString($hidden, $body);
         foreach ([$pending, $blocked, $draft] as $id) $this->assertStringNotContainsString("/designers/$id/", $body);
         // лише 3 картки робіт, без рейтингу, замовлень, міста
-        $this->assertSame(3, preg_match_all('#<img[^>]+src="/media/' . $ok . '/\d+-card"#', $body));
+        $this->assertSame(3, preg_match_all('#<img[^>]+src="' . self::CDN_RE . '"#', $body));
         $main = substr($body, strpos($body, '<main>'));    // у шапці є «Мої замовлення»
         foreach (['замовлен', 'Замовити у', 'Місто'] as $banned) $this->assertStringNotContainsString($banned, $main);
         $this->assertDoesNotMatchRegularExpression('#fa-star|рейтинг#iu', substr($body, strpos($body, '<main>')));
         $this->assertStringContainsString('href="/designers/" class="active">Дизайнери', $body);
 
         // картинка картки справді віддається
-        preg_match('#/media/' . $ok . '/\d+-card#', $body, $m);
-        $this->assertSame(200, self::fetch($m[0], self::cookie())[0]);
+        preg_match('#<img[^>]+src="(' . self::CDN_RE . ')"#', $body, $m);
+        $this->assertCdnWebp($m[1]);
     }
 
     public function test_catalog_search_and_empty_state(): void
@@ -667,7 +705,8 @@ final class PagesHttpTest extends TestCase
         $this->assertStringContainsString('rel="noopener nofollow ugc"', $body);
         $this->assertStringContainsString('Усі дизайнери', $body);
         $this->assertStringContainsString('data-bs-toggle="modal"', $body);
-        $this->assertMatchesRegularExpression('#/media/' . $id . '/\d+-view#', $body);
+        $this->assertSame(2, preg_match_all('#data-view="' . self::CDN_RE . '"#', $body));
+        $this->assertStringNotContainsString('/media/', $body);
         foreach (['замовлен', 'Замовити у'] as $banned) $this->assertStringNotContainsString($banned, substr($body, strpos($body, '<main>')));
         $this->assertStringContainsString('href="/designers/" class="active">Дизайнери', $body);
     }
@@ -678,7 +717,17 @@ final class PagesHttpTest extends TestCase
         $hidden = (int)Sql::value('SELECT MIN(id) FROM design_portfolio WHERE designer_id = ?', [$id]);
         Sql::exec('UPDATE design_portfolio SET shw = 0 WHERE id = ?', [$hidden]);
         [, , $body] = self::fetch("/designers/$id/", self::cookie());
-        $this->assertStringNotContainsString("/media/$id/$hidden-", $body);
+        // адреси прихованої роботи сторінка не виводить (закритість — тим, що посилання немає)
+        $_SERVER['SERVER_NAME'] = 'dev.design.wolf.ua';
+        try {
+            foreach (['card', 'view'] as $kind) {
+                $url = \Design\Media::url($id, "$hidden-$kind");
+                $this->assertNotSame('', $url);
+                $this->assertStringNotContainsString($url, $body);
+            }
+        } finally {
+            unset($_SERVER['SERVER_NAME']);
+        }
         $this->assertStringContainsString('Портфоліо · 1 робота', $body);
         $this->assertStringContainsString('>ІП<', $body);   // ініціали, фото немає
     }

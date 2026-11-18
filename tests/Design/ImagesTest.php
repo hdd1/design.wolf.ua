@@ -381,6 +381,39 @@ final class ImagesTest extends TestCase
         $this->assertFileExists("$dir/2-view.webp");
     }
 
+    /** Prod: nginx читає як «other» — нові файли 0644, нова папка 0755, хоч би яка була umask процесу */
+    public function test_new_dir_and_files_are_world_readable(): void
+    {
+        $src = $this->image(800, 600, 'png', 'p.png');
+        $dir = $this->dir . '/pub';
+        $old = umask(077);
+        try {
+            Images::store($src, $dir, '2');
+            $avatar = Images::avatar($src, $dir);
+        } finally {
+            umask($old);
+        }
+        $this->assertSame('0755', self::mode($dir));
+        foreach (['2.png', '2-card.webp', '2-view.webp', $avatar] as $f) $this->assertSame('0644', self::mode("$dir/$f"), $f);
+    }
+
+    /** Наявну папку не чіпаємо */
+    public function test_existing_dir_mode_is_kept(): void
+    {
+        $src = $this->image(800, 600, 'png', 'p.png');
+        $dir = $this->dir . '/own';
+        mkdir($dir, 0750);
+        chmod($dir, 0750);
+        Images::store($src, $dir, '2');
+        $this->assertSame('0750', self::mode($dir));
+    }
+
+    private static function mode(string $path): string
+    {
+        clearstatcache(true, $path);
+        return sprintf('%04o', fileperms($path) & 07777);
+    }
+
     public function test_failure_removes_written_files(): void
     {
         $src = $this->image(800, 600, 'jpeg', 'p.jpg');

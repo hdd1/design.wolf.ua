@@ -119,6 +119,41 @@ final class PortfolioTest extends TestCase
         $this->assertSame(2, Portfolio::count(self::A));
     }
 
+    /** Prod: nginx читає як «other» — нові папки 0755, файли 0644, хоч би яка була umask процесу; наявні папки не чіпаємо */
+    public function test_new_dirs_and_files_are_world_readable(): void
+    {
+        $this->designer(self::A, DesignerStatus::DRAFT);
+        $src = $this->image();
+        $old = umask(077);
+        try {
+            $id = Portfolio::add(self::A, $src)['id'];
+        } finally {
+            umask($old);
+        }
+        $dir = $this->root . '/portfolio/' . self::A;
+        $this->assertSame('0755', self::mode($this->root . '/portfolio'));
+        $this->assertSame('0755', self::mode($dir));
+        foreach (["$id.jpg", "$id-card.webp", "$id-view.webp"] as $f) $this->assertSame('0644', self::mode("$dir/$f"), $f);
+
+        // Папка portfolio вже є (з іншими правами) — друга папка 0755, а portfolio не змінюється
+        chmod($this->root . '/portfolio', 0750);
+        $this->designer(self::B, DesignerStatus::DRAFT);
+        $old = umask(077);
+        try {
+            Portfolio::add(self::B, $src);
+        } finally {
+            umask($old);
+        }
+        $this->assertSame('0750', self::mode($this->root . '/portfolio'));
+        $this->assertSame('0755', self::mode($this->root . '/portfolio/' . self::B));
+    }
+
+    private static function mode(string $path): string
+    {
+        clearstatcache(true, $path);
+        return sprintf('%04o', fileperms($path) & 07777);
+    }
+
     public function test_failed_store_leaves_no_row(): void
     {
         $this->designer(self::A, DesignerStatus::DRAFT);

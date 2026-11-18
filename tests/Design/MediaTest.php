@@ -1,145 +1,123 @@
 <?php
 
-use Design\Config;
-use Design\DesignerStatus;
 use Design\Media;
-use Design\Sql;
 use PHPUnit\Framework\TestCase;
 
-/** @group db */
+/** Картинки портфоліо віддає i.fastcdn: Media::url кодує лише наявні WebP-копії (симлінк у cloud-links/ci) */
 final class MediaTest extends TestCase
 {
-    private const OWNER = 999999301;
-    private const OTHER = 999999302;
-    private const AVATAR = 'avatar-0a1b2c3d';
+    private const LINKS = '/home/connect/cloud-links/';
+    private const CDN_DEV = 'https://dev.i.fastcdn.kiev.ua/';
 
     /** @var string|false */
     private $oldRoot;
+    /** @var mixed */
+    private $oldServerName;
     private string $root;
+    /** @var list<string> симлінки cloud-links, створені тестом */
+    private array $links = [];
 
     protected function setUp(): void
     {
         $this->oldRoot = getenv('DESIGN_STORAGE_ROOT');
+        $this->oldServerName = $_SERVER['SERVER_NAME'] ?? null;
         $this->root = sys_get_temp_dir() . '/design-media-' . bin2hex(random_bytes(4));
-        mkdir($this->root, 0777, true);
+        mkdir($this->root . '/portfolio/12', 0777, true);
         putenv('DESIGN_STORAGE_ROOT=' . $this->root);
-        $this->wipe();
+        $_SERVER['SERVER_NAME'] = 'dev.design.wolf.ua';
     }
 
     protected function tearDown(): void
     {
-        $this->wipe();
+        foreach ($this->links as $l) {
+            if (is_link($l)) unlink($l);
+        }
         foreach (glob($this->root . '/portfolio/*/*') ?: [] as $f) unlink($f);
         foreach (glob($this->root . '/portfolio/*') ?: [] as $d) rmdir($d);
         @rmdir($this->root . '/portfolio');
         @rmdir($this->root);
         putenv($this->oldRoot === false ? 'DESIGN_STORAGE_ROOT' : 'DESIGN_STORAGE_ROOT=' . $this->oldRoot);
+        if ($this->oldServerName === null) unset($_SERVER['SERVER_NAME']); else $_SERVER['SERVER_NAME'] = $this->oldServerName;
     }
 
-    private function wipe(): void
+    private function file(string $name): string
     {
-        Sql::exec('DELETE FROM design_portfolio WHERE designer_id = ?', [self::OWNER]);
-        Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::OWNER]);
+        $path = "$this->root/portfolio/12/$name";
+        file_put_contents($path, 'x');
+        return $path;
     }
 
-    private function designer(int $status): void
+    /** Симлінк у cloud-links для адреси CDN (і запис для прибирання) */
+    private function link(string $url): string
     {
-        Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::OWNER]);
-        Sql::insert('design_designers', ['customer_id' => self::OWNER, 'status' => $status, 'name' => 'Тест', 'photo' => self::AVATAR . '.webp']);
+        $link = self::LINKS . substr($url, strlen(self::CDN_DEV));
+        $this->links[] = $link;
+        return $link;
     }
 
-    private function work(bool $shown, string $file = '1.jpg'): int
+    /** @return array<string, array{string}> */
+    public static function names(): array
     {
-        return Sql::insert('design_portfolio', ['designer_id' => self::OWNER, 'file' => $file, 'shw' => $shown ? 1 : 0, 'pos' => 1]);
+        return ['card' => ['345-card'], 'view' => ['345-view'], 'avatar' => ['avatar-0a1b2c3d']];
     }
 
-    /** @return array<string, array{int}> */
-    public static function statuses(): array
+    /** @dataProvider names */
+    public function test_url_is_fastcdn_ci_webp(string $name): void
     {
-        return ['pending' => [DesignerStatus::PENDING], 'approved' => [DesignerStatus::APPROVED], 'blocked' => [DesignerStatus::BLOCKED]];
+        $file = $this->file("$name.webp");
+        $url = Media::url(12, $name);
+        $this->links[] = self::LINKS . substr($url, strlen(self::CDN_DEV));
+
+        $this->assertMatchesRegularExpression('#^https://dev\.i\.fastcdn\.kiev\.ua/ci/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]+\.webp$#', $url);
+        $link = $this->link($url);
+        $this->assertTrue(is_link($link), 'симлінк створено');
+        $this->assertSame($file, readlink($link));
     }
 
-    /** @dataProvider statuses */
-    public function test_media_access_matrix(int $status): void
+    public function test_prod_domain_without_dev_server_name(): void
     {
-        $this->designer($status);
-        $shown = $this->work(true);
-        $hidden = $this->work(false);
-        $approved = $status === DesignerStatus::APPROVED;
+        $this->file('345-card.webp');
+        $_SERVER['SERVER_NAME'] = 'design.wolf.ua';
+        $url = Media::url(12, '345-card');
+        $this->links[] = self::LINKS . substr($url, strlen('https://i.fastcdn.kiev.ua/'));
+        $this->assertStringStartsWith('https://i.fastcdn.kiev.ua/ci/', $url);
+    }
 
-        foreach (['card', 'view'] as $kind) {
-            // Показана: власник завжди, вошедший чужий — лише якщо схвалено, гість — ніколи
-            $n = "$shown-$kind";
-            $this->assertTrue(Media::canView(self::OWNER, self::OWNER, $n, []), "owner shown $kind");
-            $this->assertSame($approved, Media::canView(self::OTHER, self::OWNER, $n, []), "other shown $kind");
-            $this->assertFalse(Media::canView(0, self::OWNER, $n, []), "guest shown $kind");
-            // Прихована: бачить лише власник
-            $n = "$hidden-$kind";
-            $this->assertTrue(Media::canView(self::OWNER, self::OWNER, $n, []), "owner hidden $kind");
-            $this->assertFalse(Media::canView(self::OTHER, self::OWNER, $n, []), "other hidden $kind");
-            $this->assertFalse(Media::canView(0, self::OWNER, $n, []), "guest hidden $kind");
+    /** Оригінал і будь-яке нестандартне імʼя не кодуються: ні URL, ні симлінка */
+    public function test_original_never_encoded(): void
+    {
+        foreach (['345.jpg', '345.png', '345-card.webp', '345-view.webp'] as $f) $this->file($f);
+        $before = $this->countLinks();
+
+        foreach (['345', '345.jpg', '345.png', '345-orig', '345-card.webp', '../csrf.secret', '../../345-card', 'avatar-0A1B2C3D', 'avatar-0a1b2c3', 'x-card', ''] as $name) {
+            $this->assertSame('', Media::url(12, $name), "імʼя «{$name}»");
         }
-
-        // Аватар: власник завжди, чужий — лише якщо схвалено, гість — ні
-        $this->assertTrue(Media::canView(self::OWNER, self::OWNER, self::AVATAR, []));
-        $this->assertSame($approved, Media::canView(self::OTHER, self::OWNER, self::AVATAR, []));
-        $this->assertFalse(Media::canView(0, self::OWNER, self::AVATAR, []));
+        $this->assertSame($before, $this->countLinks(), 'симлінки не з’явилися');
     }
 
-    public function test_not_current_avatar_unknown_work_and_in_flight_are_denied(): void
+    public function test_missing_file_gives_empty_url_without_fallback_image(): void
     {
-        $this->designer(DesignerStatus::APPROVED);
-        $inFlight = $this->work(true, '');
-        $ok = $this->work(true);
-
-        $this->assertFalse(Media::canView(self::OWNER, self::OWNER, 'avatar-ffffffff', []), 'старий аватар');
-        $this->assertFalse(Media::canView(self::OWNER, self::OWNER, ($ok + 100) . '-card', []), 'немає роботи');
-        $this->assertFalse(Media::canView(self::OWNER, self::OWNER, "$inFlight-card", []), 'власник: в обробці');
-        $this->assertFalse(Media::canView(self::OTHER, self::OWNER, "$inFlight-view", []), 'чужий: в обробці');
-        $this->assertFalse(Media::canView(self::OWNER, self::OWNER, "$ok-orig", []), 'оригінал не віддаємо');
-        $this->assertFalse(Media::canView(self::OWNER, self::OWNER, "$ok.jpg", []));
-        $this->assertFalse(Media::canView(self::OWNER, self::OWNER, '../csrf.secret', []));
-        $this->assertFalse(Media::canView(self::OWNER, 999999399, "$ok-card", []), 'дизайнера немає');
-        // Робота іншого дизайнера під чужим id
-        $this->assertFalse(Media::canView(self::OWNER, self::OTHER, "$ok-card", []));
-        // Підпис не відкриває роботу в обробці
-        $sig = Media::signedUrl(self::OWNER, "$inFlight-card");
-        parse_str((string)parse_url($sig, PHP_URL_QUERY), $q);
-        $this->assertFalse(Media::canView(0, self::OWNER, "$inFlight-card", $q));
+        $before = $this->countLinks();
+        $this->assertSame('', Media::url(12, '999-card'));
+        $this->assertSame('', Media::url(12, 'avatar-ffffffff'));
+        $this->assertSame($before, $this->countLinks());
     }
 
-    public function test_signed_url_valid_expired_tampered(): void
+    public function test_url_does_not_create_directories(): void
     {
-        $this->designer(DesignerStatus::PENDING);
-        $w = $this->work(false);
-        $name = "$w-view";
-        $now = 1800000000;
-
-        $url = Media::signedUrl(self::OWNER, $name, 3600, $now);
-        $this->assertStringStartsWith(Config::siteUrl() . '/media/' . self::OWNER . "/$name?exp=", $url);
-        $this->assertSame(Media::url(self::OWNER, $name), (string)parse_url($url, PHP_URL_PATH));
-        parse_str((string)parse_url($url, PHP_URL_QUERY), $q);
-        $this->assertSame($now + 3600, (int)$q['exp']);
-        $this->assertSame(hash_hmac('sha256', self::OWNER . "/$name/" . ($now + 3600), 'media|' . Config::csrfSecret()), $q['sig']);
-
-        // Дійсний підпис пускає гостя, навіть до прихованої роботи неподтвердженого дизайнера
-        $this->assertTrue(Media::canView(0, self::OWNER, $name, $q, $now));
-        $this->assertTrue(Media::canView(0, self::OWNER, $name, $q, $now + 3600), 'exp включно');
-        // Прострочений
-        $this->assertFalse(Media::canView(0, self::OWNER, $name, $q, $now + 3601));
-        // Підроблені: exp, sig, чужа картинка, чужий дизайнер
-        $this->assertFalse(Media::canView(0, self::OWNER, $name, ['exp' => $q['exp'] + 1000, 'sig' => $q['sig']], $now));
-        $this->assertFalse(Media::canView(0, self::OWNER, $name, ['exp' => $q['exp'], 'sig' => strrev($q['sig'])], $now));
-        $this->assertFalse(Media::canView(0, self::OWNER, $name, ['exp' => $q['exp']], $now));
-        $this->assertFalse(Media::canView(0, self::OWNER, $name, ['exp' => $q['exp'], 'sig' => ['x']], $now));
-        $this->assertFalse(Media::canView(0, self::OWNER, "$w-card", $q, $now));
-        $this->assertFalse(Media::canView(0, self::OTHER, $name, $q, $now));
-    }
-
-    public function test_url_and_path(): void
-    {
-        $this->assertSame('/media/12/345-card', Media::url(12, '345-card'));
-        $this->assertSame($this->root . '/portfolio/12/345-card.webp', Media::path(12, '345-card'));
+        rmdir($this->root . '/portfolio/12');
+        rmdir($this->root . '/portfolio');
+        $this->assertSame('', Media::url(12, '345-card'));
         $this->assertDirectoryDoesNotExist($this->root . '/portfolio');
+    }
+
+    public function test_path(): void
+    {
+        $this->assertSame($this->root . '/portfolio/12/345-card.webp', Media::path(12, '345-card'));
+    }
+
+    private function countLinks(): int
+    {
+        return (int)shell_exec('find ' . escapeshellarg(self::LINKS . 'ci') . ' -type l | wc -l');
     }
 }

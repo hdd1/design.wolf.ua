@@ -64,4 +64,15 @@ final class RouterTest extends TestCase
         $this->assertSame('/designers/345/', Router::withSlash('/designers/345'));
         $this->assertNull(Router::withSlash('/designers/abc'));
     }
+
+    public function test_chat_routes(): void
+    {
+        $this->assertSame(['page' => 'offer-messages', 'params' => ['id' => '345']], Router::match('GET', '/offers/345/messages'));
+        $this->assertSame(['page' => 'offer-message-add', 'params' => ['id' => '345']], Router::match('POST', '/offers/345/messages'));
+        $this->assertNull(Router::match('GET', '/offers/345/messages/'));
+        $this->assertNull(Router::match('GET', '/offers/abc/messages'));
+        $this->assertNull(Router::match('GET', '/offers/1234567890/messages'));
+        $this->assertNull(Router::match('PUT', '/offers/345/messages'));
+        $this->assertNull(Router::withSlash('/offers/345/messages'));
+    }
 }

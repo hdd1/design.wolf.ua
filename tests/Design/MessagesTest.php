@@ -88,6 +88,8 @@ final class MessagesTest extends TestCase
 
         $this->assertSame([$s, $b], array_column(Messages::list($this->offerId, $a), 'id'));
         $this->assertSame([], Messages::list($this->offerId, $b));
+        $this->assertSame([$a, $s], array_column(Messages::list($this->offerId, 0, 2), 'id'), 'limit — перші за порядком');
+        $this->assertSame([$s], array_column(Messages::list($this->offerId, $a, 1), 'id'));
     }
 
     public function test_seen_sets_column_for_role(): void

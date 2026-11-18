@@ -356,3 +356,43 @@ main{flex:1 0 auto}
   .photo-modal .pm-prev,.photo-modal .pm-next{position:absolute;top:50%;transform:translateY(-50%);width:40px;height:40px;background:#00000080;z-index:1}
   .photo-modal .pm-prev{left:var(--s-2)}.photo-modal .pm-next{right:var(--s-2)}
 }
+
+/* Листування по пропозиції (views/partials/chat.php, assets/js/chat.js). Висоту .chat-body задає сторінка, що вставляє листування */
+.chat{background:#fff;border:1px solid var(--border);border-radius:var(--r-l);display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.chat-head{display:flex;align-items:center;gap:var(--s-3);padding:var(--s-4) var(--s-5);border-bottom:1px solid var(--border)}
+.chat-head .avatar{width:44px;height:44px;background:#EFE4D2;color:#6B4E2A}
+.chat-who{min-width:0}
+.chat-title{font-weight:700;font-size:1.1rem;overflow-wrap:anywhere}
+.chat-sub{color:var(--text-2);font-size:.9rem}
+.chat-body{flex:1 1 auto;display:flex;flex-direction:column;gap:var(--s-4);overflow-y:auto;background:var(--cream);padding:var(--s-4);min-height:240px;max-height:min(70vh,640px)}
+.chat-note{display:flex;gap:var(--s-2);align-items:flex-start;background:#fffb;border-radius:var(--r-m);padding:var(--s-3) var(--s-4);color:var(--text-2);font-size:.88rem}
+.chat-note i{margin-top:.2rem}
+.chat-list{margin-top:auto;display:flex;flex-direction:column;gap:var(--s-3)}
+.chat-empty{color:var(--text-3);text-align:center;margin:var(--s-4) 0}
+.chat-day{display:flex;align-items:center;gap:var(--s-3);color:var(--text-2);font-size:.78rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin:var(--s-2) 0}
+.chat-day::before,.chat-day::after{content:'';flex:1;border-top:1px solid var(--border-strong)}
+.chat-msg{display:flex;align-items:flex-start;gap:var(--s-2);max-width:88%}
+.chat-msg.mine{margin-left:auto;justify-content:flex-end}
+.chat-msg .avatar-sm{width:36px;height:36px;font-size:.72rem;background:#EFE4D2;color:#6B4E2A}
+.chat-msg .bubble{background:#fff;border:1px solid var(--border);border-radius:16px;padding:.6rem .9rem;min-width:0}
+.chat-msg.mine .bubble{background:var(--orange-soft);border-color:var(--orange-soft)}
+.chat-msg .text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45}
+.chat-msg .meta{color:var(--text-3);font-size:.78rem}
+.chat-msg .meta b{color:var(--text-2);font-size:.85rem;margin-right:.3rem}
+.chat-msg.mine .meta{text-align:right;margin-top:.15rem}
+.chat-msg:not(.mine) .meta{margin-bottom:.15rem}
+.chat-msg.is-pending{opacity:.6}
+.chat-msg.is-failed .bubble{border-color:var(--red)}
+.chat-msg.is-failed .meta{color:var(--red);font-weight:600}
+.chat-msg .retry{border:0;background:none;padding:0;color:var(--blue);font-weight:700}
+.chat-sys{align-self:center;max-width:90%;text-align:center;color:var(--text-2);font-size:.85rem;background:#fff9;border-radius:var(--r-pill);padding:.3rem .9rem;overflow-wrap:anywhere}
+.chat-foot{padding:var(--s-3) var(--s-4);border-top:1px solid var(--border);display:flex;flex-direction:column;gap:var(--s-2)}
+.chat-form{display:flex;align-items:flex-end;gap:var(--s-2)}
+.chat-form[hidden],.chat-closed[hidden],.chat-error[hidden]{display:none}
+.chat-form textarea{flex:1;min-width:0;resize:none;border:1px solid transparent;background:var(--bg);border-radius:24px;padding:.7rem 1.1rem;line-height:1.4;max-height:160px}
+.chat-form textarea:focus{outline:0;border-color:var(--blue);background:#fff}
+.chat-send{width:48px;height:48px;flex:none;border:0;border-radius:50%;background:var(--orange);color:var(--on-orange);font-size:1.15rem;display:flex;align-items:center;justify-content:center}
+.chat-send:hover{background:var(--orange-hover)}
+.chat-closed{margin:0;color:var(--text-3);text-align:center}
+.chat-error{margin:0;color:var(--red);font-size:.88rem}
+@media (max-width:575px){.chat-head{padding:var(--s-3) var(--s-4)}.chat-msg{max-width:94%}}

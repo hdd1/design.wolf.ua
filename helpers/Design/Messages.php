@@ -44,11 +44,15 @@ final class Messages
         ]);
     }
 
-    /** @return list<array{id:int, role:int, author_id:int, text:string, data:?array, created:string}> */
-    public static function list(int $offerId, int $afterId = 0): array
+    /**
+     * Повідомлення після afterId за порядком; limit > 0 — не більше стількох (опитування листування)
+     * @return list<array{id:int, role:int, author_id:int, text:string, data:?array, created:string}>
+     */
+    public static function list(int $offerId, int $afterId = 0, int $limit = 0): array
     {
         $rows = Sql::all(
-            'SELECT id, author_role, author_id, text, data, created FROM design_messages WHERE offer_id = ? AND id > ? ORDER BY id',
+            'SELECT id, author_role, author_id, text, data, created FROM design_messages WHERE offer_id = ? AND id > ? ORDER BY id'
+            . ($limit > 0 ? ' LIMIT ' . $limit : ''),
             [$offerId, $afterId]
         );
         return array_map(static fn(array $r): array => [

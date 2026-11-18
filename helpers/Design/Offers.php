@@ -139,7 +139,8 @@ final class Offers
      * Режим 2: клієнт обирає схваленого дизайнера з каталогу. З чернетки — публікація з вибором
      * (WAITING_DESIGNER, mode = 2, published_at = NOW()); зі збору режиму 2 без активної пропозиції — «Запросити іншого».
      * Рядок новий або той самий після відмови / відкликання → «запрошено». Запрошення недоступних (заблокованих) дизайнерів
-     * клієнт бачить як відмову — їх закриваємо. Сповіщає дизайнера
+     * клієнт бачить як відмову — їх закриваємо. Повтор (подвійний клік: цей дизайнер уже запрошений і чекаємо його) нічого
+     * не змінює і не шле. Сповіщає дизайнера
      */
     public static function invite(int $orderId, int $customerId, int $designerId): void
     {
@@ -151,6 +152,11 @@ final class Offers
         try {
             $order = Sql::one('SELECT status, mode FROM design_orders WHERE id = ? AND customer_id = ? FOR UPDATE', [$orderId, $customerId]);
             if ($order === null) throw new DesignerException(self::ERR_ORDER_NOT_FOUND);
+            if ((int)$order['status'] === OrderStatus::WAITING_DESIGNER && (int)$order['mode'] === 2
+                && (int)Sql::value('SELECT status FROM design_offers WHERE order_id = ? AND designer_id = ?', [$orderId, $designerId]) === OfferStatus::INVITED) {
+                $pdo->commit();
+                return;
+            }
             $draft = (int)$order['status'] === OrderStatus::DRAFT;
             if (!$draft && !self::reopenable($orderId, (int)$order['status'], (int)$order['mode'])) {
                 throw new DesignerException(self::ERR_ORDER_LOCKED);
@@ -161,7 +167,9 @@ final class Offers
             if ($row === null) {
                 Sql::insert('design_offers', ['order_id' => $orderId, 'designer_id' => $designerId, 'status' => OfferStatus::INVITED]);
             } else {
-                $n = Sql::exec('UPDATE design_offers SET status = ? WHERE id = ? AND status IN (' . implode(', ', self::RESENDABLE) . ')',
+                // Нове запрошення — з чистими полями: текст, ціна й термін попереднього раунду не мають показуватися
+                $n = Sql::exec('UPDATE design_offers SET status = ?, text = NULL, price_designer = 0, markup_percent = 0, price_client = 0, deadline = NULL
+                                WHERE id = ? AND status IN (' . implode(', ', self::RESENDABLE) . ')',
                     [OfferStatus::INVITED, (int)$row['id']]);
                 if ($n === 0) throw new DesignerException(self::ERR_ORDER_LOCKED);
             }
@@ -390,20 +398,24 @@ final class Offers
              ORDER BY f.id",
             [Messages::ROLE_SYSTEM, Messages::ROLE_SYSTEM, $orderId, $customerId]);
 
-        return array_map(static fn(array $r): array => [
-            'id' => (int)$r['id'],
-            'status' => (int)$r['status'],
-            'designer_id' => (int)$r['designer_id'],
-            'designer_name' => (string)$r['designer_name'],
-            'designer_photo' => (string)$r['designer_photo'],
-            'available' => $r['designer_status'] !== null && (int)$r['designer_status'] === DesignerStatus::APPROVED,
-            'text' => (string)$r['text'],
-            'price_client' => (int)$r['price_client'],
-            'deadline' => $r['deadline'] === null ? null : (string)$r['deadline'],
-            'messages' => (int)$r['messages'],
-            'price_changed' => (bool)$r['price_changed'],
-            'updated' => (string)$r['updated'],
-        ], $rows);
+        return array_map(static function (array $r): array {
+            // Запрошення ще без відповіді: ні тексту, ні ціни, ні терміну (навіть якщо в рядку лишилося щось від минулого раунду)
+            $pending = (int)$r['status'] === OfferStatus::INVITED;
+            return [
+                'id' => (int)$r['id'],
+                'status' => (int)$r['status'],
+                'designer_id' => (int)$r['designer_id'],
+                'designer_name' => (string)$r['designer_name'],
+                'designer_photo' => (string)$r['designer_photo'],
+                'available' => $r['designer_status'] !== null && (int)$r['designer_status'] === DesignerStatus::APPROVED,
+                'text' => $pending ? '' : (string)$r['text'],
+                'price_client' => $pending ? 0 : (int)$r['price_client'],
+                'deadline' => $pending || $r['deadline'] === null ? null : (string)$r['deadline'],
+                'messages' => (int)$r['messages'],
+                'price_changed' => (bool)$r['price_changed'],
+                'updated' => (string)$r['updated'],
+            ];
+        }, $rows);
     }
 
     /**

@@ -170,10 +170,17 @@ final class OffersMode2Test extends TestCase
         $this->assertNotContains($orderId, array_column(Offers::feed(self::B, 1)['items'], 'order_id'));
         $this->assertNull(Offers::mode2State($orderId, self::A));          // чуже замовлення
 
-        // поки чекаємо — нікого більше не запросити і не перемкнути на збір
+        // подвійний клік «Опублікувати» з тим самим дизайнером — нічого не змінює, повторного сповіщення немає
         Notify::$sent = [];
+        $before = $this->orderRow($orderId);
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $this->assertSame($before, $this->orderRow($orderId));
+        $this->assertSame(OfferStatus::INVITED, (int)$this->offerRow($offerId)['status']);
+        $this->assertSame(1, (int)Sql::value('SELECT COUNT(*) FROM design_offers WHERE order_id = ?', [$orderId]));
+        $this->assertSame([], Notify::$sent);
+
+        // поки чекаємо — нікого більше не запросити і не перемкнути на збір
         $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::invite($orderId, self::CLIENT, self::B));
-        $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::invite($orderId, self::CLIENT, self::A));
         $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::collect($orderId, self::CLIENT));
         $this->assertError('Замовлення не знайдено', fn() => Offers::invite($orderId, self::B, self::A));
         $this->assertSame(0, $this->offerId($orderId, self::B));
@@ -410,11 +417,30 @@ final class OffersMode2Test extends TestCase
         $this->assertSame(self::A, Notify::$sent[0]['customer_id']);
         $this->assertSame($a, Offers::mode2State($orderId, self::CLIENT)['offer']['id']);
 
-        // і після «Так» + відкликання — теж той самий рядок
+        // і після «Так» + відкликання — теж той самий рядок, але з чистими полями: старі текст, ціна й термін не показуються
         Offers::accept($a, self::A, 'Так', 400, $this->inDays(1));
         Offers::withdraw($a, self::A);
         Offers::invite($orderId, self::CLIENT, self::A);
-        $this->assertSame(OfferStatus::INVITED, (int)$this->offerRow($a)['status']);
+        $row = $this->offerRow($a);
+        $this->assertSame(OfferStatus::INVITED, (int)$row['status']);
+        $this->assertNull($row['text']);
+        $this->assertSame(0, (int)$row['price_designer']);
+        $this->assertSame(0.0, (float)$row['markup_percent']);
+        $this->assertSame(0, (int)$row['price_client']);
+        $this->assertNull($row['deadline']);
+        $card = Offers::mode2State($orderId, self::CLIENT)['offer'];
+        $this->assertSame('', $card['text']);
+        $this->assertSame(0, $card['price_client']);
+        $this->assertNull($card['deadline']);
+
+        // захист у глибину: навіть якщо в запрошенні щось лишилося, картка його не показує
+        Sql::exec("UPDATE design_offers SET text = 'Старий текст', price_designer = 400, markup_percent = 20, price_client = 480, deadline = ? WHERE id = ?",
+            [$this->inDays(1), $a]);
+        $state = Offers::mode2State($orderId, self::CLIENT);
+        $this->assertSame('waiting', $state['state']);
+        $this->assertSame('', $state['offer']['text']);
+        $this->assertSame(0, $state['offer']['price_client']);
+        $this->assertNull($state['offer']['deadline']);
         Offers::accept($a, self::A, 'Знову так', 450, $this->inDays(1));
         $this->assertSame(450, (int)$this->offerRow($a)['price_designer']);
         $this->assertSame(OrderStatus::COLLECTING, (int)$this->orderRow($orderId)['status']);

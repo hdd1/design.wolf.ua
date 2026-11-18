@@ -24,6 +24,14 @@ final class View
         return htmlspecialchars((string)$s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
+    /** Українська множина: plural(2, 'робота', 'роботи', 'робіт') → «2 роботи» */
+    public static function plural(int $n, string $one, string $few, string $many): string
+    {
+        $d = $n % 10;
+        $h = $n % 100;
+        return $n . ' ' . ($d === 1 && $h !== 11 ? $one : ($d >= 2 && $d <= 4 && ($h < 12 || $h > 14) ? $few : $many));
+    }
+
     /** Свой css/js с версией по времени файла */
     public static function asset(string $path): string
     {

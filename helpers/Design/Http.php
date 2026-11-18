@@ -5,6 +5,13 @@ namespace Design;
 /** Ответы: JSON, редиректы, 404. Все страницы design личные — без кэша */
 final class Http
 {
+    /** Текстове поле з $_POST/$_GET: не рядок (name[]=x, немає поля) — порожньо, без warning і без «Array» */
+    public static function str(array $src, string $key): string
+    {
+        $v = $src[$key] ?? '';
+        return is_string($v) ? $v : '';
+    }
+
     public static function noStore(): void
     {
         header('Cache-Control: private, no-store');

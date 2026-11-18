@@ -1,14 +1,23 @@
 <?php
-/** @var string $title @var string $body @var string $active  'brief' | 'orders' | '' */
+/**
+ * @var string $title @var string $body
+ * @var string $active  'brief' | 'orders' | 'designers' | 'designer' | ''
+ * @var list<string> $scripts  додаткові скрипти сторінки (шляхи від кореня сайту)
+ */
 use Design\Auth;
 use Design\Config;
 use Design\Customers;
+use Design\Designers;
+use Design\DesignerStatus;
 use Design\View;
 
 $me = Auth::current();
 $h = $me > 0 ? Customers::header($me) : null;
 $active = $active ?? '';
-$nav = [['brief', '/brief/', 'Новий бриф'], ['orders', '/orders/', 'Мої замовлення']];
+$nav = [['brief', '/brief/', 'Новий бриф'], ['orders', '/orders/', 'Мої замовлення'], ['designers', '/designers/', 'Дизайнери']];
+if ($h !== null) {
+    $nav[] = ['designer', '/designer/', Designers::status($me) === DesignerStatus::APPROVED ? 'Мій профіль' : 'Стати дизайнером'];
+}
 ?><!doctype html>
 <html lang="uk">
 <head>
@@ -34,7 +43,6 @@ $nav = [['brief', '/brief/', 'Новий бриф'], ['orders', '/orders/', 'М�
           <?php foreach ($nav as [$key, $href, $label]): ?>
             <a href="<?= $href ?>" class="<?= $active === $key ? 'active' : '' ?>"><?= $label ?></a>
           <?php endforeach ?>
-          <span class="soon" title="Незабаром">Дизайнери</span>
         </nav>
         <div class="ms-auto d-flex align-items-center gap-3">
           <span class="balance"><i class="fal fa-wallet"></i><span class="label">Баланс</span> <?= View::price($h['balance']) ?></span>
@@ -63,5 +71,8 @@ $nav = [['brief', '/brief/', 'Новий бриф'], ['orders', '/orders/', 'М�
 <?php View::render('partials/footer') ?>
 <script src="/assets/vendor/bootstrap-5.3.3/js/bootstrap.bundle.min.js" defer></script>
 <script src="<?= View::asset('/assets/js/app.js') ?>" defer></script>
+<?php foreach ($scripts ?? [] as $src): ?>
+<script src="<?= View::e(View::asset($src)) ?>" defer></script>
+<?php endforeach ?>
 </body>
 </html>

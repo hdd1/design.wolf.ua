@@ -12,5 +12,7 @@
     <php>
         <!-- Тесты не создают секрет в хранилище -->
         <env name="DESIGN_CSRF_SECRET" value="phpunit-only-secret-0123456789abcdef0123456789abcdef"/>
+        <!-- Тести не шлють сповіщень -->
+        <env name="DESIGN_NOTIFY" value="off"/>
     </php>
 </phpunit>

@@ -41,7 +41,24 @@ final class Config
     /** Куда вести гостя на вход. Пока — главная wolf.ua (dev — dev.wolf.ua); адрес входа с возвратом уточняется у владельца */
     public static function loginUrl(string $back): string
     {
-        $dev = str_starts_with($_SERVER['HTTP_HOST'] ?? '', 'dev.');
-        return 'https://' . ($dev ? 'dev.' : '') . 'wolf.ua/';
+        return 'https://' . (self::isDev() ? 'dev.' : '') . 'wolf.ua/';
+    }
+
+    /** Адреса самого сайту: dev.design.wolf.ua на dev, design.wolf.ua на проді */
+    public static function siteUrl(): string
+    {
+        return 'https://' . (self::isDev() ? 'dev.' : '') . 'design.wolf.ua';
+    }
+
+    /** Адреса adminka: dev.adminka.wolf.ua на dev, adminka.wolf.ua на проді */
+    public static function adminkaUrl(): string
+    {
+        return 'https://' . (self::isDev() ? 'dev.' : '') . 'adminka.wolf.ua';
+    }
+
+    /** dev-стенд: HTTP_HOST починається з «dev.» */
+    public static function isDev(): bool
+    {
+        return str_starts_with($_SERVER['HTTP_HOST'] ?? '', 'dev.');
     }
 }

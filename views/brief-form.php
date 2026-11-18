@@ -34,13 +34,13 @@ $about = ['Візитка' => 'візитку', 'Флаєр' => 'флаєр', '�
           <div class="mb-4">
             <label class="q-label d-block" for="f-title">Назва замовлення <span class="text-3 fw-normal small">— необовʼязково</span></label>
             <div class="q-note">Так замовлення буде підписане у «Мої замовлення»</div>
-            <input class="form-control" id="f-title" name="title" maxlength="255" value="<?= View::e($title) ?>" placeholder="Візитка для кавʼярні «Зерно»">
+            <input class="form-control" id="f-title" name="title" maxlength="255" value="<?= View::e($title) ?>" placeholder="Наприклад: Візитка для кавʼярні «Зерно»">
           </div>
           <?php foreach ($fields as $i => $f): ?>
             <div class="mb-4">
               <label class="q-label d-block" for="f-<?= $i ?>"><?= View::e($f['q']) ?></label>
               <?php if ($f['note'] !== ''): ?><div class="q-note"><?= View::e($f['note']) ?></div><?php endif ?>
-              <textarea class="form-control" id="f-<?= $i ?>" name="answers[]" rows="3" placeholder="<?= View::e($f['hint']) ?>"><?= View::e($f['a']) ?></textarea>
+              <textarea class="form-control" id="f-<?= $i ?>" name="answers[]" rows="3" placeholder="<?= View::e($f['hint'] === '' || str_starts_with($f['hint'], 'Наприклад') ? $f['hint'] : 'Наприклад: ' . $f['hint']) ?>"><?= View::e($f['a']) ?></textarea>
             </div>
           <?php endforeach ?>
         </div>

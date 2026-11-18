@@ -27,7 +27,7 @@ $row = static function (array $o, bool $isMine): string {
       <?php foreach ($mine as $o) echo $row($o, true) ?>
     <?php endif ?>
     <?php if ($other): ?>
-      <div class="group-title">Чекаємо іншу сторону або завершено <span class="count"><?= count($other) ?></span></div>
+      <div class="group-title">Інші замовлення <span class="count"><?= count($other) ?></span></div>
       <?php foreach ($other as $o) echo $row($o, false) ?>
     <?php endif ?>
   <?php endif ?>

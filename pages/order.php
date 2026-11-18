@@ -91,17 +91,9 @@ if (isset($byId[$sel])) {
     ];
 }
 
-// Режим 2, відмова: причина — останнє повідомлення дизайнера в листуванні цього запрошення
-$reason = null;
+// Режим 2, відмова: причина — лише позначене повідомлення відмови цього раунду запрошення (не будь-яке повідомлення дизайнера)
 $refused = $state === 'declined' ? $mode2['offer'] : null;
-if ($refused !== null && $refused['status'] === OfferStatus::DECLINED) {
-    foreach (array_reverse(Messages::list($refused['id'])) as $m) {
-        if ($m['role'] === Messages::ROLE_DESIGNER) {
-            $reason = $m;
-            break;
-        }
-    }
-}
+$reason = $refused !== null ? Offers::declineReason($refused['id']) : null;
 
 // Плашка «чий хід»
 $alert = match (true) {

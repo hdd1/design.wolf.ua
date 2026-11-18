@@ -224,7 +224,8 @@ final class Offers
 
     /**
      * Режим 2, «Ні»: запрошення → відмова, замовлення → збір пропозицій (mode лишається 2: клієнт обирає «Запросити іншого»
-     * або «Збирати пропозиції»). Непорожня причина — повідомлення дизайнера в листуванні. Сповіщає клієнта і куратора
+     * або «Збирати пропозиції»). Непорожня причина — повідомлення дизайнера в листуванні з позначкою data.event = decline
+     * (клієнт бачить як причину лише її, див. declineReason). Сповіщає клієнта і куратора
      */
     public static function decline(int $offerId, int $designerId, string $reason): void
     {
@@ -239,7 +240,7 @@ final class Offers
             Sql::exec('UPDATE design_orders SET status = ? WHERE id = ? AND status = ?',
                 [OrderStatus::COLLECTING, $orderId, OrderStatus::WAITING_DESIGNER]);
             // Задовга причина — виняток і відкат: відмова не записується без неї
-            if ($reason !== '') Messages::add($offerId, $designerId, Messages::ROLE_DESIGNER, $reason);
+            if ($reason !== '') Messages::add($offerId, $designerId, Messages::ROLE_DESIGNER, $reason, ['event' => 'decline']);
             $pdo->commit();
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
@@ -300,6 +301,24 @@ final class Offers
         return ['state' => 'declined', 'offer' => $cards[0] ?? null];
     }
 
+    /**
+     * Причина відмови від запрошення режиму 2 для клієнта: останнє повідомлення дизайнера з позначкою data.event = decline,
+     * записане не раніше за саму відмову (updated рядка — час переходу в «відмова»; облік seen/notified його не рухає).
+     * Тож причина минулого раунду (рядок запрошували знову) і звичайні повідомлення дизайнера причиною не стають.
+     * Пропозиція не у «відмова» — null
+     * @return array{id:int, role:int, author_id:int, text:string, data:?array, created:string}|null у вигляді Messages::list
+     */
+    public static function declineReason(int $offerId): ?array
+    {
+        $id = Sql::value(
+            "SELECT m.id FROM design_messages m JOIN design_offers f ON f.id = m.offer_id
+             WHERE m.offer_id = ? AND f.status = ? AND m.author_role = ? AND m.created >= f.updated
+               AND JSON_UNQUOTE(JSON_EXTRACT(m.data, '$.event')) = 'decline'
+             ORDER BY m.id DESC LIMIT 1",
+            [$offerId, OfferStatus::DECLINED, Messages::ROLE_DESIGNER]);
+        return $id === null ? null : (Messages::list($offerId, (int)$id - 1, 1)[0] ?? null);
+    }
+
     /** @return array{id:int, order_id:int, designer_id:int, status:int, text:string, price_designer:int, markup_percent:float, price_client:int, deadline:?string, created:string, updated:string, customer_id:int, order_status:int, mode:int, chosen_offer_id:?int}|null */
     public static function get(int $offerId): ?array
     {
@@ -317,7 +336,8 @@ final class Offers
 
     /**
      * Хто й як може бути в листуванні пропозиції: клієнт замовлення або дизайнер пропозиції, інакше null.
-     * Писати — поки пропозиція запрошена / надіслана / обрана і замовлення не скасоване; після вибору — лише в обраній
+     * Писати — поки пропозиція надіслана / обрана, замовлення не скасоване і дизайнер досі схвалений; після вибору — лише в обраній.
+     * Запрошення без відповіді — лише читання: листування починається з «Беру». Недоступний дизайнер — читання для обох сторін
      * @return array{offer:array, role:int, write:bool}|null
      */
     public static function access(int $offerId, int $customerId): ?array
@@ -331,9 +351,10 @@ final class Offers
         };
         if ($role === null) return null;
 
-        $write = in_array($offer['status'], [OfferStatus::INVITED, OfferStatus::SENT, OfferStatus::CHOSEN], true)
+        $write = in_array($offer['status'], [OfferStatus::SENT, OfferStatus::CHOSEN], true)
             && $offer['order_status'] !== OrderStatus::CANCELLED
-            && ($offer['chosen_offer_id'] === null || $offer['status'] === OfferStatus::CHOSEN);
+            && ($offer['chosen_offer_id'] === null || $offer['status'] === OfferStatus::CHOSEN)
+            && Designers::status($offer['designer_id']) === DesignerStatus::APPROVED;
         return ['offer' => $offer, 'role' => $role, 'write' => $write];
     }
 

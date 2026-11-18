@@ -310,6 +310,15 @@ final class ClientOffersHttpTest extends TestCase
         $this->assertStringContainsString('оберіть, як продовжити', $this->page('/orders/', $client));
         $this->assertStringContainsString('Запросити дизайнера', $this->page("/orders/$orderId/pick/", $client));
 
+        // Знову запросили того самого (пізніше) і він відмовився без причини — стара причина не показується
+        Sql::exec('UPDATE design_messages SET created = created - INTERVAL 1 HOUR WHERE offer_id = ?', [$offerId]);
+        Offers::invite($orderId, $client, $designer);
+        Offers::decline($offerId, $designer, '');
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString('Ваш хід: оберіть, як продовжити', $body);
+        $this->assertStringContainsString('Дизайнер не вказав причину', $body);
+        $this->assertStringNotContainsString('зайнятий', $body);
+
         // «Збирати пропозиції»: режим 1, повтор нічого не ламає
         foreach ([1, 2] as $_) {
             [$code, $loc] = self::act($orderId, $client, ['action' => 'collect', 'csrf' => $csrf]);
@@ -325,6 +334,57 @@ final class ClientOffersHttpTest extends TestCase
         $this->assertStringContainsString('Пропозицій поки немає', $this->page("/orders/$orderId/", $client));
     }
 
+    /** Режим 2 до кінця: дизайнер сказав «Беру» з ціною → клієнт обирає → «В роботі» */
+    public function test_mode2_accept_then_choose_in_work(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        $orderId = $this->order($client, OrderStatus::WAITING_DESIGNER, 2);
+        $offerId = $this->offer($orderId, $designer, OfferStatus::INVITED);
+        Sql::exec('UPDATE design_offers SET text = NULL, price_designer = 0, markup_percent = 0, price_client = 0, deadline = NULL WHERE id = ?', [$offerId]);
+        $csrf = self::csrf($client);
+
+        // «Беру» (бібліотекою, без сповіщень): ціна клієнта — за поточною націнкою
+        Offers::accept($offerId, $designer, 'Беру, зроблю', 800, date('Y-m-d', strtotime('+4 day')));
+        $p = (int)Sql::value('SELECT price_client FROM design_offers WHERE id = ?', [$offerId]);
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString('Дизайнер назвав ціну і термін — підтвердіть вибір', $body);
+        $this->assertMatchesRegularExpression('/name="offer_id" value="' . $offerId . '"/', $body);
+        $this->assertStringContainsString('name="expected_price" value="' . $p . '"', $body);
+
+        [$code, $loc] = self::act($orderId, $client, ['action' => 'choose', 'offer_id' => $offerId, 'expected_price' => $p, 'csrf' => $csrf]);
+        $this->assertSame(302, $code);
+        $this->assertSame("/orders/$orderId/?done=chosen", $loc);
+        $row = self::orderRow($orderId);
+        $this->assertSame([OrderStatus::IN_WORK, 2, $offerId], [(int)$row['status'], (int)$row['mode'], (int)$row['chosen_offer_id']]);
+        $this->assertSame(OfferStatus::CHOSEN, (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$offerId]));
+
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString('В роботі', $body);
+        $this->assertStringContainsString('Обраний дизайнер', $body);
+        $this->assertStringContainsString('data-write="1"', $body);
+    }
+
+    /** Вибір пропозиції з іншого свого замовлення — відмова, нічого не змінилося */
+    public function test_choose_offer_from_other_own_order_refused(): void
+    {
+        $client = self::clientId();
+        $x = $this->order($client);
+        $y = $this->order($client);
+        $onY = $this->offer($y, self::GHOST, OfferStatus::SENT, 900);
+        $csrf = self::csrf($client);
+
+        [$code, , $body] = self::act($x, $client, ['action' => 'choose', 'offer_id' => $onY, 'expected_price' => 1080, 'csrf' => $csrf]);
+        $this->assertSame(422, $code);
+        $this->assertStringContainsString('Пропозиція недоступна', $body);
+        foreach ([$x, $y] as $id) {
+            $row = self::orderRow($id);
+            $this->assertSame(OrderStatus::COLLECTING, (int)$row['status']);
+            $this->assertNull($row['chosen_offer_id']);
+        }
+        $this->assertSame(OfferStatus::SENT, (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$onY]));
+    }
+
     public function test_unavailable_designer_not_choosable(): void
     {
         $client = self::clientId();
@@ -336,6 +396,16 @@ final class ClientOffersHttpTest extends TestCase
         $this->assertStringContainsString('Дизайнер недоступний', $body);
         $this->assertStringNotContainsString('name="offer_id" value="' . $ghost . '"', $body);
         $this->assertStringNotContainsString('href="/designers/' . self::GHOST . '/"', $body);
+        // писати недоступному нікуди: без «Написати»
+        $this->assertStringNotContainsString("?chat=$ghost", $body);
+        $this->assertStringNotContainsString('Написати', $body);
+        // а наявне листування — лише прочитати
+        Messages::add($ghost, self::GHOST, Messages::ROLE_DESIGNER, 'Старе повідомлення');
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString("?chat=$ghost#chat\"><i class=\"fal fa-comment\"></i> Листування · 1", $body);
+        $body = $this->page("/orders/$orderId/?chat=$ghost", $client);
+        $this->assertStringContainsString('data-chat="' . $ghost . '"', $body);
+        $this->assertStringContainsString('data-write="0"', $body);
 
         [$code, , $body] = self::act($orderId, $client, ['action' => 'choose', 'offer_id' => $ghost, 'expected_price' => 1080, 'csrf' => $csrf]);
         $this->assertSame(422, $code);

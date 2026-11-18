@@ -295,12 +295,14 @@ final class OffersMode2Test extends TestCase
         $this->assertSame(OrderStatus::COLLECTING, (int)$order['status']);
         $this->assertSame(2, (int)$order['mode']);
 
-        // причина — повідомлення дизайнера в листуванні, видне клієнту
+        // причина — повідомлення дизайнера в листуванні з позначкою відмови, видне клієнту
         $msgs = Messages::list($offerId);
         $this->assertCount(1, $msgs);
         $this->assertSame(Messages::ROLE_DESIGNER, $msgs[0]['role']);
         $this->assertSame(self::A, $msgs[0]['author_id']);
         $this->assertSame("Зайнятий до п'ятниці", $msgs[0]['text']);
+        $this->assertSame(['event' => 'decline'], $msgs[0]['data']);
+        $this->assertSame($msgs[0]['id'], Offers::declineReason($offerId)['id']);
 
         $this->assertCount(2, Notify::$sent);
         [$toClient, $toCurator] = Notify::$sent;
@@ -540,5 +542,69 @@ final class OffersMode2Test extends TestCase
         $this->assertSame(OrderStatus::COLLECTING, (int)$row['status']);
         $this->assertSame(1, (int)$row['mode']);
         $this->assertSame(OfferStatus::DECLINED, (int)$this->offerRow($b)['status']);
+    }
+
+    /** Причина відмови для клієнта — лише позначене повідомлення (data.event = decline) поточного раунду запрошення */
+    public function test_decline_reason_only_marked_and_current_round(): void
+    {
+        $orderId = $this->draft();
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $a = $this->offerId($orderId, self::A);
+        $this->assertNull(Offers::declineReason($a), 'запрошення без відповіді — причини немає');
+
+        // Раунд 1: «Так», питання в листуванні, відкликання — це не відмова з причиною
+        Offers::accept($a, self::A, 'Зроблю', 500, $this->inDays(2));
+        Messages::add($a, self::A, Messages::ROLE_DESIGNER, 'А який формат?');
+        Offers::withdraw($a, self::A);
+        $this->assertNull(Offers::declineReason($a));
+
+        // Раунд 2: «Ні» без причини — останнє повідомлення дизайнера (питання) причиною не стає
+        Offers::invite($orderId, self::CLIENT, self::A);
+        Offers::decline($a, self::A, '');
+        $this->assertSame('declined', Offers::mode2State($orderId, self::CLIENT)['state']);
+        $this->assertNull(Offers::declineReason($a));
+
+        // Раунд 3: «Ні» з причиною
+        Offers::invite($orderId, self::CLIENT, self::A);
+        Offers::decline($a, self::A, 'Зайнятий до пʼятниці');
+        $reason = Offers::declineReason($a);
+        $this->assertSame('Зайнятий до пʼятниці', $reason['text']);
+        $this->assertSame(['event' => 'decline'], $reason['data']);
+
+        // Раунд 4 (пізніше): знову запрошений і знову «Ні» без причини — стара причина раунду 3 не показується
+        Sql::exec('UPDATE design_messages SET created = created - INTERVAL 1 HOUR WHERE offer_id = ?', [$a]);
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $this->assertNull(Offers::declineReason($a), 'запрошено знову — причини ще немає');
+        Offers::decline($a, self::A, '');
+        $this->assertNull(Offers::declineReason($a));
+
+        // Раунд 5: нова причина — показується саме вона
+        Offers::invite($orderId, self::CLIENT, self::A);
+        Offers::decline($a, self::A, 'Тепер у відпустці');
+        $this->assertSame('Тепер у відпустці', Offers::declineReason($a)['text']);
+    }
+
+    /** Перегляд листування (seen, notified) не робить стару відмову «останньою»: клієнт бачить того, хто відмовився пізніше */
+    public function test_seen_does_not_change_latest_refusal(): void
+    {
+        $orderId = $this->draft();
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $a = $this->offerId($orderId, self::A);
+        Offers::decline($a, self::A, 'Не встигну');
+        Offers::invite($orderId, self::CLIENT, self::B);
+        $b = $this->offerId($orderId, self::B);
+        Offers::decline($b, self::B, '');
+        // відмови рознесені в часі: A — раніше, B — пізніше
+        Sql::exec('UPDATE design_offers SET updated = NOW() - INTERVAL 10 MINUTE WHERE id = ?', [$a]);
+        Sql::exec('UPDATE design_offers SET updated = NOW() - INTERVAL 5 MINUTE WHERE id = ?', [$b]);
+        Sql::exec('UPDATE design_messages SET created = NOW() - INTERVAL 10 MINUTE WHERE offer_id = ?', [$a]);
+        $this->assertSame($b, Offers::mode2State($orderId, self::CLIENT)['offer']['id']);
+
+        // A відкрив своє старе листування, клієнту пішло б сповіщення — B лишається останнім, причина A не показується
+        Messages::seen($a, Messages::ROLE_DESIGNER);
+        Messages::notifyNew($a, Messages::ROLE_CLIENT, self::CLIENT, 'Петро Дизайнер', $orderId);
+        $this->assertSame($b, Offers::mode2State($orderId, self::CLIENT)['offer']['id']);
+        $this->assertNull(Offers::declineReason($b));
+        $this->assertSame('Не встигну', Offers::declineReason($a)['text'], 'причина A лишається при A');
     }
 }

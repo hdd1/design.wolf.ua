@@ -56,9 +56,10 @@ $values = $posted['values'] ?? ($previous
 $client = Customers::header($order['customer_id'])['short'] ?? 'Клієнт';
 $csrf = Csrf::token($me);
 
-// Листування: є пропозиція і в ній можна писати або вже щось написано. Перший рендер — сторона «в чаті»
+// Листування: є пропозиція і в ній можна писати або вже щось написано. Перший рендер — сторона «в чаті».
+// Запрошення без відповіді — без листування (лише «Беру» / «Відмовитися»), навіть якщо в рядку лишилось листування минулого раунду
 $chat = null;
-if ($offer !== null) {
+if ($offer !== null && $status !== OfferStatus::INVITED) {
     $access = Offers::access($offer['id'], $me);
     $messages = Chat::messages($access);
     if ($access['write'] || $messages) {
@@ -66,7 +67,7 @@ if ($offer !== null) {
         $chat = [
             'offerId' => $offer['id'],
             'title' => $client,
-            'subtitle' => $status === OfferStatus::INVITED || $offer['price_designer'] <= 0 ? ''
+            'subtitle' => $offer['price_designer'] <= 0 ? ''
                 : 'Ви: ' . View::price($offer['price_designer']) . ' на руки' . ($offer['deadline'] ? ' · до ' . View::date($offer['deadline']) : ''),
             'note' => $status === OfferStatus::CHOSEN ? null : 'До вибору — лише текстові повідомлення. Файли і прев\'ю — після вибору дизайнера',
             'csrf' => $csrf,

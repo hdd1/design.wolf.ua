@@ -271,6 +271,58 @@ final class ChatHttpTest extends TestCase
         $this->assertSame(1, Messages::count($offerId));
     }
 
+    /** Запрошення без відповіді: листування лише для читання з обох боків (починається з «Беру») */
+    public function test_invited_offer_is_read_only(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        $orderId = $this->order($client, OrderStatus::WAITING_DESIGNER);
+        Sql::exec('UPDATE design_orders SET mode = 2 WHERE id = ?', [$orderId]);
+        $offerId = $this->offer($orderId, $designer, OfferStatus::INVITED);
+
+        foreach ([$designer, $client] as $as) {
+            [$code, $json] = self::poll($offerId, $as);
+            $this->assertSame(200, $code);
+            $this->assertFalse($json['write']);
+            [$code, $json] = self::send($offerId, $as, 'А який формат?');
+            $this->assertSame(403, $code);
+            $this->assertSame(['error' => 'Листування закрите'], $json);
+        }
+        $this->assertSame(0, Messages::count($offerId));
+        $this->assertNull(self::offerRow($offerId)['client_notified_at']);
+    }
+
+    /** Дизайнер більше не схвалений: обидві сторони читають, але не пишуть; сповіщень немає */
+    public function test_unapproved_designer_chat_read_only(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        $offerId = $this->offer($this->order($client), $designer);
+        Messages::add($offerId, $designer, Messages::ROLE_DESIGNER, 'Було до блокування');
+        Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::BLOCKED, $designer]);
+
+        foreach ([$designer, $client] as $as) {
+            [$code, $json] = self::poll($offerId, $as);
+            $this->assertSame(200, $code, "GET як $as");
+            $this->assertFalse($json['write']);
+            $this->assertSame(['Було до блокування'], array_column($json['messages'], 'text'));
+            [$code, $json] = self::send($offerId, $as, 'Ще одне');
+            $this->assertSame(403, $code, "POST як $as");
+            $this->assertSame(['error' => 'Листування закрите'], $json);
+        }
+        $this->assertSame(1, Messages::count($offerId));
+        $row = self::offerRow($offerId);
+        $this->assertNull($row['client_notified_at']);
+        $this->assertNull($row['designer_notified_at']);
+
+        // клієнт відкриває листування недоступного дизайнера — лише читання
+        [$code, , $html] = self::fetch('/orders/' . $this->orders[0] . "/?chat=$offerId", $client);
+        $this->assertSame(200, $code);
+        $this->assertStringContainsString('data-chat="' . $offerId . '"', $html);
+        $this->assertStringContainsString('data-write="0"', $html);
+        $this->assertStringContainsString('Дизайнер недоступний', $html);
+    }
+
     public function test_poll_after_id(): void
     {
         $client = self::clientId();

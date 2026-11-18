@@ -348,11 +348,16 @@ final class DesignerOffersHttpTest extends TestCase
 
         // Запрошення: без ціни, кнопки «Беру» / «Відмовитися»
         $a = $this->order($client, OrderStatus::WAITING_DESIGNER, 2);
-        $this->offer($a, $designer, OfferStatus::INVITED);
+        $invited = $this->offer($a, $designer, OfferStatus::INVITED);
+        // листування минулого раунду (рядок запрошено знову) — у запрошенні не показується
+        Messages::add($invited, $client, Messages::ROLE_CLIENT, 'Повідомлення минулого раунду');
         $main = self::main($this->page("/feed/$a/", $designer));
         $this->assertStringContainsString("Вас обрали для замовлення №$a", $main);
         $this->assertStringContainsString('>Беру</a>', $main);
         $this->assertStringContainsString('>Відмовитися</a>', $main);
+        $this->assertStringNotContainsString('data-chat=', $main, 'до «Беру» листування немає');
+        $this->assertStringNotContainsString('Повідомлення минулого раунду', $main);
+        $this->assertNull(self::offerRow($a, $designer)['designer_seen_at']);
         $this->assertStringNotContainsString('грн', $main, 'у запрошенні немає ціни');
         $this->assertStringContainsString('Флаєр для СТО «Мотор Сервіс»', $main);
 
@@ -383,6 +388,7 @@ final class DesignerOffersHttpTest extends TestCase
         $row = self::offerRow($b, $designer);
         $this->assertSame(OfferStatus::DECLINED, (int)$row['status']);
         $this->assertSame(1, Messages::count((int)$row['id']));
+        $this->assertSame(['event' => 'decline'], Messages::list((int)$row['id'])[0]['data']);
         $body = $this->page($loc, $designer);
         $this->assertStringContainsString('Ви відмовилися від цього замовлення', $body);
         $this->assertStringContainsString('Не встигну до потрібної дати', $body);

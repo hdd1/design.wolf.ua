@@ -14,8 +14,11 @@ final class Messages
     /** Через скільки секунд після відкриття листування співрозмовник вважається «в чаті» і його не сповіщають */
     private const IN_CHAT_SECONDS = 45;
 
-    /** Додає повідомлення. Права (чи може автор писати в цю пропозицію) не перевіряє */
-    public static function add(int $offerId, int $authorId, int $role, string $text): int
+    /**
+     * Додає повідомлення. Права (чи може автор писати в цю пропозицію) не перевіряє.
+     * data — машинна позначка (як у системних), напр. ['event' => 'decline'] для причини відмови від запрошення
+     */
+    public static function add(int $offerId, int $authorId, int $role, string $text, array $data = []): int
     {
         $text = trim($text);
         if ($text === '') {
@@ -29,6 +32,7 @@ final class Messages
             'author_id' => $authorId,
             'author_role' => $role,
             'text' => $text,
+            'data' => $data === [] ? null : json_encode($data, JSON_UNESCAPED_UNICODE),
         ]);
     }
 
@@ -71,25 +75,32 @@ final class Messages
         return (int)Sql::value('SELECT COUNT(*) FROM design_messages WHERE offer_id = ? AND author_role <> ?', [$offerId, self::ROLE_SYSTEM]);
     }
 
-    /** Сторона відкрила листування: seen_at = NOW() */
+    /**
+     * Сторона відкрила листування: seen_at = NOW().
+     * updated = updated: це облік, не зміна пропозиції — інакше ON UPDATE CURRENT_TIMESTAMP зсуне час запрошення / відмови
+     */
     public static function seen(int $offerId, int $role): void
     {
         $col = self::column($role, 'seen_at');
-        Sql::exec("UPDATE design_offers SET $col = NOW() WHERE id = ?", [$offerId]);
+        Sql::exec("UPDATE design_offers SET $col = NOW(), updated = updated WHERE id = ?", [$offerId]);
     }
 
     /**
      * Сповіщає сторону про нове повідомлення — лише про перше непрочитане:
      * після попереднього сповіщення вона мала відкрити листування, і вона зараз не «в чаті» (відкрила понад 45 с тому).
-     * Перевірка й notified_at = NOW() — один атомарний UPDATE на годиннику БД, тож паралельні повідомлення шлють одне сповіщення.
+     * Перевірка й notified_at = NOW() — один атомарний UPDATE на годиннику БД, тож паралельні повідомлення шлють одне сповіщення
+     * (updated не рухається — див. seen). Не схваленому дизайнеру (заблокований тощо) не шлемо: листування з ним закрите.
      * @return bool чи пішло сповіщення
      */
     public static function notifyNew(int $offerId, int $toRole, int $toId, string $fromName, int $orderId): bool
     {
         $seen = self::column($toRole, 'seen_at');
         $notified = self::column($toRole, 'notified_at');
+        if ($toRole === self::ROLE_DESIGNER && Designers::status($toId) !== DesignerStatus::APPROVED) {
+            return false;
+        }
         $claimed = Sql::exec(
-            "UPDATE design_offers SET $notified = NOW() WHERE id = ?"
+            "UPDATE design_offers SET $notified = NOW(), updated = updated WHERE id = ?"
             . " AND ($notified IS NULL OR $seen >= $notified)"
             . " AND ($seen IS NULL OR $seen < NOW() - INTERVAL " . self::IN_CHAT_SECONDS . ' SECOND)',
             [$offerId]

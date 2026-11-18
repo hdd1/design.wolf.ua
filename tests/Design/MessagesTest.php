@@ -1,6 +1,7 @@
 <?php
 
 use Design\DesignerException;
+use Design\DesignerStatus;
 use Design\Messages;
 use Design\Notify;
 use Design\Sql;
@@ -18,6 +19,8 @@ final class MessagesTest extends TestCase
     {
         Notify::$sent = [];
         $this->cleanup();
+        // співрозмовник-дизайнер — схвалений (не схваленому сповіщення не йдуть)
+        Sql::insert('design_designers', ['customer_id' => self::FAKE_DESIGNER, 'status' => DesignerStatus::APPROVED, 'name' => 'Тест']);
         $this->offerId = Sql::insert('design_offers', [
             'order_id' => self::FAKE_ORDER,
             'designer_id' => self::FAKE_DESIGNER,
@@ -35,6 +38,12 @@ final class MessagesTest extends TestCase
     {
         Sql::exec('DELETE m FROM design_messages m JOIN design_offers o ON o.id = m.offer_id WHERE o.order_id = ?', [self::FAKE_ORDER]);
         Sql::exec('DELETE FROM design_offers WHERE order_id = ?', [self::FAKE_ORDER]);
+        Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::FAKE_DESIGNER]);
+    }
+
+    private function updated(): string
+    {
+        return (string)Sql::value('SELECT updated FROM design_offers WHERE id = ?', [$this->offerId]);
     }
 
     public function test_add_validates_and_keeps_text(): void
@@ -160,5 +169,50 @@ final class MessagesTest extends TestCase
         // лічильники сторін незалежні: дизайнер ще не сповіщався
         $this->assertTrue(Messages::notifyNew($this->offerId, Messages::ROLE_DESIGNER, self::FAKE_DESIGNER, 'Клієнт', self::FAKE_ORDER));
         $this->assertCount(4, Notify::$sent);
+    }
+
+    /** Позначка події в повідомленні автора (причина відмови) — у data, як у системних */
+    public function test_add_keeps_event_data(): void
+    {
+        $plain = Messages::add($this->offerId, self::FAKE_DESIGNER, Messages::ROLE_DESIGNER, 'Питання');
+        $marked = Messages::add($this->offerId, self::FAKE_DESIGNER, Messages::ROLE_DESIGNER, 'Зайнятий', ['event' => 'decline']);
+        $byId = array_column(Messages::list($this->offerId), null, 'id');
+        $this->assertNull($byId[$plain]['data']);
+        $this->assertSame(['event' => 'decline'], $byId[$marked]['data']);
+        $this->assertSame(Messages::ROLE_DESIGNER, $byId[$marked]['role']);
+        $this->assertSame(2, Messages::count($this->offerId), 'позначене повідомлення — звичайне повідомлення дизайнера');
+    }
+
+    /** seen / notified — облік, не зміна пропозиції: updated (час запрошення, відмови, сортування) не рухається */
+    public function test_seen_and_notify_keep_updated(): void
+    {
+        Sql::exec("UPDATE design_offers SET updated = '2026-01-02 03:04:05' WHERE id = ?", [$this->offerId]);
+
+        Messages::seen($this->offerId, Messages::ROLE_CLIENT);
+        Messages::seen($this->offerId, Messages::ROLE_DESIGNER);
+        $this->assertSame('2026-01-02 03:04:05', $this->updated(), 'seen');
+
+        // співрозмовники давно не заходили — сповіщення підуть
+        Sql::exec("UPDATE design_offers SET client_seen_at = NULL, designer_seen_at = NULL, updated = '2026-01-02 03:04:05' WHERE id = ?", [$this->offerId]);
+        $this->assertTrue(Messages::notifyNew($this->offerId, Messages::ROLE_CLIENT, self::FAKE_CLIENT, 'Іван', self::FAKE_ORDER));
+        $this->assertTrue(Messages::notifyNew($this->offerId, Messages::ROLE_DESIGNER, self::FAKE_DESIGNER, 'Тарас Г.', self::FAKE_ORDER));
+        $this->assertSame('2026-01-02 03:04:05', $this->updated(), 'notifyNew');
+    }
+
+    /** Не схвалений (заблокований, на розгляді, без профілю) дизайнер сповіщень про повідомлення не отримує; клієнт — як завжди */
+    public function test_notify_skips_unapproved_designer(): void
+    {
+        foreach ([DesignerStatus::BLOCKED, DesignerStatus::PENDING, null] as $status) {
+            if ($status === null) {
+                Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::FAKE_DESIGNER]);
+            } else {
+                Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [$status, self::FAKE_DESIGNER]);
+            }
+            $this->assertFalse(Messages::notifyNew($this->offerId, Messages::ROLE_DESIGNER, self::FAKE_DESIGNER, 'Тарас Г.', self::FAKE_ORDER), "статус $status");
+            $this->assertSame([], Notify::$sent);
+            $this->assertNull(Sql::value('SELECT designer_notified_at FROM design_offers WHERE id = ?', [$this->offerId]));
+        }
+        $this->assertTrue(Messages::notifyNew($this->offerId, Messages::ROLE_CLIENT, self::FAKE_CLIENT, 'Дизайнер', self::FAKE_ORDER));
+        $this->assertCount(1, Notify::$sent);
     }
 }

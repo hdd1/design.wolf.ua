@@ -515,11 +515,12 @@ final class OffersTest extends TestCase
         $this->assertFalse(Offers::access($c, self::CLIENT)['write']);
         $this->assertFalse(Offers::access($c, self::C)['write']);
 
-        // запрошення (режим 2) — писати можна
+        // запрошення (режим 2) без відповіді — лише читання для обох: до «Беру» листування немає
         $invitedOrder = $this->order(self::CLIENT, OrderStatus::WAITING_DESIGNER, 2);
         $inv = Sql::insert('design_offers', ['order_id' => $invitedOrder, 'designer_id' => self::A, 'status' => OfferStatus::INVITED]);
-        $this->assertTrue(Offers::access($inv, self::CLIENT)['write']);
-        $this->assertTrue(Offers::access($inv, self::A)['write']);
+        $this->assertFalse(Offers::access($inv, self::CLIENT)['write']);
+        $this->assertFalse(Offers::access($inv, self::A)['write']);
+        $this->assertSame(Messages::ROLE_DESIGNER, Offers::access($inv, self::A)['role']);
 
         // після вибору — лише обрана
         Offers::choose($orderId, self::CLIENT, $b, $this->price($b));
@@ -533,6 +534,63 @@ final class OffersTest extends TestCase
         Sql::exec('UPDATE design_orders SET status = ? WHERE id = ?', [OrderStatus::CANCELLED, $orderId]);
         $this->assertFalse(Offers::access($b, self::CLIENT)['write']);
         $this->assertFalse(Offers::access($b, self::B)['write']);
+    }
+
+    /** Дизайнер більше не схвалений (заблокований, на розгляді): листування лише для читання з обох боків, навіть обране */
+    public function test_access_unapproved_designer_read_only(): void
+    {
+        $orderId = $this->order();
+        $a = Offers::propose($orderId, self::A, 'A', 500, $this->inDays(1));
+        $b = Offers::propose($orderId, self::B, 'B', 600, $this->inDays(1));
+        Messages::add($a, self::A, Messages::ROLE_DESIGNER, 'Привіт');
+
+        foreach ([DesignerStatus::BLOCKED, DesignerStatus::PENDING] as $status) {
+            Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [$status, self::A]);
+            $designer = Offers::access($a, self::A);
+            $this->assertNotNull($designer, 'читати може');
+            $this->assertSame(Messages::ROLE_DESIGNER, $designer['role']);
+            $this->assertFalse($designer['write']);
+            $client = Offers::access($a, self::CLIENT);
+            $this->assertSame(Messages::ROLE_CLIENT, $client['role']);
+            $this->assertFalse($client['write']);
+        }
+        // профіль дизайнера видалено — так само
+        Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::A]);
+        $this->assertFalse(Offers::access($a, self::A)['write']);
+        $this->assertFalse(Offers::access($a, self::CLIENT)['write']);
+
+        // інша пропозиція того ж замовлення не зачеплена
+        $this->assertTrue(Offers::access($b, self::CLIENT)['write']);
+        $this->assertTrue(Offers::access($b, self::B)['write']);
+
+        // обраний, а потім заблокований — теж лише читання
+        Offers::choose($orderId, self::CLIENT, $b, $this->price($b));
+        $this->assertTrue(Offers::access($b, self::CLIENT)['write']);
+        Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::BLOCKED, self::B]);
+        $this->assertFalse(Offers::access($b, self::CLIENT)['write']);
+        $this->assertFalse(Offers::access($b, self::B)['write']);
+    }
+
+    /** Пропозиція з іншого замовлення того ж клієнта: вибір відхилено, у жодному із замовлень нічого не змінилося */
+    public function test_choose_offer_of_other_own_order_refused(): void
+    {
+        $x = $this->order();
+        $y = $this->order();
+        $ax = Offers::propose($x, self::A, 'A на X', 500, $this->inDays(1));
+        $by = Offers::propose($y, self::B, 'B на Y', 600, $this->inDays(1));
+        Notify::$sent = [];
+
+        $this->assertError('Пропозиція недоступна', fn() => Offers::choose($x, self::CLIENT, $by, $this->price($by)));
+
+        foreach ([$x, $y] as $id) {
+            $order = $this->orderRow($id);
+            $this->assertSame(OrderStatus::COLLECTING, (int)$order['status']);
+            $this->assertNull($order['chosen_offer_id']);
+            $this->assertNull($order['chosen_at']);
+        }
+        $this->assertSame(OfferStatus::SENT, (int)$this->offerRow($by)['status']);
+        $this->assertSame(OfferStatus::SENT, (int)$this->offerRow($ax)['status']);
+        $this->assertSame([], Notify::$sent);
     }
 
     public function test_mine_tabs(): void

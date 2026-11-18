@@ -24,8 +24,9 @@ $card = static function (array $c) use ($orderId, $chosen, $choosable, $sel): st
         $c['price_changed'] && $c['status'] === OfferStatus::SENT => '<span class="badge-d warn">Ціну змінено</span>',
         default => '',
     };
-    // Листування: є повідомлення — «Листування · N», немає і можна писати — «Написати»
-    $writable = in_array($c['status'], [OfferStatus::SENT, OfferStatus::CHOSEN], true) && ($chosen === null || $c['status'] === OfferStatus::CHOSEN);
+    // Листування: є повідомлення — «Листування · N» (у недоступного дизайнера — лише читання), немає і можна писати — «Написати»
+    $writable = in_array($c['status'], [OfferStatus::SENT, OfferStatus::CHOSEN], true) && ($chosen === null || $c['status'] === OfferStatus::CHOSEN)
+        && $c['available'];
     $links = '';
     if ($c['messages'] > 0 || $writable) {
         $links .= '<a class="oc-link" href="/orders/' . $orderId . '/?chat=' . $c['id'] . '#chat"><i class="fal fa-comment"></i> '

@@ -25,16 +25,40 @@
 
 ### Дизайнеры
 
-**`design_designers`** — профиль и допуск
+Этап 2, создаются `docs/sql/stage2.sql`. Подробности — спека `docs/superpowers/specs/2026-11-17-stage2-designers-design.md`.
+
+**`design_designers`** — профиль и заявка
 | Поле | Тип | Что |
 |---|---|---|
-| `customer_id` | int PK | = `customers.id` |
-| `status` | tinyint | 1 заявка, 2 одобрен, 3 отклонён, 4 заблокирован |
+| `customer_id` | int PK | = `customers.id` (дизайнер — клиент wolf.ua) |
+| `status` | tinyint, default 0 | см. ниже |
+| `name` | varchar(80) | Имя в профиле; при первом открытии — из аккаунта wolf.ua (`customers` не меняем) |
 | `about` | text | О себе |
-| `rating` | decimal(3,2) | Старт 5.00 |
-| `created`, `reviewed_at`, `reviewed_by` | | Кто и когда рассмотрел заявку (`users.id`) |
+| `link` | varchar(255) | Behance / Instagram / сайт, необязательно (только http/https) |
+| `photo` | varchar(32) | Файл аватара; пусто — инициалы |
+| `rating` | decimal(3,2), default 5.00 | Пока не показываем |
+| `reject_comment` | text | Комментарий отказа, его видит дизайнер (в статусе 3). При повторной подаче не стирается |
+| `created`, `submitted_at` | datetime | Создана анкета / подана заявка |
+| `reviewed_at`, `reviewed_by` | datetime, int | Кто и когда последним менял статус в adminka (`users.id`) |
 
-**`design_portfolio`** — работы в портфолио: `id`, `designer_id`, `title`, `file`, `preview`, `pos`, `shw`, `created`.
+Города нет.
+
+Статусы: 0 черновик заявки, 1 на рассмотрении, 2 одобрен, 3 отклонён, 4 заблокирован.
+Переходы: 0→1 (подал), 1→2 / 1→3 (adminka), 3→1 (исправил и подал снова), любой →4 (adminka), 4→1 (разблокировка возвращает на рассмотрение, одобряют отдельно — решение 2026-11-18).
+Профиль и работы дизайнер меняет в 0, 3 и 2 (одобренный — без повторной модерации); в 1 и 4 — только чтение. Клиентам виден только 2.
+
+**`design_portfolio`** — работы в портфолио
+| Поле | Тип | Что |
+|---|---|---|
+| `id` | int unsigned PK | |
+| `designer_id` | int | `design_designers.customer_id` |
+| `title` | varchar(120) | Необязательное название, задаётся в «Мій профіль» |
+| `file` | varchar(32) | Имя оригинала, напр. `17.jpg`; пусто — работа ещё обрабатывается (старше 10 мин — брошенная, убирается при следующей загрузке) |
+| `width`, `height` | int | Размер оригинала после поворота по EXIF |
+| `pos`, `shw` | int, tinyint(1) | Порядок и видимость |
+| `created` | datetime | |
+
+Файлы — вне webroot, `<storage>/portfolio/<designer_id>/`: оригинал `{id}.jpg|png`, копии `{id}-card.webp` (600×480) и `{id}-view.webp` (до 2000), аватар `avatar-<8 hex>.webp`. Лимит работ: 10 в заявке, 30 у одобренного.
 
 ### Заказ
 

@@ -219,7 +219,7 @@ final class PagesHttpTest extends TestCase
         [$code, , $body] = self::fetch('/orders/', self::cookie());
         $this->assertSame(200, $code);
         $this->assertStringContainsString('Ваш хід', $body);
-        $this->assertStringContainsString('Чекаємо іншу сторону', $body);
+        $this->assertStringContainsString('Інші замовлення', $body);
         $this->assertStringContainsString("№$draft", $body);
     }
 

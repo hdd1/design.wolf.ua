@@ -22,7 +22,7 @@ use Design\View;
       <img src="/assets/img/hero.webp" alt="Візитки і зразки кольорів на столі дизайнера" width="1200" height="655">
       <div class="offer-ex">
         <div class="text-3 small">Приклад пропозиції на візитку</div>
-        <div class="d-flex justify-content-between align-items-baseline gap-3 mt-1"><span class="fs-4 fw-bold">1 200 грн</span><span class="text-2 small">до 20 листопада</span></div>
+        <div class="d-flex justify-content-between align-items-baseline gap-3 mt-1"><span class="fs-4 fw-bold">1 200 грн</span><span class="text-2 small">до <?= View::date(date('Y-m-d', strtotime('+5 days'))) ?></span></div>
       </div>
     </div></div>
   </div></div>

@@ -6,7 +6,7 @@
       </div>
       <div class="col-6 col-lg-2"><h6>Центральний офіс</h6>м. Київ, вул. Івана Виговського, 13<br>044 364 40 09 · office@wolf.ua<br>Пн–Пт 9:00–18:00</div>
       <div class="col-6 col-lg-2"><h6>Виробництво / Склад</h6>м. Київ, вул. Івана Виговського, 13<br>Видача продукції: Пн–Сб 9:00–19:00</div>
-      <div class="col-6 col-lg-2"><h6>Телефони</h6>0 800 755 774 (безкоштовно)<br>067 503 74 74 · 050 465 74 74</div>
+      <div class="col-6 col-lg-2"><h6>Телефони</h6><span class="text-nowrap">0 800 755 774</span> (безкоштовно)<br><span class="text-nowrap">067 503 74 74</span><br><span class="text-nowrap">050 465 74 74</span></div>
       <div class="col-6 col-lg-3"><h6>Майстерня дизайну</h6><a href="/brief/">Створити бриф</a><br><a href="https://wolf.ua/">Друк на wolf.ua</a></div>
     </div>
   </div>

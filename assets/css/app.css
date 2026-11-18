@@ -142,6 +142,7 @@ main{flex:1 0 auto}
 .q-label{font-weight:700;font-size:1.05rem;margin-bottom:.15rem}
 .q-note{color:var(--text-2);font-size:.85rem;margin-bottom:.5rem}
 .form-control{border-radius:var(--r-m);border-color:var(--border-strong);padding:.75rem .9rem}
+.form-control::placeholder{color:#B5AFA6;opacity:1}
 .form-control:focus{border-color:var(--orange);box-shadow:0 0 0 .2rem #FBA10033}
 .tips{background:var(--cream);border-radius:var(--r-l);padding:var(--s-5)}
 .tips li{display:flex;gap:.6rem;color:var(--text-2);margin-bottom:var(--s-3)}
@@ -193,7 +194,7 @@ main{flex:1 0 auto}
 .hero .perks li{display:flex;gap:.5rem;align-items:center;color:var(--text-2);font-size:.92rem;margin-top:.4rem}
 .hero .perks i{color:var(--green)}
 .hero-img{position:relative}
-.hero-img img{width:100%;border-radius:var(--r-l);box-shadow:0 20px 48px #00000024}
+.hero-img img{width:100%;height:auto;border-radius:var(--r-l);box-shadow:0 20px 48px #00000024}
 .hero-img .offer-ex{position:absolute;left:-24px;bottom:24px;background:#fff;border-radius:var(--r-l);box-shadow:0 12px 32px #0000001f;padding:var(--s-4);min-width:240px}
 @media (max-width:767px){.hero-img .offer-ex{left:12px}}
 .how .step-n{font-family:var(--font-head);font-size:2.4rem;color:var(--border-strong)}
@@ -204,6 +205,7 @@ main{flex:1 0 auto}
 .why .item i{width:40px;height:40px;border-radius:var(--r-s);background:#FFFFFF1A;display:flex;align-items:center;justify-content:center;color:var(--orange);flex:none}
 .why .item p{color:#D5D9DB;margin:0;font-size:.92rem}
 .join{background:var(--cream);border:1px solid var(--border);border-radius:var(--r-l);padding:var(--s-6)}
+.guest-actions .btn{white-space:nowrap}
 @media (max-width:575px){.guest-actions .btn-primary{display:none}}
 .btn.is-sending{opacity:.65;pointer-events:none}
 

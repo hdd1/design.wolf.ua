@@ -102,6 +102,12 @@ final class OffersTest extends TestCase
         return Sql::one('SELECT * FROM design_orders WHERE id = ?', [$id]);
     }
 
+    /** Ціна для клієнта, яку він бачив і підтверджує при виборі */
+    private function price(int $offerId): int
+    {
+        return (int)Sql::value('SELECT price_client FROM design_offers WHERE id = ?', [$offerId]);
+    }
+
     public function test_propose_snapshot_and_notify(): void
     {
         $orderId = $this->order();
@@ -282,12 +288,12 @@ final class OffersTest extends TestCase
         Offers::withdraw($c, self::C);
         Notify::$sent = [];
 
-        $this->assertError('Пропозиція недоступна', fn() => Offers::choose($orderId, self::CLIENT, $c));
-        $this->assertError('Замовлення не знайдено', fn() => Offers::choose($orderId, self::A, $b));
-        $this->assertError('Пропозиція недоступна', fn() => Offers::choose($this->order(), self::CLIENT, $b));   // з іншого замовлення
+        $this->assertError('Пропозиція недоступна', fn() => Offers::choose($orderId, self::CLIENT, $c, $this->price($c)));
+        $this->assertError('Замовлення не знайдено', fn() => Offers::choose($orderId, self::A, $b, $this->price($b)));
+        $this->assertError('Пропозиція недоступна', fn() => Offers::choose($this->order(), self::CLIENT, $b, $this->price($b)));   // з іншого замовлення
         $this->assertSame(OrderStatus::COLLECTING, (int)$this->orderRow($orderId)['status']);
 
-        Offers::choose($orderId, self::CLIENT, $b);
+        Offers::choose($orderId, self::CLIENT, $b, $this->price($b));
         $order = $this->orderRow($orderId);
         $this->assertSame(OrderStatus::IN_WORK, (int)$order['status']);
         $this->assertSame($b, (int)$order['chosen_offer_id']);
@@ -307,8 +313,8 @@ final class OffersTest extends TestCase
         $this->assertSame('Майстерня дизайну: вас обрали виконавцем №' . $orderId . '. design.wolf.ua', $n['msgSMS']);
 
         // повтор (подвійний клік, друга вкладка) — і та сама, і інша пропозиція
-        $this->assertError('Дизайнера вже обрано', fn() => Offers::choose($orderId, self::CLIENT, $b));
-        $this->assertError('Дизайнера вже обрано', fn() => Offers::choose($orderId, self::CLIENT, $a));
+        $this->assertError('Дизайнера вже обрано', fn() => Offers::choose($orderId, self::CLIENT, $b, $this->price($b)));
+        $this->assertError('Дизайнера вже обрано', fn() => Offers::choose($orderId, self::CLIENT, $a, $this->price($a)));
         $this->assertSame($b, (int)$this->orderRow($orderId)['chosen_offer_id']);
         $this->assertCount(1, Notify::$sent);
 
@@ -317,6 +323,29 @@ final class OffersTest extends TestCase
         $this->assertError('Пропозицію вже не можна відкликати', fn() => Offers::withdraw($b, self::B));
         // і нову пропозицію не надіслати
         $this->assertError('Замовлення вже не приймає пропозицій', fn() => Offers::propose($orderId, self::C, 'C', 700, $this->inDays(1)));
+    }
+
+    public function test_choose_refused_when_price_changed(): void
+    {
+        $orderId = $this->order();
+        $a = Offers::propose($orderId, self::A, 'A', 500, $this->inDays(1));
+        $seen = $this->price($a);
+        // дизайнер підняв ціну, поки клієнт тиснув «Обрати»
+        Offers::update($a, self::A, 'A', 900, $this->inDays(1));
+        $this->assertNotSame($seen, $this->price($a));
+        Notify::$sent = [];
+
+        $this->assertError('Ціну змінено — перегляньте пропозицію', fn() => Offers::choose($orderId, self::CLIENT, $a, $seen));
+        $order = $this->orderRow($orderId);
+        $this->assertSame(OrderStatus::COLLECTING, (int)$order['status']);
+        $this->assertNull($order['chosen_offer_id']);
+        $this->assertNull($order['chosen_at']);
+        $this->assertSame(OfferStatus::SENT, (int)$this->offerRow($a)['status']);
+        $this->assertSame([], Notify::$sent);
+
+        // з новою ціною — обирається
+        Offers::choose($orderId, self::CLIENT, $a, $this->price($a));
+        $this->assertSame(OfferStatus::CHOSEN, (int)$this->offerRow($a)['status']);
     }
 
     public function test_choose_blocked_designer_refused(): void
@@ -331,7 +360,7 @@ final class OffersTest extends TestCase
         $this->assertFalse($cards[$b]['available']);
         $this->assertTrue($cards[$a]['available']);
 
-        $this->assertError('Дизайнер недоступний', fn() => Offers::choose($orderId, self::CLIENT, $b));
+        $this->assertError('Дизайнер недоступний', fn() => Offers::choose($orderId, self::CLIENT, $b, $this->price($b)));
         $this->assertSame(OrderStatus::COLLECTING, (int)$this->orderRow($orderId)['status']);
         $this->assertNull($this->orderRow($orderId)['chosen_offer_id']);
         $this->assertSame(OfferStatus::SENT, (int)$this->offerRow($b)['status']);
@@ -341,7 +370,7 @@ final class OffersTest extends TestCase
         $this->assertSame(['items' => [], 'total' => 0, 'pages' => 1], Offers::feed(self::B, 1));
         $this->assertSame(0, Offers::feedNewCount(self::B));
 
-        Offers::choose($orderId, self::CLIENT, $a);
+        Offers::choose($orderId, self::CLIENT, $a, $this->price($a));
         $this->assertSame(OfferStatus::CHOSEN, (int)$this->offerRow($a)['status']);
         $this->assertSame(OfferStatus::OTHER_CHOSEN, (int)$this->offerRow($b)['status']);
     }
@@ -391,7 +420,7 @@ final class OffersTest extends TestCase
         Offers::withdraw($c, self::C);
         Offers::propose($taken, self::A, 'A', 500, $this->inDays(1));
         $won = Offers::propose($taken, self::B, 'B', 500, $this->inDays(1));
-        Offers::choose($taken, self::CLIENT, $won);
+        Offers::choose($taken, self::CLIENT, $won, $this->price($won));
 
         $feed = Offers::feed(self::A, 1);
         $byId = array_column($feed['items'], null, 'order_id');
@@ -453,8 +482,10 @@ final class OffersTest extends TestCase
 
         // дизайнер дивився стрічку пів години тому: старий бриф — переглянутий, свіжий — новий
         Sql::exec('UPDATE design_designers SET feed_seen_at = NOW() - INTERVAL 30 MINUTE WHERE customer_id = ?', [self::A]);
+        // на спільній БД dev за ці пів години могли зʼявитися справжні брифи — рахуємо від них
+        $baseline = Offers::feedNewCount(self::A);
         $fresh = $this->order();
-        $this->assertSame(1, Offers::feedNewCount(self::A));
+        $this->assertSame($baseline + 1, Offers::feedNewCount(self::A));
         $byId = array_column(Offers::feed(self::A, 1)['items'], null, 'order_id');
         $this->assertTrue($byId[$fresh]['is_new']);
         $this->assertFalse($byId[$old]['is_new']);
@@ -491,7 +522,7 @@ final class OffersTest extends TestCase
         $this->assertTrue(Offers::access($inv, self::A)['write']);
 
         // після вибору — лише обрана
-        Offers::choose($orderId, self::CLIENT, $b);
+        Offers::choose($orderId, self::CLIENT, $b, $this->price($b));
         $this->assertTrue(Offers::access($b, self::CLIENT)['write']);
         $this->assertTrue(Offers::access($b, self::B)['write']);
         $this->assertFalse(Offers::access($a, self::CLIENT)['write']);
@@ -519,8 +550,8 @@ final class OffersTest extends TestCase
         $invited = Sql::insert('design_offers', ['order_id' => $o4, 'designer_id' => self::A, 'status' => OfferStatus::INVITED]);
         $lost = Offers::propose($o5, self::A, 'Програла', 500, $this->inDays(1));
         $winner = Offers::propose($o5, self::B, 'Виграла', 400, $this->inDays(1));
-        Offers::choose($o5, self::CLIENT, $winner);
-        Offers::choose($o2, self::CLIENT, $chosen);
+        Offers::choose($o5, self::CLIENT, $winner, $this->price($winner));
+        Offers::choose($o2, self::CLIENT, $chosen, $this->price($chosen));
 
         $mine = Offers::mine(self::A);
         $offers = array_column($mine['offers'], null, 'id');

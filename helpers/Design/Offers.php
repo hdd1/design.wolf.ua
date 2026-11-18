@@ -3,8 +3,10 @@
 namespace Design;
 
 /**
- * Пропозиції дизайнерів (design_offers): надіслати, змінити, відкликати; вибір клієнтом; стрічка брифів і «Мої пропозиції».
- * Одна пара замовлення+дизайнер — один рядок. Переходи статусів — атомарні, вибір — у транзакції з замком замовлення
+ * Пропозиції дизайнерів (design_offers): надіслати, змінити, відкликати; вибір клієнтом; стрічка брифів і «Мої пропозиції»;
+ * режим 2 «Одразу обрати»: запрошення, «Так» / «Ні», «Запросити іншого», «Збирати пропозиції».
+ * Одна пара замовлення+дизайнер — один рядок. Переходи статусів — атомарні, у транзакціях замок завжди спершу на рядок
+ * замовлення, потім на рядок пропозиції
  */
 final class Offers
 {
@@ -15,6 +17,14 @@ final class Offers
     private const ERR_NOT_FOUND = 'Пропозицію не знайдено';
     private const ERR_CLOSED = 'Замовлення вже не приймає пропозицій';
     private const ERR_ALREADY_CHOSEN = 'Дизайнера вже обрано';
+    private const ERR_ORDER_NOT_FOUND = 'Замовлення не знайдено';
+    private const ERR_ORDER_LOCKED = 'Замовлення зараз не можна змінити';
+    private const ERR_UNAVAILABLE = 'Дизайнер недоступний';
+    private const ERR_INVITE_GONE = 'Запрошення вже неактуальне';
+    private const ERR_ALREADY_SENT = 'Ви вже запропонували — змініть пропозицію';
+
+    /** Пропозиції, що тримають замовлення режиму 2: запрошення без відповіді або «Так» (якщо дизайнер досі схвалений) */
+    private const ACTIVE = [OfferStatus::INVITED, OfferStatus::SENT];
 
     /** Статуси, при яких дизайнер може надіслати пропозицію в той самий рядок ще раз */
     private const RESENDABLE = [OfferStatus::DECLINED, OfferStatus::WITHDRAWN];
@@ -32,10 +42,7 @@ final class Offers
      */
     public static function propose(int $orderId, int $designerId, string $text, int $price, string $deadline): int
     {
-        $designer = Designers::get($designerId);
-        if ($designer === null || $designer['status'] !== DesignerStatus::APPROVED) {
-            throw new DesignerException('Лише схвалені дизайнери можуть пропонувати');
-        }
+        $designer = self::approved($designerId);
         $text = self::validate($text, $price, $deadline);
 
         $pdo = Sql::pdo();
@@ -56,14 +63,7 @@ final class Offers
             throw $e;
         }
 
-        $p = (int)Sql::value('SELECT price_client FROM design_offers WHERE id = ?', [$id]);
-        $name = $designer['name'] !== '' ? $designer['name'] : 'дизайнера';
-        Notify::send([
-            'customer_id' => (int)$order['customer_id'],
-            'msg' => 'Майстерня дизайну: нова пропозиція від ' . $name . ' по замовленню №' . $orderId . ' — ' . self::money($p) . ' грн. '
-                . Config::siteUrl() . '/orders/' . $orderId . '/ (' . date('d.m H:i') . ')',
-            'msgSMS' => 'Майстерня дизайну: нова пропозиція по №' . $orderId . '. design.wolf.ua',
-        ]);
+        self::notifyNewOffer($orderId, (int)$order['customer_id'], $designer, $id);
         return $id;
     }
 
@@ -109,16 +109,187 @@ final class Offers
         }
     }
 
-    /** Дизайнер відкликає надіслану пропозицію (до вибору). Повторно надіслати можна в той самий рядок */
+    /**
+     * Дизайнер відкликає надіслану пропозицію (до вибору). Повторно надіслати можна в той самий рядок.
+     * Режим 2 (відкликання після «Так») — як відмова: замовлення лишається в зборі режиму 2 без пропозиції,
+     * клієнту — «Запросити іншого» / «Збирати пропозиції», клієнту й куратору — ті самі сповіщення, що й при «Ні»
+     */
     public static function withdraw(int $offerId, int $designerId): void
     {
-        $offer = self::get($offerId);
-        if ($offer === null || $offer['designer_id'] !== $designerId) throw new DesignerException(self::ERR_NOT_FOUND);
+        $orderId = self::orderOf($offerId, $designerId);
 
-        $n = Sql::exec('UPDATE design_offers SET status = ? WHERE id = ? AND designer_id = ? AND status = ?',
-            [OfferStatus::WITHDRAWN, $offerId, $designerId, OfferStatus::SENT]);
-        if ($n === 0) throw new DesignerException('Пропозицію вже не можна відкликати');
-        // Режим 2 (відкликання після «Так») — як відмова: стан замовлення і сповіщення додає задача 4
+        $pdo = Sql::pdo();
+        $pdo->beginTransaction();
+        try {
+            $order = Sql::one('SELECT customer_id, mode FROM design_orders WHERE id = ? FOR SHARE', [$orderId]);
+            $n = Sql::exec('UPDATE design_offers SET status = ? WHERE id = ? AND designer_id = ? AND status = ?',
+                [OfferStatus::WITHDRAWN, $offerId, $designerId, OfferStatus::SENT]);
+            if ($n === 0) throw new DesignerException('Пропозицію вже не можна відкликати');
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        // У замовленні режиму 2 надіслана пропозиція буває лише з запрошення: propose приймає тільки режим 1
+        if ($order !== null && (int)$order['mode'] === 2) self::notifyRefusal($orderId, (int)$order['customer_id'], $designerId);
+    }
+
+    /**
+     * Режим 2: клієнт обирає схваленого дизайнера з каталогу. З чернетки — публікація з вибором
+     * (WAITING_DESIGNER, mode = 2, published_at = NOW()); зі збору режиму 2 без активної пропозиції — «Запросити іншого».
+     * Рядок новий або той самий після відмови / відкликання → «запрошено». Запрошення недоступних (заблокованих) дизайнерів
+     * клієнт бачить як відмову — їх закриваємо. Сповіщає дизайнера
+     */
+    public static function invite(int $orderId, int $customerId, int $designerId): void
+    {
+        if ($designerId === $customerId) throw new DesignerException('Це ваше замовлення — обрати себе не можна');
+        if (Designers::status($designerId) !== DesignerStatus::APPROVED) throw new DesignerException(self::ERR_UNAVAILABLE);
+
+        $pdo = Sql::pdo();
+        $pdo->beginTransaction();
+        try {
+            $order = Sql::one('SELECT status, mode FROM design_orders WHERE id = ? AND customer_id = ? FOR UPDATE', [$orderId, $customerId]);
+            if ($order === null) throw new DesignerException(self::ERR_ORDER_NOT_FOUND);
+            $draft = (int)$order['status'] === OrderStatus::DRAFT;
+            if (!$draft && !self::reopenable($orderId, (int)$order['status'], (int)$order['mode'])) {
+                throw new DesignerException(self::ERR_ORDER_LOCKED);
+            }
+            self::closeStaleInvites($orderId);
+
+            $row = Sql::one('SELECT id FROM design_offers WHERE order_id = ? AND designer_id = ? FOR UPDATE', [$orderId, $designerId]);
+            if ($row === null) {
+                Sql::insert('design_offers', ['order_id' => $orderId, 'designer_id' => $designerId, 'status' => OfferStatus::INVITED]);
+            } else {
+                $n = Sql::exec('UPDATE design_offers SET status = ? WHERE id = ? AND status IN (' . implode(', ', self::RESENDABLE) . ')',
+                    [OfferStatus::INVITED, (int)$row['id']]);
+                if ($n === 0) throw new DesignerException(self::ERR_ORDER_LOCKED);
+            }
+
+            if ($draft) {
+                Sql::exec('UPDATE design_orders SET status = ?, mode = 2, published_at = NOW() WHERE id = ? AND status = ?',
+                    [OrderStatus::WAITING_DESIGNER, $orderId, OrderStatus::DRAFT]);
+            } else {
+                Sql::exec('UPDATE design_orders SET status = ? WHERE id = ? AND mode = 2 AND status IN (?, ?)',
+                    [OrderStatus::WAITING_DESIGNER, $orderId, OrderStatus::COLLECTING, OrderStatus::WAITING_DESIGNER]);
+            }
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        $client = Customers::header($customerId)['short'] ?? 'Клієнт';
+        Notify::send([
+            'customer_id' => $designerId,
+            'msg' => 'Майстерня дизайну: клієнт ' . $client . ' обрав вас для замовлення №' . $orderId . '. Береш? '
+                . Config::siteUrl() . '/feed/' . $orderId . '/ (' . date('d.m H:i') . ')',
+            'msgSMS' => 'Майстерня дизайну: вас обрали для №' . $orderId . '. design.wolf.ua',
+        ]);
+    }
+
+    /**
+     * Режим 2, «Так»: запрошення → надіслана пропозиція (ті самі перевірки і знімок ціни, що й у propose),
+     * замовлення → збір пропозицій (mode лишається 2). Сповіщає клієнта, як про нову пропозицію
+     */
+    public static function accept(int $offerId, int $designerId, string $text, int $price, string $deadline): void
+    {
+        $designer = self::approved($designerId);
+        $text = self::validate($text, $price, $deadline);
+        $orderId = self::orderOf($offerId, $designerId);
+
+        $pdo = Sql::pdo();
+        $pdo->beginTransaction();
+        try {
+            $order = self::lockInvite($orderId, $offerId);
+            self::send($orderId, $designerId, $text, $price, $deadline, [OfferStatus::INVITED]);
+            Sql::exec('UPDATE design_orders SET status = ? WHERE id = ? AND status = ?',
+                [OrderStatus::COLLECTING, $orderId, OrderStatus::WAITING_DESIGNER]);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        self::notifyNewOffer($orderId, (int)$order['customer_id'], $designer, $offerId);
+    }
+
+    /**
+     * Режим 2, «Ні»: запрошення → відмова, замовлення → збір пропозицій (mode лишається 2: клієнт обирає «Запросити іншого»
+     * або «Збирати пропозиції»). Непорожня причина — повідомлення дизайнера в листуванні. Сповіщає клієнта і куратора
+     */
+    public static function decline(int $offerId, int $designerId, string $reason): void
+    {
+        $orderId = self::orderOf($offerId, $designerId);
+        $reason = trim($reason);
+
+        $pdo = Sql::pdo();
+        $pdo->beginTransaction();
+        try {
+            $order = self::lockInvite($orderId, $offerId);
+            Sql::exec('UPDATE design_offers SET status = ? WHERE id = ? AND status = ?', [OfferStatus::DECLINED, $offerId, OfferStatus::INVITED]);
+            Sql::exec('UPDATE design_orders SET status = ? WHERE id = ? AND status = ?',
+                [OrderStatus::COLLECTING, $orderId, OrderStatus::WAITING_DESIGNER]);
+            // Задовга причина — виняток і відкат: відмова не записується без неї
+            if ($reason !== '') Messages::add($offerId, $designerId, Messages::ROLE_DESIGNER, $reason);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        self::notifyRefusal($orderId, (int)$order['customer_id'], $designerId);
+    }
+
+    /**
+     * Режим 2 → «Збирати пропозиції»: замовлення без активної пропозиції стає режимом 1 і зʼявляється в стрічці як нове
+     * (published_at = NOW(), крон рахує добу від цього моменту). Повтор (подвійний клік) нічого не змінює
+     */
+    public static function collect(int $orderId, int $customerId): void
+    {
+        $pdo = Sql::pdo();
+        $pdo->beginTransaction();
+        try {
+            $order = Sql::one('SELECT status, mode FROM design_orders WHERE id = ? AND customer_id = ? FOR UPDATE', [$orderId, $customerId]);
+            if ($order === null) throw new DesignerException(self::ERR_ORDER_NOT_FOUND);
+            $status = (int)$order['status'];
+            if ($status === OrderStatus::COLLECTING && (int)$order['mode'] === 1) {
+                $pdo->commit();
+                return;
+            }
+            if (!self::reopenable($orderId, $status, (int)$order['mode'])) throw new DesignerException(self::ERR_ORDER_LOCKED);
+            self::closeStaleInvites($orderId);
+            Sql::exec('UPDATE design_orders SET status = ?, mode = 1, published_at = NOW(), notified_no_offers_at = NULL WHERE id = ?',
+                [OrderStatus::COLLECTING, $orderId]);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Стан режиму 2 для екрана клієнта: waiting — запрошення без відповіді, offer — дизайнер сказав «Так» (обирайте),
+     * declined — відмовився, відкликав або став недоступним (кнопки «Запросити іншого» / «Збирати пропозиції»).
+     * offer — картка в тому ж вигляді, що й у forOrder (для declined — остання за часом). Не режим 2, не очікування / збір
+     * або чуже замовлення — null
+     * @return array{state:'waiting'|'declined'|'offer', offer:?array}|null
+     */
+    public static function mode2State(int $orderId, int $customerId): ?array
+    {
+        $order = Sql::one('SELECT status, mode FROM design_orders WHERE id = ? AND customer_id = ?', [$orderId, $customerId]);
+        if ($order === null || (int)$order['mode'] !== 2
+            || !in_array((int)$order['status'], [OrderStatus::WAITING_DESIGNER, OrderStatus::COLLECTING], true)) {
+            return null;
+        }
+        $cards = self::cards($orderId, $customerId, true);
+        foreach ($cards as $c) {
+            if ($c['available'] && in_array($c['status'], self::ACTIVE, true)) {
+                return ['state' => $c['status'] === OfferStatus::INVITED ? 'waiting' : 'offer', 'offer' => $c];
+            }
+        }
+        usort($cards, static fn(array $a, array $b): int => [$b['updated'], $b['id']] <=> [$a['updated'], $a['id']]);
+        return ['state' => 'declined', 'offer' => $cards[0] ?? null];
     }
 
     /** @return array{id:int, order_id:int, designer_id:int, status:int, text:string, price_designer:int, markup_percent:float, price_client:int, deadline:?string, created:string, updated:string, customer_id:int, order_status:int, mode:int, chosen_offer_id:?int}|null */
@@ -157,53 +328,29 @@ final class Offers
      */
     public static function forOrder(int $orderId, int $customerId): array
     {
-        $rows = Sql::all(
-            "SELECT f.id, f.status, f.designer_id, d.name AS designer_name, d.photo AS designer_photo, d.status AS designer_status,
-                    f.text, f.price_client, f.deadline, f.updated,
-                    (SELECT COUNT(*) FROM design_messages m WHERE m.offer_id = f.id AND m.author_role <> ?) AS messages,
-                    EXISTS (SELECT 1 FROM design_messages m WHERE m.offer_id = f.id AND m.author_role = ?
-                            AND JSON_UNQUOTE(JSON_EXTRACT(m.data, '$.event')) = 'price') AS price_changed
-             FROM design_offers f
-             JOIN design_orders o ON o.id = f.order_id
-             LEFT JOIN design_designers d ON d.customer_id = f.designer_id
-             WHERE f.order_id = ? AND o.customer_id = ? AND f.status <> ?
-             ORDER BY f.id",
-            [Messages::ROLE_SYSTEM, Messages::ROLE_SYSTEM, $orderId, $customerId, OfferStatus::INVITED]);
-
-        return array_map(static fn(array $r): array => [
-            'id' => (int)$r['id'],
-            'status' => (int)$r['status'],
-            'designer_id' => (int)$r['designer_id'],
-            'designer_name' => (string)$r['designer_name'],
-            'designer_photo' => (string)$r['designer_photo'],
-            'available' => $r['designer_status'] !== null && (int)$r['designer_status'] === DesignerStatus::APPROVED,
-            'text' => (string)$r['text'],
-            'price_client' => (int)$r['price_client'],
-            'deadline' => $r['deadline'] === null ? null : (string)$r['deadline'],
-            'messages' => (int)$r['messages'],
-            'price_changed' => (bool)$r['price_changed'],
-            'updated' => (string)$r['updated'],
-        ], $rows);
+        return self::cards($orderId, $customerId, false);
     }
 
     /**
      * Клієнт обирає надіслану пропозицію: замовлення → «В роботі», обрана → «обрано», решта надісланих → «обрано іншого».
-     * Одна транзакція з замком рядка замовлення: з двох одночасних виборів другий отримає «Дизайнера вже обрано»
+     * Одна транзакція з замком рядка замовлення: з двох одночасних виборів другий отримає «Дизайнера вже обрано».
+     * expectedPrice — ціна, яку клієнт бачив і підтвердив: якщо дизайнер тим часом її змінив, нічого не змінюється
      */
-    public static function choose(int $orderId, int $customerId, int $offerId): void
+    public static function choose(int $orderId, int $customerId, int $offerId, int $expectedPrice): void
     {
         $pdo = Sql::pdo();
         $pdo->beginTransaction();
         try {
             $order = Sql::one('SELECT status, chosen_offer_id FROM design_orders WHERE id = ? AND customer_id = ? FOR UPDATE', [$orderId, $customerId]);
-            if ($order === null) throw new DesignerException('Замовлення не знайдено');
+            if ($order === null) throw new DesignerException(self::ERR_ORDER_NOT_FOUND);
             if ($order['chosen_offer_id'] !== null) throw new DesignerException(self::ERR_ALREADY_CHOSEN);
-            if ((int)$order['status'] !== OrderStatus::COLLECTING) throw new DesignerException('Замовлення зараз не можна змінити');
+            if ((int)$order['status'] !== OrderStatus::COLLECTING) throw new DesignerException(self::ERR_ORDER_LOCKED);
 
-            $offer = Sql::one('SELECT designer_id, status FROM design_offers WHERE id = ? AND order_id = ? FOR UPDATE', [$offerId, $orderId]);
+            $offer = Sql::one('SELECT designer_id, status, price_client FROM design_offers WHERE id = ? AND order_id = ? FOR UPDATE', [$offerId, $orderId]);
             if ($offer === null || (int)$offer['status'] !== OfferStatus::SENT) throw new DesignerException('Пропозиція недоступна');
+            if ((int)$offer['price_client'] !== $expectedPrice) throw new DesignerException('Ціну змінено — перегляньте пропозицію');
             $designerId = (int)$offer['designer_id'];
-            if (Designers::status($designerId) !== DesignerStatus::APPROVED) throw new DesignerException('Дизайнер недоступний');
+            if (Designers::status($designerId) !== DesignerStatus::APPROVED) throw new DesignerException(self::ERR_UNAVAILABLE);
 
             Sql::exec('UPDATE design_orders SET status = ?, chosen_offer_id = ?, chosen_at = NOW() WHERE id = ? AND status = ? AND chosen_offer_id IS NULL',
                 [OrderStatus::IN_WORK, $offerId, $orderId, OrderStatus::COLLECTING]);
@@ -222,6 +369,41 @@ final class Offers
                 . Config::siteUrl() . '/feed/' . $orderId . '/ (' . date('d.m H:i') . ')',
             'msgSMS' => 'Майстерня дизайну: вас обрали виконавцем №' . $orderId . '. design.wolf.ua',
         ]);
+    }
+
+    /**
+     * Картки пропозицій замовлення для клієнта (forOrder, mode2State); invited — разом із запрошеннями без відповіді
+     * @return list<array{id:int, status:int, designer_id:int, designer_name:string, designer_photo:string, available:bool, text:string, price_client:int, deadline:?string, messages:int, price_changed:bool, updated:string}>
+     */
+    private static function cards(int $orderId, int $customerId, bool $invited): array
+    {
+        $rows = Sql::all(
+            "SELECT f.id, f.status, f.designer_id, d.name AS designer_name, d.photo AS designer_photo, d.status AS designer_status,
+                    f.text, f.price_client, f.deadline, f.updated,
+                    (SELECT COUNT(*) FROM design_messages m WHERE m.offer_id = f.id AND m.author_role <> ?) AS messages,
+                    EXISTS (SELECT 1 FROM design_messages m WHERE m.offer_id = f.id AND m.author_role = ?
+                            AND JSON_UNQUOTE(JSON_EXTRACT(m.data, '$.event')) = 'price') AS price_changed
+             FROM design_offers f
+             JOIN design_orders o ON o.id = f.order_id
+             LEFT JOIN design_designers d ON d.customer_id = f.designer_id
+             WHERE f.order_id = ? AND o.customer_id = ?" . ($invited ? '' : ' AND f.status <> ' . OfferStatus::INVITED) . "
+             ORDER BY f.id",
+            [Messages::ROLE_SYSTEM, Messages::ROLE_SYSTEM, $orderId, $customerId]);
+
+        return array_map(static fn(array $r): array => [
+            'id' => (int)$r['id'],
+            'status' => (int)$r['status'],
+            'designer_id' => (int)$r['designer_id'],
+            'designer_name' => (string)$r['designer_name'],
+            'designer_photo' => (string)$r['designer_photo'],
+            'available' => $r['designer_status'] !== null && (int)$r['designer_status'] === DesignerStatus::APPROVED,
+            'text' => (string)$r['text'],
+            'price_client' => (int)$r['price_client'],
+            'deadline' => $r['deadline'] === null ? null : (string)$r['deadline'],
+            'messages' => (int)$r['messages'],
+            'price_changed' => (bool)$r['price_changed'],
+            'updated' => (string)$r['updated'],
+        ], $rows);
     }
 
     /**
@@ -343,10 +525,11 @@ final class Offers
     }
 
     /**
-     * Записує пропозицію «надіслано» зі знімком ціни: новий рядок або той самий після відмови / відкликання.
-     * Статус замовлення перевіряє той, хто викликає
+     * Записує пропозицію «надіслано» зі знімком ціни: новий рядок або той самий з одного зі статусів from
+     * (режим 1 — після відмови / відкликання, «Так» у режимі 2 — із запрошення). Статус замовлення перевіряє той, хто викликає
+     * @param list<int> $from
      */
-    private static function send(int $orderId, int $designerId, string $text, int $price, string $deadline): int
+    private static function send(int $orderId, int $designerId, string $text, int $price, string $deadline, array $from = self::RESENDABLE): int
     {
         [$k, $p] = self::snapshot($price);
         $values = ['status' => OfferStatus::SENT, 'text' => $text, 'price_designer' => $price, 'markup_percent' => $k, 'price_client' => $p, 'deadline' => $deadline];
@@ -357,18 +540,116 @@ final class Offers
                 return Sql::insert('design_offers', ['order_id' => $orderId, 'designer_id' => $designerId] + $values);
             } catch (\PDOException $e) {
                 // Подвійний клік: рядок щойно вставив паралельний запит
-                if ($e->getCode() === '23000') throw new DesignerException('Ви вже запропонували — змініть пропозицію');
+                if ($e->getCode() === '23000') throw new DesignerException(self::ERR_ALREADY_SENT);
                 throw $e;
             }
         }
         $id = (int)$row['id'];
         $n = Sql::exec('UPDATE design_offers SET ' . implode(' = ?, ', array_keys($values)) . ' = ?
-                        WHERE id = ? AND status IN (' . implode(', ', self::RESENDABLE) . ')',
+                        WHERE id = ? AND status IN (' . implode(', ', $from) . ')',
             array_merge(array_values($values), [$id]));
         if ($n > 0) return $id;
 
         $status = (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$id]);
-        throw new DesignerException($status === OfferStatus::SENT ? 'Ви вже запропонували — змініть пропозицію' : 'Пропозицію зараз не можна надіслати');
+        throw new DesignerException($status === OfferStatus::SENT ? self::ERR_ALREADY_SENT : 'Пропозицію зараз не можна надіслати');
+    }
+
+    /** @return array дизайнер (Designers::get), якщо схвалений */
+    private static function approved(int $designerId): array
+    {
+        $designer = Designers::get($designerId);
+        if ($designer === null || $designer['status'] !== DesignerStatus::APPROVED) {
+            throw new DesignerException('Лише схвалені дизайнери можуть пропонувати');
+        }
+        return $designer;
+    }
+
+    /** Замовлення пропозиції цього дизайнера; чужа або неіснуюча — «Пропозицію не знайдено» */
+    private static function orderOf(int $offerId, int $designerId): int
+    {
+        $orderId = Sql::value('SELECT order_id FROM design_offers WHERE id = ? AND designer_id = ?', [$offerId, $designerId]);
+        if ($orderId === null) throw new DesignerException(self::ERR_NOT_FOUND);
+        return (int)$orderId;
+    }
+
+    /**
+     * У транзакції: замок замовлення, потім пропозиції; запрошення ще чекає відповіді («Так» / «Ні»)
+     * @return array{customer_id:mixed} рядок замовлення
+     */
+    private static function lockInvite(int $orderId, int $offerId): array
+    {
+        $order = Sql::one('SELECT customer_id, status, mode FROM design_orders WHERE id = ? FOR UPDATE', [$orderId]);
+        $status = (int)Sql::value('SELECT status FROM design_offers WHERE id = ? FOR UPDATE', [$offerId]);
+        if ($status === OfferStatus::SENT) throw new DesignerException(self::ERR_ALREADY_SENT);
+        if ($status !== OfferStatus::INVITED || $order === null
+            || (int)$order['status'] !== OrderStatus::WAITING_DESIGNER || (int)$order['mode'] !== 2) {
+            throw new DesignerException(self::ERR_INVITE_GONE);
+        }
+        return $order;
+    }
+
+    /**
+     * Замовлення режиму 2 можна знову віддати іншому дизайнеру або на збір пропозицій: у ньому немає активної пропозиції
+     * схваленого дизайнера (запрошення недоступного клієнт бачить як відмову). Викликати під замком замовлення
+     */
+    private static function reopenable(int $orderId, int $status, int $mode): bool
+    {
+        if ($mode !== 2 || !in_array($status, [OrderStatus::COLLECTING, OrderStatus::WAITING_DESIGNER], true)) return false;
+        return !(bool)Sql::value(
+            'SELECT EXISTS (SELECT 1 FROM design_offers f JOIN design_designers d ON d.customer_id = f.designer_id
+                            WHERE f.order_id = ? AND f.status IN (' . implode(', ', self::ACTIVE) . ') AND d.status = ?)',
+            [$orderId, DesignerStatus::APPROVED]);
+    }
+
+    /** Запрошення недоступних дизайнерів (заблокований тощо) → відмова, щоб не «ожили» після розблокування */
+    private static function closeStaleInvites(int $orderId): void
+    {
+        Sql::exec('UPDATE design_offers SET status = ? WHERE order_id = ? AND status = ?
+                   AND designer_id NOT IN (SELECT customer_id FROM design_designers WHERE status = ?)',
+            [OfferStatus::DECLINED, $orderId, OfferStatus::INVITED, DesignerStatus::APPROVED]);
+    }
+
+    /** Клієнту — нова пропозиція (режим 1 і «Так» режиму 2) */
+    private static function notifyNewOffer(int $orderId, int $customerId, array $designer, int $offerId): void
+    {
+        $p = (int)Sql::value('SELECT price_client FROM design_offers WHERE id = ?', [$offerId]);
+        $name = $designer['name'] !== '' ? $designer['name'] : 'дизайнера';
+        Notify::send([
+            'customer_id' => $customerId,
+            'msg' => 'Майстерня дизайну: нова пропозиція від ' . $name . ' по замовленню №' . $orderId . ' — ' . self::money($p) . ' грн. '
+                . Config::siteUrl() . '/orders/' . $orderId . '/ (' . date('d.m H:i') . ')',
+            'msgSMS' => 'Майстерня дизайну: нова пропозиція по №' . $orderId . '. design.wolf.ua',
+        ]);
+    }
+
+    /** Режим 2: дизайнер сказав «Ні» або відкликав «Так» — клієнту і куратору клієнта */
+    private static function notifyRefusal(int $orderId, int $customerId, int $designerId): void
+    {
+        $name = (string)(Designers::get($designerId)['name'] ?? '');
+        $time = date('d.m H:i');
+        $sms = 'Майстерня дизайну: дизайнер відмовився від №' . $orderId . '. design.wolf.ua';
+        Notify::send([
+            'customer_id' => $customerId,
+            'msg' => 'Майстерня дизайну: ' . ($name !== '' ? $name : 'Дизайнер') . ' не може взяти №' . $orderId . '. Оберіть іншого дизайнера: '
+                . Config::siteUrl() . '/orders/' . $orderId . '/ (' . $time . ')',
+            'msgSMS' => $sms,
+        ]);
+        $client = Customers::header($customerId)['name'] ?? 'Клієнт';
+        self::notifyCurator($customerId,
+            'Майстерня дизайну: дизайнер ' . ($name !== '' ? $name : 'id ' . $designerId) . ' відмовився від №' . $orderId
+            . ' (клієнт ' . $client . ', id ' . $customerId . ') (' . $time . ')',
+            $sms);
+    }
+
+    /** Куратор клієнта — customers.curator_id (users.id); немає — лише запис у журнал */
+    private static function notifyCurator(int $customerId, string $msg, string $msgSMS): void
+    {
+        $curatorId = (int)Sql::value('SELECT curator_id FROM customers WHERE id = ?', [$customerId]);
+        if ($curatorId <= 0) {
+            error_log('Design\\Offers: у клієнта id ' . $customerId . ' немає куратора — сповіщення не надіслано: ' . $msg);
+            return;
+        }
+        Notify::send(['user_id' => $curatorId, 'msg' => $msg, 'msgSMS' => $msgSMS]);
     }
 
     /** @return array{0:float, 1:int} поточна націнка k і ціна для клієнта P */

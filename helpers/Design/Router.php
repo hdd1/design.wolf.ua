@@ -16,6 +16,7 @@ final class Router
         ['GET', '#^/orders/$#', 'orders'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/$#', 'order'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/mode/$#', 'order-mode'],
+        ['GET', '#^/orders/(?<id>' . self::ID . ')/pick/$#', 'order-pick'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')$#', 'order-update'],
         ['GET', '#^/designer/$#', 'designer'],
         ['POST', '#^/designer$#', 'designer-save'],

@@ -176,7 +176,8 @@ final class PagesHttpTest extends TestCase
 
         [$code, , $mode] = self::fetch("/orders/$id/mode/", self::cookie());
         $this->assertSame(200, $code);
-        $this->assertStringContainsString('Незабаром', $mode);
+        // Етап 3: «Одразу обрати дизайнера» — посилання на вибір, якщо є схвалені дизайнери (ClientOffersHttpTest)
+        $this->assertStringContainsString('Одразу обрати дизайнера', $mode);
 
         [$code, $h] = self::fetch("/orders/$id", self::cookie(), ['action' => 'publish', 'csrf' => self::csrf($mode)]);
         $this->assertSame(302, $code);

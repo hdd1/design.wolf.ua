@@ -6,7 +6,10 @@ $row = static function (array $o, bool $isMine): string {
     return '<a class="order-row' . ($isMine ? ' mine' : '') . '" href="/orders/' . $o['id'] . '/">'
         . '<div><div class="num">№' . $o['id'] . ' · ' . View::date($o['created']) . '</div><div class="title">' . View::e($o['title']) . '</div></div>'
         . '<div>' . View::fetch('partials/status', ['status' => $o['status']]) . '<div class="turn"><i class="fal ' . ($isMine ? 'fa-hand-paper' : 'fa-hourglass-half') . ' me-1"></i>' . View::e($o['turn']['text']) . '</div></div>'
-        . '<div class="who">Дизайнера ще не обрано</div><div class="sum text-3">—</div><i class="fal fa-chevron-right chev"></i></a>';
+        . ($o['designer'] !== ''
+            ? '<div class="who chosen"><i class="fal fa-user-check me-1"></i>' . View::e($o['designer']) . '</div><div class="sum">' . View::price($o['price']) . '</div>'
+            : '<div class="who">Дизайнера ще не обрано</div><div class="sum text-3">—</div>')
+        . '<i class="fal fa-chevron-right chev"></i></a>';
 };
 ?>
 <div class="container page">

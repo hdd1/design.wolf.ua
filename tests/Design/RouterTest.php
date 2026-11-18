@@ -87,4 +87,13 @@ final class RouterTest extends TestCase
         $this->assertSame('/feed/345/', Router::withSlash('/feed/345'));
         $this->assertSame('/my-offers/', Router::withSlash('/my-offers'));
     }
+
+    public function test_client_offer_routes(): void
+    {
+        $this->assertSame(['page' => 'order-pick', 'params' => ['id' => '345']], Router::match('GET', '/orders/345/pick/'));
+        $this->assertNull(Router::match('POST', '/orders/345/pick/'));
+        $this->assertNull(Router::match('GET', '/orders/abc/pick/'));
+        $this->assertNull(Router::match('GET', '/orders/1234567890/pick/'));
+        $this->assertSame('/orders/345/pick/', Router::withSlash('/orders/345/pick'));
+    }
 }

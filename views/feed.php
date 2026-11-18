@@ -49,8 +49,6 @@ $href = static fn(int $p): string => '/feed/' . ($p > 1 ? '?page=' . $p : '');
             <div class="bc-foot">
               <span class="bc-count"><i class="fal fa-user-friends"></i> Пропозицій: <?= $b['offers'] ?></span>
               <?php if ($b['chosen_other'] || $st === OfferStatus::SENT): ?>
-              <?php elseif ($st === OfferStatus::INVITED): ?>
-                <a class="btn btn-primary" href="<?= $url ?>">Відповісти на запрошення</a>
               <?php else: ?>
                 <a class="btn btn-primary" href="<?= $url ?>?form=propose#offer"><?= $st === OfferStatus::WITHDRAWN ? 'Запропонувати знову' : 'Запропонувати себе' ?></a>
               <?php endif ?>

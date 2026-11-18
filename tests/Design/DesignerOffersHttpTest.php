@@ -25,6 +25,7 @@ final class DesignerOffersHttpTest extends TestCase
     private const UA = 'DesignTest/1';
     private const DESIGNER_NAME = 'Тест Дизайнер стрічки';
     private const STRANGER = 999999731;   // чужий клієнт (рядка в customers немає)
+    private const STRANGER_DESIGNER = 999999732;   // чужий дизайнер (рядка в design_designers немає)
 
     /** @var list<int> */
     private array $orders = [];
@@ -205,6 +206,35 @@ final class DesignerOffersHttpTest extends TestCase
         $this->assertSame(404, $code);
     }
 
+    /** Бриф, якого немає в стрічці і де в 25 немає своєї пропозиції, — 404; пропонувати на нього напряму не можна */
+    public function test_hidden_briefs_404(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        $draft = $this->order($client, OrderStatus::DRAFT);
+        // Режим 2: запрошено іншого дизайнера
+        $waiting = $this->order($client, OrderStatus::WAITING_DESIGNER, 2);
+        $this->offer($waiting, self::STRANGER_DESIGNER, OfferStatus::INVITED);
+        // Режим 2 після відмови іншого: збір, але не в стрічці
+        $refused = $this->order($client, OrderStatus::COLLECTING, 2);
+        $this->offer($refused, self::STRANGER_DESIGNER, OfferStatus::DECLINED);
+        $csrf = self::csrf($designer);
+
+        foreach (['чернетка' => $draft, 'режим 2, запрошено іншого' => $waiting, 'режим 2 після відмови' => $refused] as $what => $id) {
+            [$code, , $body] = self::fetch("/feed/$id/", $designer);
+            $this->assertSame(404, $code, "GET: $what");
+            $this->assertStringNotContainsString('Флаєр для СТО', $body, "бриф не видно: $what");
+            [$code] = self::fetch("/feed/$id/?form=propose", $designer);
+            $this->assertSame(404, $code, "GET ?form=propose: $what");
+
+            [$code, , $body] = self::act($id, $designer, ['action' => 'propose', 'csrf' => $csrf, 'text' => 'Зроблю', 'price' => '1000', 'deadline' => date('Y-m-d', strtotime('+3 day'))]);
+            $this->assertSame(404, $code, "POST propose: $what");
+            $this->assertStringNotContainsString('Флаєр для СТО', $body);
+            $this->assertNull(self::offerRow($id, $designer), "пропозицію не створено: $what");
+        }
+        $this->assertStringNotContainsString("/feed/$refused/", $this->page('/feed/', $designer));
+    }
+
     public function test_feed_counter_and_seen(): void
     {
         $client = self::clientId();
@@ -216,7 +246,8 @@ final class DesignerOffersHttpTest extends TestCase
         $n = Offers::feedNewCount($designer);
         $this->assertGreaterThanOrEqual(1, $n);
         $body = $this->page('/my-offers/', $designer);
-        $this->assertMatchesRegularExpression('#href="/feed/" class="">Стрічка брифів <span class="nav-badge"[^>]*>' . $n . '</span>#u', $body);
+        $shown = $n > 99 ? '99+' : (string)$n;   // так кружечок форматує шапка
+        $this->assertMatchesRegularExpression('#href="/feed/" class="">Стрічка брифів <span class="nav-badge"[^>]*>' . preg_quote($shown, '#') . '</span>#u', $body);
 
         // Стрічка: картка з позначкою «нове», превʼю відповідей, кнопкою; відкриття скидає лічильник
         $body = $this->page('/feed/', $designer);

@@ -4,3 +4,6 @@ putenv('DESIGN_NOTIFY=off');
 $_ENV['DESIGN_NOTIFY'] = 'off';
 
 require dirname(__DIR__) . '/helpers/Design/bootstrap.php';
+
+// Тести в CLI вважають себе продом (адреси без «dev.»), навіть коли запущені на dev-сервері; ConfigTest/NotifyTest ставлять маркер самі
+Design\Config::$devMarker = '/немає-маркера-dev-сервера';

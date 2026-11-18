@@ -21,11 +21,16 @@ final class Notify
             self::$sent[] = $params;
             return;
         }
+        // CLI на dev (крон, скрипти): CalcApiGlobal обирає dev api2 за HTTP_HOST — підставляємо його лише на час виклику
+        $fakeHost = !isset($_SERVER['HTTP_HOST']) && Config::isDev();
+        if ($fakeHost) $_SERVER['HTTP_HOST'] = 'dev.design.wolf.ua';
         try {
             $result = self::$transport !== null ? (self::$transport)($params) : \CalcApiGlobal::post('sms/add', $params);
         } catch (\Throwable $e) {
             self::fail($params, $e->getMessage());
             return;
+        } finally {
+            if ($fakeHost) unset($_SERVER['HTTP_HOST']);
         }
         // CalcApiGlobal не кидає виняток: збій curl — false, сторінка помилки — рядок, відмова api2 — ['error' => true, ...]
         if (!is_array($result) || !empty($result['error'])) {

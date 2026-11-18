@@ -56,9 +56,13 @@ final class Config
         return 'https://' . (self::isDev() ? 'dev.' : '') . 'adminka.wolf.ua';
     }
 
-    /** dev-стенд: HTTP_HOST починається з «dev.» */
+    /** Маркер dev-сервера для CLI (крон, скрипти): каталог є на dev, на проді замість нього /home/prod-ai */
+    public static string $devMarker = '/home/dev-ai';
+
+    /** dev-стенд: у вебі HTTP_HOST починається з «dev.»; у CLI (HTTP_HOST немає) — є каталог-маркер dev-сервера */
     public static function isDev(): bool
     {
-        return str_starts_with($_SERVER['HTTP_HOST'] ?? '', 'dev.');
+        if (!isset($_SERVER['HTTP_HOST'])) return is_dir(self::$devMarker);
+        return str_starts_with((string)$_SERVER['HTTP_HOST'], 'dev.');
     }
 }

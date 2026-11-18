@@ -661,6 +661,40 @@ final class Offers
             $sms);
     }
 
+    /**
+     * Крон (раз на годину): бриф у збиранні пропозицій (режим 1) довше Settings::noOffersHours() без жодної «надіслано» / «обрано»
+     * → куратору клієнта один раз. Відмітка ставиться й коли куратора немає (лише error_log), щоб не повторювати щогодини
+     * @return int скільки брифів оброблено
+     */
+    public static function notifyNoOffers(): int
+    {
+        $rows = Sql::all(
+            'SELECT o.id, o.customer_id, p.name AS product_name FROM design_orders o JOIN design_products p ON p.id = o.product_id
+             WHERE o.status = ? AND o.mode = 1 AND o.notified_no_offers_at IS NULL
+               AND o.published_at < NOW() - INTERVAL ' . Settings::noOffersHours() . ' HOUR
+               AND NOT EXISTS (SELECT 1 FROM design_offers f WHERE f.order_id = o.id AND f.status IN (?, ?))
+             ORDER BY o.id',
+            [OrderStatus::COLLECTING, OfferStatus::SENT, OfferStatus::CHOSEN]);
+
+        $done = 0;
+        foreach ($rows as $r) {
+            // Захоплюємо відмітку першими: паралельний запуск або пропозиція, що встигла прийти, не дадуть дубля
+            $claimed = Sql::exec(
+                'UPDATE design_orders SET notified_no_offers_at = NOW() WHERE id = ? AND status = ? AND notified_no_offers_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM design_offers f WHERE f.order_id = design_orders.id AND f.status IN (?, ?))',
+                [$r['id'], OrderStatus::COLLECTING, OfferStatus::SENT, OfferStatus::CHOSEN]);
+            if ($claimed === 0) continue;
+            $done++;
+            $customerId = (int)$r['customer_id'];
+            $client = Customers::header($customerId)['name'] ?? 'Клієнт';
+            self::notifyCurator($customerId,
+                'Майстерня дизайну: бриф №' . $r['id'] . ' (' . $r['product_name'] . ') клієнта ' . $client . ' (id ' . $customerId . ') добу без пропозицій ('
+                . date('d.m H:i') . ')',
+                'Майстерня дизайну: бриф №' . $r['id'] . ' без пропозицій. design.wolf.ua');
+        }
+        return $done;
+    }
+
     /** Куратор клієнта — customers.curator_id (users.id); немає — лише запис у журнал */
     private static function notifyCurator(int $customerId, string $msg, string $msgSMS): void
     {

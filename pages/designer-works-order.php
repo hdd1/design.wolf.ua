@@ -13,5 +13,8 @@ try {
     Portfolio::reorder($me, array_map('intval', array_filter($ids, 'is_string')));
 } catch (DesignerException $e) {
     Http::json(['error' => $e->getMessage()], 422);
+} catch (\Throwable $e) {
+    error_log('design: порядок робіт клієнта ' . $me . ': ' . $e);
+    Http::json(['error' => 'Не вдалося зберегти. Спробуйте ще раз.'], 500);
 }
 Http::json(['ok' => true]);

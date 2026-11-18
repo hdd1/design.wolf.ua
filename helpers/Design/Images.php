@@ -171,11 +171,15 @@ final class Images
         }
     }
 
-    /** Ліміти, щоб 20-мегабайтний JPEG не роздув php-fpm: надлишок піксельного кешу йде на диск */
+    /**
+     * Ліміти, щоб 20-мегабайтний JPEG не роздув php-fpm: надлишок піксельного кешу йде на диск.
+     * Один потік: max_execution_time рахує CPU всіх потоків процесу, а паралельні завантаження й так дає клієнт
+     */
     private static function limitResources(): void
     {
         \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_MEMORY, 256 * 1024 * 1024);
         \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_MAP, 512 * 1024 * 1024);
+        \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_THREAD, 1);
     }
 
     /** Поворот за EXIF Orientation; autoOrient є не в усіх збірках Imagick */

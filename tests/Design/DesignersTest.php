@@ -205,7 +205,8 @@ final class DesignersTest extends TestCase
         $this->assertSame(Notify::$sent[1]['msg'], Notify::$sent[1]['msgSMS']);
     }
 
-    public function test_reject_needs_comment_and_resubmit_clears_it(): void
+    /** Рішення 2026-11-18: коментар відмови лишається після повторної подачі — працівник бачить, що просив виправити */
+    public function test_reject_needs_comment_and_resubmit_keeps_it(): void
     {
         $this->ready(self::A);
         Designers::submit(self::A);
@@ -221,7 +222,10 @@ final class DesignersTest extends TestCase
         Designers::submit(self::A);
         $row = Designers::get(self::A);
         $this->assertSame(DesignerStatus::PENDING, $row['status']);
-        $this->assertSame('', $row['reject_comment']);
+        $this->assertSame('Мало робіт', $row['reject_comment']);
+
+        Designers::reject(self::A, 7, 'Додайте фото друку');   // нова відмова замінює коментар
+        $this->assertSame('Додайте фото друку', Designers::get(self::A)['reject_comment']);
     }
 
     public function test_reject_comment_too_long(): void
@@ -279,15 +283,32 @@ final class DesignersTest extends TestCase
         $this->assertSame(DesignerStatus::BLOCKED, Designers::status(self::A));
     }
 
-    public function test_unblock_returns_to_approved(): void
+    /** Рішення 2026-11-18: розблокування повертає на розгляд (4→1), схвалює працівник окремо; без SMS */
+    public function test_unblock_returns_to_pending(): void
     {
         $this->approved(self::A, 'Дизайнер');
         Designers::block(self::A, 9);
+        Notify::$sent = [];
         Designers::unblock(self::A, 10);
         $row = Designers::get(self::A);
-        $this->assertSame(DesignerStatus::APPROVED, $row['status']);
+        $this->assertSame(DesignerStatus::PENDING, $row['status']);
         $this->assertSame(10, $row['reviewed_by']);
+        $this->assertSame([], Notify::$sent);
         $this->assertFails('Статус заявки вже змінився — оновіть сторінку', fn() => Designers::unblock(self::A, 10));
+        $this->assertNull(Designers::publicProfile(self::A));   // до схвалення в каталозі його немає
+
+        Designers::approve(self::A, 10);
+        $this->assertSame(DesignerStatus::APPROVED, Designers::status(self::A));
+    }
+
+    public function test_unblock_never_reviewed_applicant_stays_out_of_catalog(): void
+    {
+        $this->ready(self::A);
+        Designers::submit(self::A);
+        Designers::block(self::A, 9);
+        Designers::unblock(self::A, 10);
+        $this->assertSame(DesignerStatus::PENDING, Designers::status(self::A));
+        $this->assertNotContains(self::A, array_column(Designers::catalog('', 1)['items'], 'customer_id'));
     }
 
     public function test_save_profile_allowed_in_draft_rejected_approved_not_pending(): void

@@ -92,7 +92,10 @@ final class Designers
         return substr($file, 0, -strlen('.webp'));
     }
 
-    /** Чернетка / відхилена → на розгляд. Повторна подача на розгляді нічого не робить і не шле зайвого сповіщення */
+    /**
+     * Чернетка / відхилена → на розгляд. Повторна подача на розгляді нічого не робить і не шле зайвого сповіщення.
+     * reject_comment лишається: в adminka це «Коментар попередньої відмови» (дизайнер бачить його лише у відхиленій)
+     */
     public static function submit(int $customerId): void
     {
         $row = self::get($customerId);
@@ -108,7 +111,7 @@ final class Designers
         if ($works > self::APPLY_MAX) throw new DesignerException('У заявці — не більше ' . self::APPLY_MAX . ' робіт');
 
         $n = Sql::exec(
-            "UPDATE design_designers SET status = ?, submitted_at = NOW(), reject_comment = '' WHERE customer_id = ? AND status IN (?, ?)",
+            "UPDATE design_designers SET status = ?, submitted_at = NOW() WHERE customer_id = ? AND status IN (?, ?)",
             [DesignerStatus::PENDING, $customerId, DesignerStatus::DRAFT, DesignerStatus::REJECTED]);
         if ($n === 0) {
             // Хтось устиг раніше: подвійна подача — не помилка, будь-що інше — так
@@ -153,9 +156,13 @@ final class Designers
             DesignerStatus::BLOCKED);
     }
 
+    /**
+     * Розблокування повертає на розгляд, а не в схвалені: заблокувати могли й того, кого ніколи не схвалювали.
+     * Далі працівник схвалює (або відхиляє) явно. Без SMS
+     */
     public static function unblock(int $customerId, int $userId): void
     {
-        self::review($customerId, $userId, [DesignerStatus::BLOCKED], DesignerStatus::APPROVED);
+        self::review($customerId, $userId, [DesignerStatus::BLOCKED], DesignerStatus::PENDING);
     }
 
     /**

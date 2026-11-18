@@ -13,11 +13,11 @@ $fresh = Guard::csrfOk($me);
 $d = Designers::get($me);
 if ($d === null) Http::redirect('/designer/', 302);
 
-$action = ($_POST['action'] ?? '') === 'submit' ? 'submit' : 'save';
+$action = Http::str($_POST, 'action') === 'submit' ? 'submit' : 'save';
 $posted = [
-    'name' => (string)($_POST['name'] ?? ''),
-    'about' => (string)($_POST['about'] ?? ''),
-    'link' => (string)($_POST['link'] ?? ''),
+    'name' => Http::str($_POST, 'name'),
+    'about' => Http::str($_POST, 'about'),
+    'link' => Http::str($_POST, 'link'),
 ];
 
 try {

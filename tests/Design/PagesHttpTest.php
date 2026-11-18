@@ -465,6 +465,47 @@ final class PagesHttpTest extends TestCase
         $this->assertSame($d, Designers::get($me));
     }
 
+    /** name[]=x тощо: поле-масив — порожній рядок, не «Array» і без warning */
+    public function test_array_fields_are_empty_strings(): void
+    {
+        $me = $this->designer();
+        [, $csrf] = $this->designerPage();
+        $a = $this->uploadWork($csrf);
+        $post = fn(string $path, array $data) => self::fetch($path, self::cookie(), $data + ['csrf' => $csrf]);
+
+        [$code, $h] = $post('/designer', ['action' => 'save', 'name' => ['x'], 'about' => ['y'], 'link' => ['z']]);
+        $this->assertSame(302, $code);
+        $this->assertSame('/designer/?saved=1', self::location($h));
+        $d = Designers::get($me);
+        $this->assertSame(['', '', ''], [$d['name'], $d['about'], $d['link']]);
+
+        [$code, , $body] = $post("/designer/works/$a", ['action' => 'title', 'title' => ['x']]);
+        $this->assertSame(200, $code, $body);
+        $this->assertSame(['ok' => true, 'title' => ''], json_decode($body, true));
+        $this->assertSame('', Sql::value('SELECT title FROM design_portfolio WHERE id = ?', [$a]));
+
+        [$code, , $body] = $post("/designer/works/$a", ['action' => ['delete']]);
+        $this->assertSame(422, $code);
+        $this->assertSame('Невідома дія', json_decode($body, true)['error']);
+        $this->assertNotNull(Sql::one('SELECT id FROM design_portfolio WHERE id = ?', [$a]));
+
+        [$code, , $body] = self::fetch('/designers/?q[]=x', self::cookie());
+        $this->assertSame(200, $code);
+        $this->assertStringNotContainsString('Array', $body);
+    }
+
+    /** Збій БД (тут — невалідний UTF-8 у назві) — JSON з 500, а не сирий 500 */
+    public function test_work_unexpected_error_is_json_500(): void
+    {
+        $this->designer();
+        [, $csrf] = $this->designerPage();
+        $a = $this->uploadWork($csrf);
+        [$code, $h, $body] = self::fetch("/designer/works/$a", self::cookie(), ['action' => 'title', 'title' => "\xff", 'csrf' => $csrf]);
+        $this->assertSame(500, $code);
+        $this->assertMatchesRegularExpression('#^content-type:\s*application/json#mi', $h);
+        $this->assertSame(['error' => 'Не вдалося зберегти. Спробуйте ще раз.'], json_decode($body, true));
+    }
+
     public function test_state_pages(): void
     {
         $me = $this->designer();

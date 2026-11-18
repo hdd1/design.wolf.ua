@@ -361,6 +361,18 @@ final class ImagesTest extends TestCase
         $this->assertRejected('Підходять лише JPG або PNG', fn() => Images::avatar($src, $this->dir));
     }
 
+    /** Один потік ImageMagick: max_execution_time рахує CPU всіх потоків процесу, а паралельність дає клієнт */
+    public function test_imagemagick_limited_to_one_thread(): void
+    {
+        $src = $this->image(800, 600, 'png', 't.png');
+        foreach ([fn() => Images::store($src, $this->dir, '5'), fn() => Images::avatar($src, $this->dir)] as $call) {
+            \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_THREAD, 2);
+            $this->assertEquals(2, \Imagick::getResourceLimit(\Imagick::RESOURCETYPE_THREAD));
+            $call();
+            $this->assertEquals(1, \Imagick::getResourceLimit(\Imagick::RESOURCETYPE_THREAD));
+        }
+    }
+
     public function test_creates_missing_dir(): void
     {
         $src = $this->image(800, 600, 'png', 'p.png');

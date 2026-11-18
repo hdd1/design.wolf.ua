@@ -10,16 +10,16 @@ if (!Guard::csrfOk($me)) Http::json(['error' => Guard::STALE_AJAX], 403);
 $id = (int)$params['id'];
 
 try {
-    switch ((string)($_POST['action'] ?? '')) {
+    switch (Http::str($_POST, 'action')) {
         case 'delete':
             Portfolio::remove($me, $id);
             Http::json(['ok' => true, 'count' => Portfolio::count($me)]);
         case 'shw':
-            $on = ($_POST['on'] ?? '') === '1';
+            $on = Http::str($_POST, 'on') === '1';
             Portfolio::setShw($me, $id, $on);
             Http::json(['ok' => true, 'shw' => $on]);
         case 'title':
-            $title = trim((string)($_POST['title'] ?? ''));
+            $title = trim(Http::str($_POST, 'title'));
             Portfolio::setTitle($me, $id, $title);
             Http::json(['ok' => true, 'title' => $title]);
         default:
@@ -27,4 +27,7 @@ try {
     }
 } catch (DesignerException $e) {
     Http::json(['error' => $e->getMessage()], 422);
+} catch (\Throwable $e) {
+    error_log('design: зміна роботи ' . $id . ' клієнта ' . $me . ': ' . $e);
+    Http::json(['error' => 'Не вдалося зберегти. Спробуйте ще раз.'], 500);
 }

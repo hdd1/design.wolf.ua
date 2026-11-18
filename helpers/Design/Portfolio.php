@@ -10,6 +10,8 @@ final class Portfolio
 {
     public const MAX = 30;
     public const TITLE_MAX = 120;
+    /** Рядок «в обробці» старший за це — обірваний запит (обробка триває секунди) */
+    private const STALE_MINUTES = 10;
 
     private const ERR_READONLY = 'Зараз роботи не можна змінювати';
     private const ERR_NOT_FOUND = 'Роботу не знайдено';
@@ -28,6 +30,8 @@ final class Portfolio
     /**
      * Додає роботу з файлу $tmp. Спершу рядок (потрібен id для імен файлів), потім Images::store;
      * якщо файл не підійшов або запис не вдався — рядок видаляється. Тимчасовий файл не чіпаємо.
+     * Рядки «в обробці», старші за STALE_MINUTES, — сліди обірваних запитів (ліміт часу, перезапуск php-fpm):
+     * прибираються разом із файлами, щоб не займати слот ліміту назавжди.
      * @return array{id:int}
      * @throws DesignerException
      */
@@ -40,17 +44,22 @@ final class Portfolio
             $status = Sql::value('SELECT status FROM design_designers WHERE customer_id = ? FOR UPDATE', [$designerId]);
             $limit = self::limit($status === null ? null : (int)$status);
             if ($limit === null) throw new DesignerException(self::ERR_READONLY);
+            $stale = self::dropStale($designerId);
             // Ліміт рахуємо по всіх рядках, разом із тими, що ще обробляються (file = ''), — щоб паралельні завантаження його не обійшли
             $total = (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ?', [$designerId]);
-            if ($total >= $limit) throw new DesignerException("Уже $limit робіт — це максимум");
-
-            $pos = (int)Sql::value('SELECT COALESCE(MAX(pos), 0) FROM design_portfolio WHERE designer_id = ?', [$designerId]) + 1;
-            $id = Sql::insert('design_portfolio', ['designer_id' => $designerId, 'file' => '', 'pos' => $pos]);
+            $full = $total >= $limit;
+            if (!$full) {
+                $pos = (int)Sql::value('SELECT COALESCE(MAX(pos), 0) FROM design_portfolio WHERE designer_id = ?', [$designerId]) + 1;
+                $id = Sql::insert('design_portfolio', ['designer_id' => $designerId, 'file' => '', 'pos' => $pos]);
+            }
+            // Комітимо й при повному ліміті: прибирання покинутих рядків не має відкотитися
             $pdo->commit();
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
             throw $e;
         }
+        foreach ($stale as $staleId) self::unlinkAny($designerId, $staleId);
+        if ($full) throw new DesignerException("Уже $limit робіт — це максимум");
 
         try {
             $img = Images::store($tmp, self::dir($designerId), (string)$id);
@@ -178,6 +187,30 @@ final class Portfolio
             'width' => (int)$r['width'],
             'height' => (int)$r['height'],
         ], $rows);
+    }
+
+    /**
+     * Видаляє свої рядки «в обробці», старші за STALE_MINUTES. Викликати під замком рядка дизайнера.
+     * @return list<int> id видалених — їхні файли прибрати після коміту
+     */
+    private static function dropStale(int $designerId): array
+    {
+        $ids = array_map('intval', array_column(Sql::all(
+            "SELECT id FROM design_portfolio WHERE designer_id = ? AND file = '' AND created < NOW() - INTERVAL " . self::STALE_MINUTES . ' MINUTE',
+            [$designerId]), 'id'));
+        if ($ids !== []) {
+            Sql::exec('DELETE FROM design_portfolio WHERE designer_id = ? AND id IN (' . implode(',', $ids) . ')', [$designerId]);
+        }
+        return $ids;
+    }
+
+    /** Усе, що міг записати обірваний Images::store: {id}.* і {id}-*.webp */
+    private static function unlinkAny(int $designerId, int $workId): void
+    {
+        $dir = self::dir($designerId);
+        foreach (array_merge(glob("$dir/$workId.*") ?: [], glob("$dir/$workId-*.webp") ?: []) as $f) {
+            if (is_file($f)) @unlink($f);
+        }
     }
 
     /** Видаляє файли роботи: оригінал і обидві WebP-копії */

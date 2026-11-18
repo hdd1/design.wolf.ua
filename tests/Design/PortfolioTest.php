@@ -304,4 +304,64 @@ final class PortfolioTest extends TestCase
         $this->assertSame(2, Portfolio::count(self::A));
         $this->assertFails('Уже 10 робіт — це максимум', fn() => Portfolio::add(self::A, $this->image()));
     }
+
+    /** Готові роботи без справжніх файлів — лише для підрахунку ліміту */
+    private function ready(int $cid, int $n): void
+    {
+        for ($i = 0; $i < $n; $i++) Sql::insert('design_portfolio', ['designer_id' => $cid, 'file' => 'ready.jpg', 'pos' => $i + 1]);
+    }
+
+    /** Рядок «в обробці», створений $minutes хвилин тому, з файлами, які встиг записати обірваний запит */
+    private function stale(int $cid, int $minutes): int
+    {
+        $id = Sql::insert('design_portfolio', ['designer_id' => $cid, 'file' => '', 'pos' => 99]);
+        Sql::exec('UPDATE design_portfolio SET created = NOW() - INTERVAL ? MINUTE WHERE id = ?', [$minutes, $id]);
+        $dir = Portfolio::dir($cid);
+        foreach (["$id.jpg", "$id.png", "$id-card.webp", "$id-view.webp"] as $f) file_put_contents("$dir/$f", 'x');
+        return $id;
+    }
+
+    public function test_abandoned_in_flight_row_is_cleaned_and_frees_slot(): void
+    {
+        $this->designer(self::A, DesignerStatus::DRAFT);
+        $this->designer(self::B, DesignerStatus::DRAFT);
+        $this->ready(self::A, 9);
+        $old = $this->stale(self::A, 11);
+        $foreign = $this->stale(self::B, 60);
+        $dir = Portfolio::dir(self::A);
+        file_put_contents("$dir/{$old}0.jpg", 'x');   // чужий id з тим самим початком — не чіпаємо
+
+        $id = Portfolio::add(self::A, $this->image())['id'];
+
+        $this->assertNull(Sql::one('SELECT id FROM design_portfolio WHERE id = ?', [$old]));
+        foreach (["$old.jpg", "$old.png", "$old-card.webp", "$old-view.webp"] as $f) $this->assertFileDoesNotExist("$dir/$f");
+        $this->assertFileExists("$dir/{$old}0.jpg");
+        $this->assertFileExists("$dir/$id-card.webp");
+        $this->assertSame(10, (int)Sql::value('SELECT COUNT(*) FROM design_portfolio WHERE designer_id = ?', [self::A]));
+        // чужий покинутий рядок прибере лише його власне додавання
+        $this->assertNotNull(Sql::one('SELECT id FROM design_portfolio WHERE id = ?', [$foreign]));
+        $this->assertFileExists(Portfolio::dir(self::B) . "/$foreign.jpg");
+    }
+
+    public function test_fresh_in_flight_row_is_kept_and_counts(): void
+    {
+        $this->designer(self::A, DesignerStatus::DRAFT);
+        $this->ready(self::A, 9);
+        $fresh = $this->stale(self::A, 5);
+
+        $this->assertFails('Уже 10 робіт — це максимум', fn() => Portfolio::add(self::A, $this->image()));
+        $this->assertNotNull(Sql::one('SELECT id FROM design_portfolio WHERE id = ?', [$fresh]));
+        $this->assertFileExists(Portfolio::dir(self::A) . "/$fresh.jpg");
+    }
+
+    public function test_cleanup_sticks_even_when_limit_is_still_full(): void
+    {
+        $this->designer(self::A, DesignerStatus::DRAFT);
+        $this->ready(self::A, 10);
+        $old = $this->stale(self::A, 30);
+
+        $this->assertFails('Уже 10 робіт — це максимум', fn() => Portfolio::add(self::A, $this->image()));
+        $this->assertNull(Sql::one('SELECT id FROM design_portfolio WHERE id = ?', [$old]));
+        $this->assertFileDoesNotExist(Portfolio::dir(self::A) . "/$old.jpg");
+    }
 }

@@ -376,8 +376,30 @@ final class ChunkUploadTest extends TestCase
         $this->assertLessThanOrEqual(ChunkUpload::CHUNK - 65536, ChunkUpload::partSize());
     }
 
+    /** Малий upload_max_filesize (частини по ~200 КБ) не відсікає законне число частин: межа — від partSize() */
+    public function test_part_count_limit_follows_small_php_limits(): void
+    {
+        $code = 'require "helpers/Design/bootstrap.php";'
+            . 'try { Design\\ChunkUpload::receive(["meta" => ["fileId" => "abcdefgh12", "chunkIndex" => "0", "totalChunks" => $argv[1],'
+            . ' "totalSize" => "10000000", "originalName" => "a.pdf"]], [], "29:1:layout", 10000000); }'
+            . ' catch (Design\\DesignerException $e) { echo $e->getMessage(); }';
+        $run = static function (string $parts) use ($code): string {
+            exec(implode(' ', array_map('escapeshellarg', [PHP_BINARY, '-d', 'upload_max_filesize=256K', '-d', 'post_max_size=8M', '-r', $code, $parts])),
+                $out);
+            return implode("\n", $out);
+        };
+        // 256K − 64K = 192K на частину: 10 000 000 байт — 51 частина, межа ceil(10000000/196608)+1 = 52
+        $this->assertSame(196608, (int)shell_exec(escapeshellarg(PHP_BINARY) . ' -d upload_max_filesize=256K -r '
+            . escapeshellarg('require "helpers/Design/bootstrap.php"; echo Design\\ChunkUpload::partSize();')));
+        $this->assertSame('Файл не надіслано', $run('51'));
+        $this->assertSame('Файл не надіслано', $run('52'));
+        $this->assertSame(self::ERR_META, $run('53'));
+    }
+
     public function test_lock_wait_is_bounded(): void
     {
+        $this->assertSame(50, ChunkUpload::LOCK_WAIT, 'менше за 60 с fastcgi_read_timeout nginx на проді');
+        $this->assertSame(ChunkUpload::LOCK_WAIT, ChunkUpload::$lockWait);
         $key = $this->keys[] = sha1('test|' . bin2hex(random_bytes(8)));
         ChunkUpload::recall($key);   // каталог результатів
         $fh = fopen(self::RESULTS . "$key.lock", 'c');

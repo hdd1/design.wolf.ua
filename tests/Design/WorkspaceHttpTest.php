@@ -577,6 +577,48 @@ final class WorkspaceHttpTest extends TestCase
         $this->assertMatchesRegularExpression('#class="quote"[^>]*>.*?А можна телефон зробити більшим\?#su', $html);
     }
 
+    /** Повтор останньої частини віддає запамʼятовану відповідь з тим самим кодом HTTP (503 лишається 503, 422 — 422) */
+    public function test_retry_replays_remembered_status(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        [$orderId] = $this->inWork($client, $designer);
+
+        // Справжня помилка обробки (не картинка) → 422; повтор останньої частини — той самий код і текст, без повторної обробки
+        $bytes = str_repeat('не картинка ', 400);
+        [$code, $json, $meta] = $this->upload($orderId, $designer, 'preview', $bytes, 'notes.txt');
+        $this->assertSame(422, $code);
+        [$again, $body] = $this->part($orderId, $designer, 'preview', ['chunkIndex' => 1] + $meta, substr($bytes, (int)ceil(strlen($bytes) / 2)));
+        $this->assertSame([422, $json], [$again, $body]);
+
+        // Запамʼятована 503 «Сервер зайнятий» (lock timeout при обробці) повторюється як 503, а не 422
+        $meta = ['fileId' => 'test' . bin2hex(random_bytes(8)), 'totalChunks' => 2, 'totalSize' => 6, 'originalName' => 'a.png'];
+        [$code] = $this->part($orderId, $designer, 'preview', ['chunkIndex' => 0] + $meta, 'abc');
+        $this->assertSame(200, $code);
+        $key = sha1("$designer:$orderId:preview|" . $meta['fileId']);
+        \Design\ChunkUpload::remember($key, ['status' => 503, 'body' => ['error' => 'Сервер зайнятий — спробуйте ще раз']]);
+        foreach (['json', 'lock'] as $ext) chown(self::UPPY . "design-results/$key.$ext", 'www-data');   // php-fpm читає їх
+        [$code, $json] = $this->part($orderId, $designer, 'preview', ['chunkIndex' => 1] + $meta, 'def');
+        $this->assertSame(503, $code);
+        $this->assertSame(['error' => 'Сервер зайнятий — спробуйте ще раз'], $json);
+        $this->assertSame(0, (int)Sql::value('SELECT COUNT(*) FROM design_previews WHERE order_id = ?', [$orderId]));
+    }
+
+    /** Опитування від останнього побаченого id віддає і повідомлення співрозмовника, і своє, надіслане після нього */
+    public function test_poll_after_own_send_returns_partner_message(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        [, $offerId] = $this->inWork($client, $designer);
+        [, $first] = self::send($offerId, $client, 'Перше');
+        $seen = $first['message']['id'];
+        [, $partner] = self::send($offerId, $designer, 'Співрозмовник між опитуваннями');
+        [, $mine] = self::send($offerId, $client, 'Моє після нього');
+        [$code, , $body] = self::fetch("/offers/$offerId/messages?after=$seen", $client);
+        $this->assertSame(200, $code);
+        $this->assertSame([$partner['message']['id'], $mine['message']['id']], array_column(json_decode($body, true)['messages'], 'id'));
+    }
+
     public function test_hidden_preview_urls_absent(): void
     {
         $client = self::clientId();

@@ -11,7 +11,7 @@ final class ChunkUpload
 {
     /** Найбільша частина в браузері (менша — коли upload_max_filesize / post_max_size сервера менші, див. partSize) */
     public const CHUNK = 5 * 1048576;
-    /** Найменша частина, яку розраховує сервер: від неї — межа кількості частин */
+    /** Частина, від якої рахується межа кількості частин (або менша — partSize(), коли ліміти PHP менші) */
     public const MIN_CHUNK = 1048576;
     /** Запас на частину понад CHUNK */
     private const SLACK = 65536;
@@ -25,10 +25,12 @@ final class ChunkUpload
 
     /**
      * Скільки секунд чекати блокування (інший запит з тим самим файлом ще обробляє його); далі — DesignerException з кодом 503.
-     * Нескінченне очікування тримало б воркер php-fpm (листопад 2026: зависання пулу dev)
-     * @internal змінюють лише тести
+     * Нескінченне очікування тримало б воркер php-fpm (листопад 2026: зависання пулу dev). Менше за fastcgi_read_timeout nginx
+     * на проді (60 с): відповідь «Сервер зайнятий» має дійти до браузера раніше, ніж nginx віддасть 504, а воркер — звільнитись
      */
-    public static int $lockWait = 90;
+    public const LOCK_WAIT = 50;
+    /** @internal змінюють лише тести */
+    public static int $lockWait = self::LOCK_WAIT;
     public const ERR_BUSY = 'Сервер зайнятий — спробуйте ще раз';
 
     private const ERR_META = 'Невірні дані завантаження. Оновіть сторінку і спробуйте ще раз';
@@ -56,11 +58,13 @@ final class ChunkUpload
         $meta = is_array($post['meta'] ?? null) ? $post['meta'] : [];
         $fileId = $meta['fileId'] ?? null;
         $index = self::int($meta['chunkIndex'] ?? null);
+        // Межа кількості частин — від найменшої частини, яку може надіслати браузер цього сервера
+        $basis = min(self::partSize(), self::MIN_CHUNK);
         $total = self::int($meta['totalChunks'] ?? null);
         $size = self::int($meta['totalSize'] ?? null);
         if (!is_string($fileId) || !preg_match('/^[A-Za-z0-9_-]{8,64}$/D', $fileId)
             || $index === null || $total === null || $size === null
-            || $total < 1 || $total > intdiv($maxBytes + self::MIN_CHUNK - 1, self::MIN_CHUNK) + 1 || $index >= $total) {
+            || $total < 1 || $total > intdiv($maxBytes + $basis - 1, $basis) + 1 || $index >= $total) {
             throw new DesignerException(self::ERR_META);
         }
         if ($size < 1) throw new DesignerException('Файл порожній');

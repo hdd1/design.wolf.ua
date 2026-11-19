@@ -274,7 +274,9 @@
     }
 
     // Додає повідомлення в кінець; вже показане (своє, щойно надіслане) — переносить, щоб порядок ішов за id.
-    // Нове для сторінки — подія 'chat:message' (workspace.js збирає з неї прев'ю для перегляду)
+    // Нове для сторінки — подія 'chat:message' (workspace.js збирає з неї прев'ю для перегляду).
+    // after не рухає: його рухає лише poll() — інакше повідомлення співрозмовника, що прийшло між опитуваннями перед моїм,
+    // опинилось би позаду after і не з'явилось би до перезавантаження. Своє повернеться в опитуванні й знайдеться за data-id
     function append(m) {
       dropEmpty();
       var item = list.querySelector('[data-id="' + m.id + '"]');
@@ -282,7 +284,6 @@
       if (fresh) item = build(m);
       daySeparator(m.time.slice(0, 10));
       list.appendChild(item);
-      if (m.id > after) after = m.id;
       if (fresh) root.dispatchEvent(new CustomEvent('chat:message', { detail: m }));
     }
 
@@ -319,7 +320,10 @@
         if (status === 404 || status === 401) { stop(); return; }
         if (status === 200 && json && json.messages) {
           var stick = nearBottom();
-          json.messages.forEach(append);
+          json.messages.forEach(function (m) {
+            append(m);
+            if (m.id > after) after = m.id;
+          });
           if (json.messages.length) { pendingToEnd(); if (stick) toBottom(); }
           if (!json.write) { setWritable(false); return; }
         }
@@ -433,7 +437,8 @@
     });
 
     root._chat = {
-      append: function (m) { append(m); pendingToEnd(); toBottom(); },
+      // Своє повідомлення ззовні (прев'ю з workspace.js); опитування одразу добирає те, що прийшло перед ним
+      append: function (m) { append(m); pendingToEnd(); toBottom(); poll(); },
       // Перебудувати показане повідомлення (приховане прев'ю)
       replace: function (m) {
         var old = list.querySelector('[data-id="' + m.id + '"]');
@@ -460,6 +465,7 @@
     append: function (root, m) { root._chat && root._chat.append(m); },
     replace: function (root, m) { root._chat && root._chat.replace(m); },
     reply: function (root, q) { root._chat && root._chat.reply(q); },
-    canReply: function (root) { return !!(root._chat && root._chat.canReply()); }
+    canReply: function (root) { return !!(root._chat && root._chat.canReply()); },
+    poll: function (root) { root._chat && root._chat.poll(); }
   };
 })();

@@ -429,7 +429,9 @@
         }).then(function (json) {
           busy = null;
           setBusy(false);
+          // Без message (сервер не зібрав його після збереження) — стрічку добере опитування
           if (json.message) window.DesignChat.append(root, json.message);
+          else window.DesignChat.poll(root);
           reset();
         }, function (e) {
           busy = null;

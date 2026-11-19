@@ -5,8 +5,10 @@
  * для preview — caption і based_on (беруться на останній частині), для replace — file_id (замінюваний макет).
  * Доступ (обраний дизайнер замовлення в роботі, Previews::canWork) і CSRF — на кожну частину, до ChunkUpload::receive.
  * Ліміти — на першій частині за заявленим розміром (макети — Layouts::precheck; прев'ю — ліміт receive).
- * Відповідь: проміжна частина — {done:false}; остання — {done:true, preview, message} / {done:true, layout};
- * помилка — 4xx/5xx {error}. Остаточна відповідь (і помилка обробки) запамʼятовується: повтор останньої частини отримує її ж
+ * Відповідь: проміжна частина — {done:false}; остання — {done:true, preview, message?} / {done:true, layout};
+ * помилка — 4xx/5xx {error}. Остаточна відповідь (і помилка обробки) запамʼятовується разом із кодом HTTP: повтор останньої
+ * частини отримує ту саму відповідь з тим самим кодом. Файл уже збережено — завжди {done:true}: збій побудови частини
+ * відповіді (повідомлення стрічки, рядок макета) лише в журнал, браузер добере стрічку опитуванням
  * @var array $params
  */
 use Design\Chat;
@@ -57,7 +59,12 @@ try {
     $max = $purpose === 'preview' ? Settings::previewMaxBytes() : Settings::layoutMaxBytes();
     $part = ChunkUpload::receive($_POST, $_FILES, "$me:$orderId:$purpose", $max);
     if (!$part['done']) Http::json(['done' => false]);
-    if (isset($part['recalled'])) Http::json($part['recalled'], isset($part['recalled']['error']) ? 422 : 200);
+    if (isset($part['recalled'])) {
+        $r = $part['recalled'];
+        is_array($r['body'] ?? null) && is_int($r['status'] ?? null)
+            ? Http::json($r['body'], $r['status'])
+            : Http::json($r, isset($r['error']) ? 422 : 200);
+    }
     $key = $part['key'];
 } catch (DesignerException $e) {
     $busy = $e->getCode() === 503;
@@ -74,13 +81,17 @@ try {
     if ($purpose === 'preview') {
         $basedOn = $optionalId('based_on', "Версію, на основі якої зроблено прев'ю, не знайдено");
         $added = Previews::add($orderId, $me, $part['path'], Http::str($_POST, 'caption'), $basedOn);
-        $access = Offers::access((int)(Offers::forDesigner($orderId, $me)['id'] ?? 0), $me)
-            ?? throw new \RuntimeException('Немає листування замовлення ' . $orderId);
-        $response = [
-            'done' => true,
-            'preview' => Previews::byIds($orderId, [$added['id']])[$added['id']] ?? null,
-            'message' => Chat::messages($access, $added['message_id'] - 1, 1)[0] ?? null,
-        ];
+        // Прев'ю вже створено: далі ніщо не перетворює відповідь на помилку
+        $response = ['done' => true, 'preview' => ['id' => $added['id'], 'num' => $added['num']]];
+        try {
+            $response['preview'] = Previews::byIds($orderId, [$added['id']])[$added['id']] ?? $response['preview'];
+            $access = Offers::access((int)(Offers::forDesigner($orderId, $me)['id'] ?? 0), $me)
+                ?? throw new \RuntimeException('Немає листування замовлення ' . $orderId);
+            $message = Chat::messages($access, $added['message_id'] - 1, 1)[0] ?? null;
+            if ($message !== null) $response['message'] = $message;
+        } catch (\Throwable $e) {
+            error_log("design: відповідь про прев'ю {$added['id']} замовлення $orderId: " . $e);
+        }
     } else {
         if ($replaceId !== null && !in_array($replaceId, array_column(Layouts::forOrder($orderId), 'id'), true)) {
             throw new DesignerException('Макет не знайдено: його вже замінено або видалено');
@@ -88,9 +99,13 @@ try {
         $saved = $replaceId === null
             ? Layouts::add($orderId, $me, $part['path'], $part['name'])
             : Layouts::replace($replaceId, $me, $part['path'], $part['name']);
-        $layout = null;
-        foreach (Layouts::forOrder($orderId) as $l) if ($l['id'] === $saved['id']) $layout = $l;
-        $response = ['done' => true, 'layout' => $layout];
+        // Макет уже збережено: далі ніщо не перетворює відповідь на помилку
+        $response = ['done' => true, 'layout' => $saved];
+        try {
+            foreach (Layouts::forOrder($orderId) as $l) if ($l['id'] === $saved['id']) $response['layout'] = $l;
+        } catch (\Throwable $e) {
+            error_log("design: відповідь про макет {$saved['id']} замовлення $orderId: " . $e);
+        }
     }
 } catch (DesignerException $e) {
     $code = 422;
@@ -105,7 +120,7 @@ try {
 
 // Повтор останньої частини отримає цю ж відповідь; збій запису — лише в журнал (результат уже є)
 try {
-    ChunkUpload::remember($key, $response);
+    ChunkUpload::remember($key, ['status' => $code, 'body' => $response]);
 } catch (\Throwable $e) {
     error_log("design: не запамʼятати відповідь завантаження $key: " . $e);
 }

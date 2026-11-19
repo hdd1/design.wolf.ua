@@ -26,7 +26,7 @@ final class ClientOffersHttpTest extends TestCase
     private const STRANGER = 999999751;   // чужий клієнт (рядка в customers немає)
     private const GHOST = 999999752;      // дизайнер без рядка design_designers — недоступний
     private const OTHER = 999999753;      // схвалений дизайнер без рядка в customers (тест заводить і прибирає сам)
-    private const OTHER_NAME = 'Олена <i>Дизайн</i>';
+    private const OTHER_NAME = 'Олена <i>Дизайн</i> клієнта';   // «клієнта» — як у DESIGNER_NAME: пошук ?q= знаходить обох
 
     /** @var list<int> */
     private array $orders = [];
@@ -400,17 +400,18 @@ final class ClientOffersHttpTest extends TestCase
         $this->assertStringContainsString('data-bs-target="#choose-' . $offerId . '"', $body);
         $this->assertStringContainsString('Запросити іншого дизайнера', $body);
         $this->assertStringContainsString("href=\"/orders/$orderId/pick/\"", $body);
-        $this->assertStringContainsString('Пропозицію Олена &lt;i&gt;Дизайн&lt;/i&gt; буде закрито', $body);
+        $this->assertStringContainsString('Пропозицію Олена &lt;i&gt;Дизайн&lt;/i&gt; клієнта буде закрито', $body);
         $this->assertStringContainsString('value="collect"', $body);
         $this->assertStringContainsString('Збирати пропозиції', $body);
         $this->assertStringNotContainsString('<i>Дизайн</i>', $body);
 
-        // Вибір іншого: без того, хто вже назвав ціну; попередження і підтвердження перед запрошенням
-        $body = $this->page("/orders/$orderId/pick/", $client);
+        // Вибір іншого: без того, хто вже назвав ціну; попередження і підтвердження перед запрошенням.
+        // Пошук за спільною частиною імен тестових дизайнерів — обидва на першій сторінці незалежно від розміру каталогу
+        $body = $this->page("/orders/$orderId/pick/?q=" . rawurlencode('клієнта'), $client);
         $this->assertStringContainsString('name="designer_id" value="' . $designer . '"', $body);
         $this->assertStringNotContainsString('name="designer_id" value="' . $other . '"', $body);
-        $this->assertStringContainsString('Пропозицію Олена &lt;i&gt;Дизайн&lt;/i&gt; буде закрито', $body);
-        $this->assertMatchesRegularExpression('/<form id="pick-form"[^>]* data-confirm="Пропозицію Олена &lt;i&gt;Дизайн&lt;\/i&gt; буде закрито[^"]*"/', $body);
+        $this->assertStringContainsString('Пропозицію Олена &lt;i&gt;Дизайн&lt;/i&gt; клієнта буде закрито', $body);
+        $this->assertMatchesRegularExpression('/<form id="pick-form"[^>]* data-confirm="Пропозицію Олена &lt;i&gt;Дизайн&lt;\/i&gt; клієнта буде закрито[^"]*"/', $body);
         $this->assertStringContainsString('/assets/js/offer-form.js', self::fetch("/orders/$orderId/pick/", $client)[2]);
 
         [$code, $loc] = self::act($orderId, $client, ['action' => 'invite', 'designer_id' => $designer, 'csrf' => $csrf]);
@@ -426,6 +427,19 @@ final class ClientOffersHttpTest extends TestCase
         $this->assertStringContainsString('Чекаємо відповіді дизайнера', $body);
         $this->assertStringContainsString('Тест Дизайнер &lt;b&gt;клієнта&lt;/b&gt;', $body);
         $this->assertStringNotContainsString('Запросити іншого дизайнера', $body);
+
+        // 25 сказав «Беру» (бібліотекою, без сповіщень): у клієнта лише його картка — закрита пропозиція попереднього не показується
+        $mine = (int)Sql::value('SELECT id FROM design_offers WHERE order_id = ? AND designer_id = ?', [$orderId, $designer]);
+        Offers::accept($mine, $designer, 'Беру, зроблю', 900, date('Y-m-d', strtotime('+4 day')));
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString('Пропозиції · 1<', $body);
+        $this->assertStringContainsString('id="offer-' . $mine . '"', $body);
+        $this->assertStringContainsString('data-bs-target="#choose-' . $mine . '"', $body);
+        $this->assertStringNotContainsString('id="offer-' . $offerId . '"', $body);
+        $this->assertStringNotContainsString('Олена', $body);
+        $this->assertStringContainsString('Пропозицію Тест Дизайнер &lt;b&gt;клієнта&lt;/b&gt; буде закрито', $body);
+        // і листування закритої пропозиції клієнт ?chat= не відкриє
+        $this->assertStringNotContainsString('data-chat="' . $offerId . '"', $this->page("/orders/$orderId/?chat=$offerId", $client));
     }
 
     /**

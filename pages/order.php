@@ -45,8 +45,12 @@ $csrf = Csrf::token($me);
 $mode2 = Offers::mode2State($id, $me);
 $state = $mode2['state'] ?? null;
 
-// Відмова від запрошення режиму 2 — не пропозиція: у списку її немає
-$cards = array_values(array_filter(Offers::forOrder($id, $me), static fn(array $c): bool => $c['status'] !== OfferStatus::DECLINED));
+// Відмова від запрошення режиму 2 — не пропозиція: у списку її немає. Закрита клієнтом «Запросити іншого» (обрано іншого,
+// поки нікого не обрано) — теж: стара ціна без «Обрати» лише плутає
+$all = Offers::forOrder($id, $me);
+$anyChosen = in_array(OfferStatus::CHOSEN, array_column($all, 'status'), true);
+$cards = array_values(array_filter($all, static fn(array $c): bool => $c['status'] !== OfferStatus::DECLINED
+    && ($anyChosen || $c['status'] !== OfferStatus::OTHER_CHOSEN)));
 $chosen = null;
 foreach ($cards as $c) if ($c['status'] === OfferStatus::CHOSEN) $chosen = $c;
 $choosable = static fn(array $c): bool => $c['status'] === OfferStatus::SENT && $c['available']

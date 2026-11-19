@@ -266,14 +266,16 @@ final class Offers
     /**
      * Режим 2 → «Збирати пропозиції»: після відмови або після «Так» з ціною (рішення власника 2026-11-19) замовлення стає
      * режимом 1 і зʼявляється в стрічці як нове (published_at = NOW(), крон рахує добу від цього моменту). Надіслана пропозиція
-     * дизайнера лишається надісланою — серед нових, її можна обрати. Повтор (подвійний клік) нічого не змінює
+     * дизайнера лишається надісланою — серед нових, її можна обрати. Пропозиції, закриті «Запросити іншого» («обрано іншого»
+     * без обраної в замовленні), повертаються в «надіслано» з тим самим знімком ціни: бриф відкритий для всіх, і вони знову в грі.
+     * Повтор (подвійний клік) нічого не змінює
      */
     public static function collect(int $orderId, int $customerId): void
     {
         $pdo = Sql::pdo();
         $pdo->beginTransaction();
         try {
-            $order = Sql::one('SELECT status, mode FROM design_orders WHERE id = ? AND customer_id = ? FOR UPDATE', [$orderId, $customerId]);
+            $order = Sql::one('SELECT status, mode, chosen_offer_id FROM design_orders WHERE id = ? AND customer_id = ? FOR UPDATE', [$orderId, $customerId]);
             if ($order === null) throw new DesignerException(self::ERR_ORDER_NOT_FOUND);
             $status = (int)$order['status'];
             if ($status === OrderStatus::COLLECTING && (int)$order['mode'] === 1) {
@@ -282,6 +284,10 @@ final class Offers
             }
             if (!self::reopenable($orderId, $status, (int)$order['mode'])) throw new DesignerException(self::ERR_ORDER_LOCKED);
             self::closeStaleInvites($orderId);
+            if ($order['chosen_offer_id'] === null) {
+                Sql::exec('UPDATE design_offers SET status = ? WHERE order_id = ? AND status = ?',
+                    [OfferStatus::SENT, $orderId, OfferStatus::OTHER_CHOSEN]);
+            }
             Sql::exec('UPDATE design_orders SET status = ?, mode = 1, published_at = NOW(), notified_no_offers_at = NULL WHERE id = ?',
                 [OrderStatus::COLLECTING, $orderId]);
             $pdo->commit();
@@ -294,7 +300,8 @@ final class Offers
     /**
      * Стан режиму 2 для екрана клієнта: waiting — запрошення без відповіді, offer — дизайнер сказав «Так» (обирайте),
      * declined — відмовився, відкликав або став недоступним (кнопки «Запросити іншого» / «Збирати пропозиції»).
-     * offer — картка в тому ж вигляді, що й у forOrder (для declined — остання за часом). Не режим 2, не очікування / збір
+     * offer — картка в тому ж вигляді, що й у forOrder (для declined — остання за часом, крім закритих клієнтом «Запросити
+     * іншого»: того дизайнера не показуємо як відмовника; немає — null). Не режим 2, не очікування / збір
      * або чуже замовлення — null
      * @return array{state:'waiting'|'declined'|'offer', offer:?array}|null
      */
@@ -311,6 +318,7 @@ final class Offers
                 return ['state' => $c['status'] === OfferStatus::INVITED ? 'waiting' : 'offer', 'offer' => $c];
             }
         }
+        $cards = array_values(array_filter($cards, static fn(array $c): bool => $c['status'] !== OfferStatus::OTHER_CHOSEN));
         usort($cards, static fn(array $a, array $b): int => [$b['updated'], $b['id']] <=> [$a['updated'], $a['id']]);
         return ['state' => 'declined', 'offer' => $cards[0] ?? null];
     }

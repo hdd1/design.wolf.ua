@@ -579,6 +579,70 @@ final class OffersMode2Test extends TestCase
         $this->assertSame([self::A], array_column(Notify::$sent, 'customer_id'));
     }
 
+    /**
+     * Рев'ю (рішення контролера): A сказав «Так» → клієнт запросив B (A закрито) → B відмовився. Відмовником клієнт бачить B,
+     * а не закритого A; «Збирати пропозиції» повертає A його пропозицію (5 → 3, той самий знімок ціни) — він знову в грі
+     */
+    public function test_collect_after_invite_other_returns_closed_offer(): void
+    {
+        $orderId = $this->draft();
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $a = $this->offerId($orderId, self::A);
+        Offers::accept($a, self::A, 'Зроблю', 500, $this->inDays(2));
+        $snapshot = $this->offerRow($a);
+        Offers::invite($orderId, self::CLIENT, self::B);
+        $b = $this->offerId($orderId, self::B);
+        Offers::decline($b, self::B, 'Не встигну');
+        // закриття A — «пізніше» за відмову B: усе одно відмовником показується B
+        Sql::exec('UPDATE design_offers SET updated = NOW() + INTERVAL 1 MINUTE WHERE id = ?', [$a]);
+        Sql::exec('UPDATE design_offers SET updated = NOW() - INTERVAL 1 MINUTE WHERE id = ?', [$b]);
+        $state = Offers::mode2State($orderId, self::CLIENT);
+        $this->assertSame('declined', $state['state']);
+        $this->assertSame($b, $state['offer']['id']);
+        // і якщо відмовника немає зовсім (лише закриті) — картки немає, а не закритий A
+        Sql::exec('UPDATE design_offers SET status = ? WHERE id = ?', [OfferStatus::OTHER_CHOSEN, $b]);
+        $this->assertSame(['state' => 'declined', 'offer' => null], Offers::mode2State($orderId, self::CLIENT));
+        Sql::exec('UPDATE design_offers SET status = ? WHERE id = ?', [OfferStatus::DECLINED, $b]);
+        Notify::$sent = [];
+
+        Offers::collect($orderId, self::CLIENT);
+
+        $row = $this->offerRow($a);
+        $this->assertSame(OfferStatus::SENT, (int)$row['status']);
+        foreach (['text', 'price_designer', 'markup_percent', 'price_client', 'deadline'] as $f) {
+            $this->assertSame($snapshot[$f], $row[$f], $f);
+        }
+        $this->assertSame(OfferStatus::DECLINED, (int)$this->offerRow($b)['status']);
+        $order = $this->orderRow($orderId);
+        $this->assertSame([OrderStatus::COLLECTING, 1], [(int)$order['status'], (int)$order['mode']]);
+        $this->assertSame([], Notify::$sent);
+
+        // A: жива пропозиція в стрічці і «Мої пропозиції», писати, змінювати і відкликати — як звичайно
+        $feed = array_column(Offers::feed(self::A, 1)['items'], null, 'order_id')[$orderId];
+        $this->assertFalse($feed['chosen_other']);
+        $this->assertSame(OfferStatus::SENT, $feed['mine']['status']);
+        $this->assertSame([OfferStatus::SENT], array_column(array_filter(Offers::mine(self::A)['offers'],
+            static fn(array $o): bool => $o['order_id'] === $orderId), 'status'));
+        $this->assertTrue(Offers::access($a, self::A)['write']);
+        Offers::update($a, self::A, 'Зроблю краще', 550, $this->inDays(3));
+        $this->assertSame(550, (int)$this->offerRow($a)['price_designer']);
+        Offers::withdraw($a, self::A);
+        $this->assertSame(OfferStatus::WITHDRAWN, (int)$this->offerRow($a)['status']);
+        $this->assertSame([], Notify::$sent, 'відкликання в режимі 1 — без сповіщень');
+
+        // після вибору «обрано іншого» лишається закритим: повтор collect нічого не повертає
+        $other = $this->draft();
+        Offers::invite($other, self::CLIENT, self::A);
+        $oa = $this->offerId($other, self::A);
+        Offers::accept($oa, self::A, 'Так', 300, $this->inDays(1));
+        Offers::invite($other, self::CLIENT, self::B);
+        $ob = $this->offerId($other, self::B);
+        Offers::accept($ob, self::B, 'Так', 400, $this->inDays(1));
+        Offers::choose($other, self::CLIENT, $ob, (int)$this->offerRow($ob)['price_client']);
+        $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::collect($other, self::CLIENT));
+        $this->assertSame(OfferStatus::OTHER_CHOSEN, (int)$this->offerRow($oa)['status']);
+    }
+
     public function test_collect_republishes(): void
     {
         $orderId = $this->draft();

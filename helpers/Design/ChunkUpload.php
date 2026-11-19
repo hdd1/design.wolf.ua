@@ -13,6 +13,13 @@ final class ChunkUpload
     public const CHUNK = 5 * 1048576;
     /** Запас на частину понад CHUNK */
     private const SLACK = 65536;
+    /** Відповіді на останню частину й блокування — поруч із частинами UppyChunkGlobal (та сама ФС, той самий крон чистки) */
+    private const RESULTS_DIR = '/mnt/work/tmp/tmp_uppy/design-results/';
+    /** Скільки памʼятати відповідь для повтору останньої частини */
+    private const RESULT_TTL = 3600;
+
+    /** @var array<string, resource> утримувані блокування цього запиту */
+    private static array $locks = [];
 
     private const ERR_META = 'Невірні дані завантаження. Оновіть сторінку і спробуйте ще раз';
     private const ERR_NONE = 'Файл не надіслано';
@@ -24,8 +31,12 @@ final class ChunkUpload
      *
      * @param string $scope    "{customerId}:{orderId}:{purpose}" — частини різних людей/замовлень/призначень не змішуються
      * @param int    $maxBytes ліміт файлу
-     * @return array{done:bool, path?:string, name?:string, size?:int} path — склеєний файл у /mnt/work/tmp/tmp_uppy/
-     *         (його далі переносить або видаляє викликач); name — очищене вихідне імʼя
+     * @return array{done:bool, path?:string, name?:string, size?:int, key?:string, recalled?:array}
+     *         - {done:false} — частину прийнято, чекаємо решту;
+     *         - {done:true, path, name, size, key} — файл склеєно: path — у /mnt/work/tmp/tmp_uppy/ (далі переносить або видаляє
+     *           сторінка), name — очищене вихідне імʼя, size === заявлений totalSize. Блокування key утримується: сторінка обробляє
+     *           файл і викликає remember(key, свою відповідь) — це знімає блокування (інакше воно зніметься в кінці запиту);
+     *         - {done:true, recalled} — повтор уже обробленої останньої частини: сторінка віддає recalled як свою відповідь, без обробки.
      * @throws DesignerException помилка з боку користувача
      */
     public static function receive(array $post, array $files, string $scope, int $maxBytes): array
@@ -53,24 +64,130 @@ final class ChunkUpload
             throw new \LogicException('ChunkUpload: $files не збігається з $_FILES');
         }
 
-        $id = sha1($scope . '|' . $fileId);
-        $result = \UppyChunkGlobal::upload(['meta' => [
-            'fileId' => $id,
-            'chunkIndex' => $index,
-            'totalChunks' => $total,
-            // Імʼя тимчасового файлу UppyChunkGlobal рахує як md5(originalName|time()): з унікальним id збігу між завантаженнями немає
-            'originalName' => $id . '.' . self::ext($name),
-        ]]);
-        if (empty($result['done'])) return ['done' => false];
+        $key = sha1($scope . '|' . $fileId);
+        self::lock($key);
+        try {
+            // Повтор останньої частини (обрив, CF 524), коли файл уже зібрано й оброблено: та сама відповідь, без повторної обробки
+            $recalled = self::recall($key);
+            if ($recalled !== null) {
+                self::unlock($key);
+                return ['done' => true, 'recalled' => $recalled];
+            }
+            $result = \UppyChunkGlobal::upload(['meta' => [
+                'fileId' => $key,
+                'chunkIndex' => $index,
+                'totalChunks' => $total,
+                // Імʼя тимчасового файлу UppyChunkGlobal рахує як md5(originalName|time()): з унікальним id збігу між завантаженнями немає
+                'originalName' => $key . '.' . self::ext($name),
+            ]]);
+            if (empty($result['done'])) {
+                self::unlock($key);
+                return ['done' => false];
+            }
 
-        $path = (string)$result['file'];
-        clearstatcache(true, $path);
-        $actual = (int)filesize($path);
-        if ($actual > $maxBytes) {
-            @unlink($path);
-            throw new DesignerException(Images::tooBig($actual, $maxBytes));
+            $path = (string)$result['file'];
+            clearstatcache(true, $path);
+            $actual = filesize($path);
+            if ($actual === false) throw new \RuntimeException('ChunkUpload: не прочитати розмір склеєного файлу');
+            if ($actual > $maxBytes) {
+                @unlink($path);
+                throw new DesignerException(Images::tooBig($actual, $maxBytes));
+            }
+            if ($actual !== $size) {
+                @unlink($path);
+                throw new DesignerException('Файл пошкоджено під час завантаження — спробуйте ще раз');
+            }
+        } catch (\Throwable $e) {
+            self::unlock($key);
+            throw $e;
         }
-        return ['done' => true, 'path' => $path, 'name' => $name, 'size' => $actual];
+        // Блокування лишається до remember() або до кінця запиту: повтор цієї частини чекає, доки сторінка обробить файл
+        return ['done' => true, 'path' => $path, 'name' => $name, 'size' => $actual, 'key' => $key];
+    }
+
+    /**
+     * Запамʼятати остаточну відповідь сторінки на завантаження $key (з receive) на RESULT_TTL і зняти блокування.
+     * Можна запамʼятати й помилку обробки (['error' => …]) — повтор отримає її ж.
+     */
+    public static function remember(string $key, array $result): void
+    {
+        self::lock($key);
+        try {
+            $file = self::dir() . $key . '.json';
+            $tmp = $file . '.' . bin2hex(random_bytes(4));
+            if (file_put_contents($tmp, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) === false
+                || !chmod($tmp, 0600) || !rename($tmp, $file)) {
+                @unlink($tmp);
+                throw new \RuntimeException('ChunkUpload: не записати результат ' . $key);
+            }
+            self::sweep();
+        } finally {
+            self::unlock($key);
+        }
+    }
+
+    /** Запамʼятована відповідь для $key або null (немає чи старша за RESULT_TTL — тоді видаляється) */
+    public static function recall(string $key): ?array
+    {
+        $own = !isset(self::$locks[$key]);
+        self::lock($key);
+        try {
+            $file = self::dir() . $key . '.json';
+            clearstatcache(true, $file);
+            $mtime = @filemtime($file);
+            if ($mtime === false) return null;
+            if ($mtime < time() - self::RESULT_TTL) {
+                @unlink($file);
+                return null;
+            }
+            $data = json_decode((string)@file_get_contents($file), true);
+            return is_array($data) ? $data : null;
+        } finally {
+            if ($own) self::unlock($key);
+        }
+    }
+
+    /** Ексклюзивне блокування $key (файл {key}.lock; повторно в тому самому запиті — без змін) */
+    private static function lock(string $key): void
+    {
+        if (!preg_match('/^[0-9a-f]{40}$/D', $key)) throw new \InvalidArgumentException('ChunkUpload: поганий ключ');
+        if (isset(self::$locks[$key])) return;
+        $file = self::dir() . $key . '.lock';
+        $fh = @fopen($file, 'c');
+        if ($fh === false || !flock($fh, LOCK_EX)) throw new \RuntimeException('ChunkUpload: не заблокувати ' . $key);
+        @chmod($file, 0600);
+        touch($file);   // свіжий mtime — sweep() не видалить файл, поки ним користуються
+        self::$locks[$key] = $fh;
+    }
+
+    private static function unlock(string $key): void
+    {
+        if (!isset(self::$locks[$key])) return;
+        flock(self::$locks[$key], LOCK_UN);
+        fclose(self::$locks[$key]);
+        unset(self::$locks[$key]);
+    }
+
+    /** Каталог результатів і блокувань: /mnt/work/tmp/tmp_uppy/design-results/ (0700) */
+    private static function dir(): string
+    {
+        $dir = self::RESULTS_DIR;
+        if (is_dir($dir)) return $dir;
+        // Батьківські — як їх створює сам UppyChunkGlobal (0777), щоб рекурсивний mkdir не зробив їх 0700
+        \FileGlobal::folder(dirname($dir) . '/');
+        if (!@mkdir($dir, 0700) && !is_dir($dir)) {
+            throw new \RuntimeException('ChunkUpload: не створити ' . $dir);
+        }
+        return $dir;
+    }
+
+    /** Прибрати прострочені результати й блокування */
+    private static function sweep(): void
+    {
+        $old = time() - self::RESULT_TTL;
+        foreach (glob(self::RESULTS_DIR . '*.{json,lock}', GLOB_BRACE) ?: [] as $file) {
+            if (@filemtime($file) < $old) @unlink($file);
+        }
     }
 
     /** Вихідне імʼя без шляху й керівних символів, до 255 символів; порожнє → «file» */
@@ -94,7 +211,7 @@ final class ChunkUpload
     /** Ціле ≥ 0 з поля форми або null */
     private static function int(mixed $v): ?int
     {
-        if (is_int($v)) return $v;
+        if (is_int($v)) return $v >= 0 ? $v : null;
         return is_string($v) && preg_match('/^(0|[1-9][0-9]{0,11})$/D', $v) ? (int)$v : null;
     }
 

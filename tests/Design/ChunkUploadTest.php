@@ -14,6 +14,7 @@ use PHPUnit\Framework\TestCase;
 final class ChunkUploadTest extends TestCase
 {
     private const TMP = '/mnt/work/tmp/tmp_uppy/';
+    private const RESULTS = self::TMP . 'design-results/';
     private const MB = 1048576;
     private const ERR_META = 'Невірні дані завантаження. Оновіть сторінку і спробуйте ще раз';
 
@@ -27,10 +28,12 @@ final class ChunkUploadTest extends TestCase
     private array $sent = [];
     /** @var string[] склеєні файли */
     private array $assembled = [];
+    /** @var string[] ключі remember/recall, використані напряму */
+    private array $keys = [];
 
     public static function setUpBeforeClass(): void
     {
-        foreach (['/mnt/work/tmp', '/mnt/work/tmp/tmp_uppy', '/mnt/work/tmp/tmp_uppy/chunks'] as $dir) {
+        foreach (['/mnt/work/tmp', '/mnt/work/tmp/tmp_uppy', '/mnt/work/tmp/tmp_uppy/chunks', '/mnt/work/tmp/tmp_uppy/design-results'] as $dir) {
             if (!is_dir($dir)) self::$newDirs[] = $dir;
         }
         $probe = stream_socket_server('tcp://127.0.0.1:0');
@@ -63,10 +66,16 @@ final class ChunkUploadTest extends TestCase
 
     protected function tearDown(): void
     {
+        $keys = $this->keys;
         foreach ($this->sent as [$scope, $fileId, $index]) {
+            $keys[] = sha1($scope . '|' . $fileId);
             @unlink(self::TMP . 'chunks/' . md5(sha1($scope . '|' . $fileId)) . '.part' . $index);
         }
         foreach ($this->assembled as $path) @unlink($path);
+        foreach (array_unique($keys) as $key) {
+            @unlink(self::RESULTS . "$key.lock");
+            @unlink(self::RESULTS . "$key.json");
+        }
     }
 
     private static function fileId(): string
@@ -92,25 +101,41 @@ final class ChunkUploadTest extends TestCase
 
     /**
      * Частина через php -S
+     * @param array $fields додаткові поля (remember)
+     * @param array $files  додаткові файли: поле => байти (other)
      * @return array{0:int, 1:array} статус і JSON
      */
-    private function send(string $scope, int $max, array $meta, ?string $bytes, string $field = 'file'): array
+    private function send(string $scope, int $max, array $meta, ?string $bytes, array $fields = [], array $files = []): array
     {
-        $post = ['scope' => $scope, 'max' => (string)$max];
+        $ch = $this->request($scope, $max, $meta, $bytes, $fields, $files, $tmps);
+        $body = (string)curl_exec($ch);
+        return $this->response($ch, $body, $tmps);
+    }
+
+    /** Готовий curl-запит частини; $tmps — тимчасові файли, які прибирає response() */
+    private function request(string $scope, int $max, array $meta, ?string $bytes, array $fields, array $files, ?array &$tmps)
+    {
+        $post = ['scope' => $scope, 'max' => (string)$max] + $fields;
         foreach ($meta as $k => $v) $post["meta[$k]"] = (string)$v;
-        $tmp = null;
-        if ($bytes !== null) {
-            $tmp = tempnam(sys_get_temp_dir(), 'chunk');
-            file_put_contents($tmp, $bytes);
+        if ($bytes !== null) $files = ['file' => $bytes] + $files;
+        $tmps = [];
+        foreach ($files as $field => $content) {
+            $tmp = $tmps[] = tempnam(sys_get_temp_dir(), 'chunk');
+            file_put_contents($tmp, $content);
             $post[$field] = new CURLFile($tmp, 'application/octet-stream', 'blob');
         }
         $this->sent[] = [$scope, (string)$meta['fileId'], (int)$meta['chunkIndex']];
         $ch = curl_init('http://127.0.0.1:' . self::$port . '/');
         curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $post, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 30]);
-        $body = (string)curl_exec($ch);
+        return $ch;
+    }
+
+    /** @return array{0:int, 1:array} */
+    private function response($ch, string $body, array $tmps): array
+    {
         $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         curl_close($ch);
-        if ($tmp !== null) unlink($tmp);
+        foreach ($tmps as $tmp) unlink($tmp);
         $json = json_decode($body, true);
         $this->assertIsArray($json, "Не JSON: $body");
         if (!empty($json['path'])) $this->assembled[] = $json['path'];
@@ -120,7 +145,7 @@ final class ChunkUploadTest extends TestCase
     /** Файли в tmp_uppy і chunks/ — щоб переконатися, що нічого не лишилось */
     private static function listing(): array
     {
-        $files = array_merge(glob(self::TMP . '*') ?: [], glob(self::TMP . 'chunks/*') ?: []);
+        $files = array_filter(array_merge(glob(self::TMP . '*') ?: [], glob(self::TMP . 'chunks/*') ?: []), 'is_file');
         sort($files);
         return $files;
     }
@@ -143,6 +168,7 @@ final class ChunkUploadTest extends TestCase
         $this->assertStringStartsWith(self::TMP, $json['path']);
         $this->assertStringEndsWith('.pdf', $json['path']);
         $this->assertSame(implode('', $parts), file_get_contents($json['path']));
+        $this->assertSame(sha1("$scope|$id"), $json['key']);
         // Частини UppyChunkGlobal прибрав сам
         foreach ([0, 1, 2] as $i) $this->assertFileDoesNotExist(self::TMP . 'chunks/' . md5(sha1("$scope|$id")) . ".part$i");
     }
@@ -162,6 +188,10 @@ final class ChunkUploadTest extends TestCase
             $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => $bad])), "totalChunks $bad");
         }
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalSize' => 'x'])));
+        // Від’ємні цілі (не з форми, а int) — так само
+        $this->assertSame(self::ERR_META, $this->error(self::meta(['chunkIndex' => -1])));
+        $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => -1])));
+        $this->assertSame(self::ERR_META, $this->error(self::meta(['totalSize' => -5])));
         $this->assertSame('Файл порожній', $this->error(self::meta(['totalSize' => '0'])));
         // 11 частин — ще можна: далі перевіряється сама частина
         $this->assertSame('Файл не надіслано', $this->error(self::meta(['totalChunks' => '11', 'chunkIndex' => '10'])));
@@ -257,5 +287,104 @@ final class ChunkUploadTest extends TestCase
         $this->assertTrue($json['done']);
         $this->assertSame('xy.p h', $json['name']);
         $this->assertMatchesRegularExpression('~^' . self::TMP . '[0-9a-f]{32}\.bin$~', $json['path']);
+    }
+
+    public function test_rejects_size_mismatch_after_assembly(): void
+    {
+        $before = self::listing();
+        $meta = ['fileId' => self::fileId(), 'totalChunks' => 2, 'totalSize' => 6, 'originalName' => 'a.pdf'];
+        $this->send('29:1:layout', 50 * self::MB, ['chunkIndex' => 0] + $meta, 'AAA');
+        // Заявлено 6 байтів, склеєно 5
+        [$code, $json] = $this->send('29:1:layout', 50 * self::MB, ['chunkIndex' => 1] + $meta, 'BB');
+        $this->assertSame([422, 'Файл пошкоджено під час завантаження — спробуйте ще раз'], [$code, $json['error'] ?? null]);
+        $this->assertSame($before, self::listing());
+    }
+
+    public function test_retry_of_final_part_returns_remembered_result(): void
+    {
+        $scope = '29:1:preview';
+        $meta = ['fileId' => self::fileId(), 'totalChunks' => 2, 'totalSize' => 6, 'originalName' => 'a.pdf'];
+        $page = ['done' => true, 'preview' => ['id' => 7, 'num' => 'v1']];
+        $this->send($scope, 50 * self::MB, ['chunkIndex' => 0] + $meta, 'AAA');
+        [$code, $json] = $this->send($scope, 50 * self::MB, ['chunkIndex' => 1] + $meta, 'BBB', ['remember' => json_encode($page)]);
+        $this->assertSame(200, $code);
+        $this->assertTrue($json['done']);
+        $this->assertArrayHasKey('path', $json);
+
+        // Відповідь загубилась (CF 524) — браузер повторює останню частину: та сама відповідь сторінки, нічого не склеюється знову
+        $before = self::listing();
+        [$code, $json] = $this->send($scope, 50 * self::MB, ['chunkIndex' => 1] + $meta, 'BBB');
+        $this->assertSame([200, ['done' => true, 'recalled' => $page]], [$code, $json]);
+        $this->assertSame($before, self::listing());
+
+        // Без remember (сторінка впала) повтор лише кладе частину — файл не збирається вдруге
+        $meta['fileId'] = self::fileId();
+        $this->send($scope, 50 * self::MB, ['chunkIndex' => 0] + $meta, 'AAA');
+        $this->assertTrue($this->send($scope, 50 * self::MB, ['chunkIndex' => 1] + $meta, 'BBB')[1]['done']);
+        $this->assertSame(['done' => false], $this->send($scope, 50 * self::MB, ['chunkIndex' => 1] + $meta, 'BBB')[1]);
+    }
+
+    public function test_remember_and_recall(): void
+    {
+        $key = $this->keys[] = sha1('test|' . bin2hex(random_bytes(8)));
+        $this->assertNull(ChunkUpload::recall($key));
+        ChunkUpload::remember($key, ['done' => true, 'layout' => ['id' => 5, 'label' => 'Візитка']]);
+        $this->assertSame(['done' => true, 'layout' => ['id' => 5, 'label' => 'Візитка']], ChunkUpload::recall($key));
+        // Повторно — те саме (повторів може бути кілька)
+        $this->assertSame(['done' => true, 'layout' => ['id' => 5, 'label' => 'Візитка']], ChunkUpload::recall($key));
+        $this->assertSame('0600', substr(sprintf('%o', fileperms(self::RESULTS . "$key.json")), -4));
+        $this->assertSame('0700', substr(sprintf('%o', fileperms(self::RESULTS)), -4));
+
+        // Старше години — видаляється при читанні
+        touch(self::RESULTS . "$key.json", time() - 3601);
+        $this->assertNull(ChunkUpload::recall($key));
+        $this->assertFileDoesNotExist(self::RESULTS . "$key.json");
+
+        $this->expectException(InvalidArgumentException::class);
+        ChunkUpload::recall('../../etc/passwd');
+    }
+
+    public function test_concurrent_request_with_same_id_waits_for_lock(): void
+    {
+        $scope = '29:1:layout';
+        $meta = ['fileId' => self::fileId(), 'totalChunks' => 2, 'totalSize' => 6, 'originalName' => 'a.pdf'];
+        $key = sha1($scope . '|' . $meta['fileId']);
+        $this->send($scope, 50 * self::MB, ['chunkIndex' => 0] + $meta, 'AAA');
+
+        // Інший запит із тим самим id (перша спроба ще обробляє файл) тримає блокування
+        $lock = fopen(self::RESULTS . "$key.lock", 'c');
+        $this->assertTrue(flock($lock, LOCK_EX));
+        $ch = $this->request($scope, 50 * self::MB, ['chunkIndex' => 1] + $meta, 'BBB', [], [], $tmps);
+        $mh = curl_multi_init();
+        curl_multi_add_handle($mh, $ch);
+        $started = microtime(true);
+        do {
+            curl_multi_exec($mh, $running);
+            curl_multi_select($mh, 0.1);
+        } while ($running && microtime(true) - $started < 1.0);
+        $this->assertSame(1, $running, 'Запит не чекав на блокування');
+
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        do {
+            curl_multi_exec($mh, $running);
+            curl_multi_select($mh, 0.1);
+        } while ($running && microtime(true) - $started < 30);
+        $body = (string)curl_multi_getcontent($ch);
+        curl_multi_remove_handle($mh, $ch);
+        curl_multi_close($mh);
+        [$code, $json] = $this->response($ch, $body, $tmps);
+        $this->assertSame(200, $code, $body);
+        $this->assertTrue($json['done']);
+        $this->assertSame('AAABBB', file_get_contents($json['path']));
+    }
+
+    public function test_files_must_be_the_global_files(): void
+    {
+        // receive() перевірив би одну частину, а UppyChunkGlobal узяв би іншу з $_FILES — помилка програміста
+        [$code, $json] = $this->send('29:1:layout', 50 * self::MB,
+            ['fileId' => self::fileId(), 'chunkIndex' => 0, 'totalChunks' => 1, 'totalSize' => 3, 'originalName' => 'a.pdf'], 'abc', [], ['other' => 'xyz']);
+        $this->assertSame(500, $code);
+        $this->assertStringStartsWith('LogicException: ', $json['error']);
     }
 }

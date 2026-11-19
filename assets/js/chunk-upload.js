@@ -4,13 +4,16 @@
 //   fields     — додаткові поля форми (purpose, caption…), ідуть з кожною частиною
 //   onProgress — function(sentBytes, totalBytes)
 //   signal     — AbortSignal (AbortController) для скасування
-// Частини — послідовно; частина повторюється до 3 разів при збої мережі або 5xx (пауза 1, 2, 4 с); на 4xx — зупинка.
+// Частини — послідовно; частина повторюється до 3 разів при збої мережі, тайм-ауті або 5xx (пауза 1, 2, 4 с); на 4xx — зупинка.
+// Тайм-аут частини — DesignUpload.timeouts: 120 с, останньої — 300 с (на ній сервер склеює й обробляє файл).
+// Повтор останньої частини безпечний: сервер повертає запамʼятовану відповідь (ChunkUpload::recall), а не обробляє вдруге.
 // Помилка → reject(Error): message — текст для людини (error із JSON сервера або загальний), .status, .json;
 // скасування — Error з name 'AbortError'.
 (function () {
   var CHUNK = 5 * 1024 * 1024;
   var RETRIES = 3;
   var BACKOFF_MS = 1000;
+  var timeouts = { part: 120000, last: 300000 };
 
   function randomId() {
     var bytes = new Uint8Array(16);
@@ -40,13 +43,14 @@
   }
 
   // Одна спроба: resolve({status, json}) — status 0 при збої мережі; reject лише при скасуванні
-  function postOnce(url, fd, signal, onPart) {
+  function postOnce(url, fd, timeout, signal, onPart) {
     return new Promise(function (resolve, reject) {
       if (signal && signal.aborted) return reject(aborted());
       var xhr = new XMLHttpRequest();
       function onAbort() { xhr.abort(); }
       function finish() { if (signal) signal.removeEventListener('abort', onAbort); }
       xhr.open('POST', url);
+      xhr.timeout = timeout;
       xhr.upload.onprogress = function (e) { if (e.lengthComputable) onPart(e.loaded / e.total); };
       xhr.onload = function () {
         finish();
@@ -96,7 +100,8 @@
       fd.append('meta[totalSize]', String(file.size));
       fd.append('meta[originalName]', file.name);
       fd.append('file', blob, 'blob');
-      return postOnce(opts.url, fd, signal, function (share) { progress(share * blob.size); }).then(function (r) {
+      var timeout = index === total - 1 ? timeouts.last : timeouts.part;
+      return postOnce(opts.url, fd, timeout, signal, function (share) { progress(share * blob.size); }).then(function (r) {
         if ((r.status === 0 || r.status >= 500) && attempt < RETRIES) {
           progress(0);
           return pause(BACKOFF_MS * Math.pow(2, attempt), signal).then(function () { return part(attempt + 1); });
@@ -121,5 +126,5 @@
     return next();
   }
 
-  window.DesignUpload = { send: send, CHUNK: CHUNK };
+  window.DesignUpload = { send: send, CHUNK: CHUNK, timeouts: timeouts };
 })();

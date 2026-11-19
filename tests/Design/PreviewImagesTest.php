@@ -279,24 +279,119 @@ final class PreviewImagesTest extends TestCase
         $this->assertCount(2 * $max, $this->files());
     }
 
-    /** «%PDF-» не на самому початку (у межах перших 1024 байт) — теж PDF */
+    /** «%PDF-» не на самому початку (у перших 1023 байтах) — теж PDF; межа: зсув 1018 — так, 1019 — ні */
     public function test_pdf_header_after_garbage(): void
     {
         $src = $this->minipdf('junk.pdf', 2, 200, 100, str_repeat('x', 500) . "\n");
         $this->assertSame(['pages' => 2, 'type' => 'pdf'], PreviewImages::make($src, $this->dir, 19));
+
+        $at1018 = $this->minipdf('at1018.pdf', 1, 200, 100, str_repeat('x', 1018));
+        $this->assertSame(['pages' => 1, 'type' => 'pdf'], PreviewImages::make($at1018, $this->dir, 20));
+        foreach ($this->files() as $f) unlink("$this->dir/$f");
+
+        $at1019 = $this->minipdf('at1019.pdf', 1, 200, 100, str_repeat('x', 1019));
+        $this->assertRejected(Images::ERR_BROKEN, fn() => PreviewImages::make($at1019, $this->dir, 21));
+    }
+
+    /**
+     * gs сам вирішує «PDF чи PostScript»: файл, що починається з «%!PS» чи «%%», він виконав би як PostScript, навіть
+     * якщо далі є «%PDF-». Тому gs бачить лише копію від «%PDF-». Перевірка: PostScript попереду ніколи не виконується
+     */
+    public function test_postscript_before_pdf_header_never_executed(): void
+    {
+        // a) PostScript заливає сторінку червоним, далі справжній PDF (синій прямокутник у лівому нижньому куті на білому).
+        //    Виконайся PS — верхній правий кут прев'ю був би червоним
+        $red = "%!PS-Adobe-3.0\n1 0 0 setrgbcolor clippath fill showpage\n%%EOF\n";
+        $src = $this->minipdf('ps-red.pdf', 1, 400, 400, $red);
+        $this->assertSame(['pages' => 1, 'type' => 'pdf'], PreviewImages::make($src, $this->dir, 30));
+        $im = new Imagick("$this->dir/30-p1-view.webp");
+        $im->cropImage(intdiv($im->getImageWidth(), 4), intdiv($im->getImageHeight(), 4), intdiv($im->getImageWidth() * 3, 4), 0);
+        $this->assertGreaterThan(0.8, $im->getImageChannelMean(Imagick::CHANNEL_GREEN)['mean'] / 65535, 'PostScript виконався');
+        foreach ($this->files() as $f) unlink("$this->dir/$f");
+
+        // b) Знахідка рев'ю: «%!PS … %%PDF-1.4 showpage» — gs отримує лише «%PDF-1.4 showpage» → пошкоджений PDF
+        $probe = "$this->tmp/review.pdf";
+        file_put_contents($probe, "%!PS\n(PS-EXECUTED) = flush\n%%PDF-1.4\nshowpage\n");
+        $this->assertRejected(Images::ERR_BROKEN, fn() => PreviewImages::make($probe, $this->dir, 31));
+
+        // c) «%%»-коментар і нескінченний цикл PostScript попереду: виконайся він — спрацював би ліміт часу
+        $loop = $this->minipdf('ps-loop.pdf', 1, 400, 400, "%%Title: x\n{ } loop\n");
+        $t = microtime(true);
+        $this->assertSame(['pages' => 1, 'type' => 'pdf'], PreviewImages::make($loop, $this->dir, 32));
+        $this->assertLessThan(10, microtime(true) - $t);
+    }
+
+    /** Сторінка 143 000×1 pt: коротша сторона менше пікселя — зрозуміла відмова, а не «пошкоджений» */
+    public function test_rejects_needle_pdf_page(): void
+    {
+        $src = $this->minipdf('needle.pdf', 1, 143000, 1);
+        $this->assertRejected("Незвичні пропорції сторінки: вона надто вузька для прев'ю", fn() => PreviewImages::make($src, $this->dir, 1));
+    }
+
+    /** TIFF (рішення власника 2026-11-20): за сигнатурою, ті самі межі, що й JPG/PNG, без межі пропорцій */
+    public function test_tiff_preview(): void
+    {
+        $src = $this->image(3000, 2000, 'tiff', 'photo.dat', 'gradient:red-blue');     // розширення не важить
+        $this->assertSame(['pages' => 1, 'type' => 'image'], PreviewImages::make($src, $this->dir, 40));
+        $this->assertSame([2000, 1333, 'WEBP'], self::info("$this->dir/40-p1-view.webp"));
+        $this->assertSame([800, 533, 'WEBP'], self::info("$this->dir/40-p1-card.webp"));
+
+        // Big-endian (MM) теж
+        $mm = $this->image(400, 300, 'tiff', 'mm.tif', 'white', fn(Imagick $im) => $im->setOption('tiff:endian', 'msb'));
+        $this->assertSame("MM\0*", file_get_contents($mm, false, null, 0, 4));
+        $this->assertSame(['pages' => 1, 'type' => 'image'], PreviewImages::make($mm, $this->dir, 41));
+        $this->assertWatermarkedWhite("$this->dir/41-p1-view.webp");
+    }
+
+    public function test_cmyk_tiff_to_srgb(): void
+    {
+        // Блакитний (cyan) у CMYK: C=100%
+        $src = $this->image(600, 400, 'tiff', 'cmyk.tif', 'cyan', function (Imagick $im) {
+            $im->transformImageColorspace(Imagick::COLORSPACE_CMYK);
+        });
+        $this->assertSame(Imagick::COLORSPACE_CMYK, (new Imagick($src))->getImageColorspace());
+        PreviewImages::make($src, $this->dir, 42);
+        $im = new Imagick("$this->dir/42-p1-view.webp");
+        $this->assertSame(Imagick::COLORSPACE_SRGB, $im->getImageColorspace());
+        $this->assertLessThan(0.3, $im->getImageChannelMean(Imagick::CHANNEL_RED)['mean'] / 65535);
+        $this->assertGreaterThan(0.6, $im->getImageChannelMean(Imagick::CHANNEL_BLUE)['mean'] / 65535);
+    }
+
+    public function test_tiff_limits_and_first_page_only(): void
+    {
+        $big = $this->image(13000, 50, 'tiff', 'big.tif');
+        $this->assertRejected('Зображення завелике: до 12 000 px по стороні', fn() => PreviewImages::make($big, $this->dir, 1));
+
+        // Багатосторінковий TIFF: лише перша сторінка (червона), друга (синя) ігнорується
+        $two = new Imagick();
+        foreach (['red', 'blue'] as $c) {
+            $p = new Imagick();
+            $p->newImage(300, 200, $c);
+            $p->setImageFormat('tiff');
+            $two->addImage($p);
+        }
+        $two->writeImages("tiff:$this->tmp/two.tif", true);
+        $this->assertSame(['pages' => 1, 'type' => 'image'], PreviewImages::make("$this->tmp/two.tif", $this->dir, 43));
+        $im = new Imagick("$this->dir/43-p1-view.webp");
+        $this->assertGreaterThan(0.6, $im->getImageChannelMean(Imagick::CHANNEL_RED)['mean'] / 65535);
+        $this->assertLessThan(0.4, $im->getImageChannelMean(Imagick::CHANNEL_BLUE)['mean'] / 65535);
+        $this->assertSame(['43-p1-card.webp', '43-p1-view.webp'], $this->files());
     }
 
     /** gs і Imagick бачать лише шлях із безпечних символів — інакше відмова до будь-якого їх виклику */
     public function test_unsafe_path_refused(): void
     {
-        $src = $this->minipdf('with space[0].pdf', 1);
-        try {
-            PreviewImages::make($src, $this->dir, 1);
-            $this->fail('Очікувався RuntimeException');
-        } catch (RuntimeException $e) {
-            $this->assertNotInstanceOf(DesignerException::class, $e);
+        // Пробіл і «[0]»; ім'я з переведенням рядка в кінці (без модифікатора D «$» пропустив би його)
+        foreach (['with space[0].pdf', "newline.pdf\n"] as $name) {
+            $src = $this->minipdf($name, 1);
+            try {
+                PreviewImages::make($src, $this->dir, 1);
+                $this->fail("Очікувався RuntimeException: $name");
+            } catch (RuntimeException $e) {
+                $this->assertNotInstanceOf(DesignerException::class, $e);
+            }
+            $this->assertSame([], $this->files());
         }
-        $this->assertSame([], $this->files());
     }
 
     public function test_rejects_fake_pdf(): void
@@ -343,7 +438,7 @@ final class PreviewImagesTest extends TestCase
     public function test_rejects_gif_and_text(): void
     {
         $gif = $this->image(100, 100, 'gif', 'a.gif');
-        $this->assertRejected('Підходять лише JPG, PNG або PDF', fn() => PreviewImages::make($gif, $this->dir, 1));
+        $this->assertRejected('Підходять лише JPG, PNG, TIFF або PDF', fn() => PreviewImages::make($gif, $this->dir, 1));
 
         $txt = "$this->tmp/a.jpg";
         file_put_contents($txt, 'просто текст');
@@ -455,6 +550,52 @@ final class PreviewImagesTest extends TestCase
         $this->assertSame($before, glob(sys_get_temp_dir() . '/design-pdf-*'), 'тимчасова папка gs прибрана');
         foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $f) {
             $this->assertStringNotContainsString($src, (string)@file_get_contents($f), 'gs по цьому PDF ще працює');
+        }
+    }
+
+    /** @return string[] cmdline процесів, у яких згадано $needle */
+    private static function processesWith(string $needle): array
+    {
+        $found = [];
+        foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $f) {
+            $cmd = (string)@file_get_contents($f);
+            if (str_contains($cmd, $needle)) $found[] = str_replace("\0", ' ', $cmd);
+        }
+        return $found;
+    }
+
+    /**
+     * Воркер убито SIGKILL (php-fpm request_terminate_timeout тощо): ні finally, ні shutdown не виконаються.
+     * gs запущено під «timeout --signal=KILL» — другий ліміт сам зупинить його (ліміт PHP + 5 с)
+     */
+    public function test_orphan_gs_stopped_by_timeout_wrapper(): void
+    {
+        if (!is_executable('/usr/bin/timeout')) $this->markTestSkipped('немає /usr/bin/timeout');
+        $src = $this->minipdf('orphan.pdf', 5, 595, 842, '', str_repeat("1 0 0 rg 0 0 595 842 re f 0 0 1 rg 0 0 595 842 re f\n", 10000));
+        $script = "$this->tmp/orphan.php";
+        file_put_contents($script, '<?php require ' . var_export(dirname(__DIR__, 2) . '/helpers/Design/bootstrap.php', true) . ";\n"
+            . "\$t = new ReflectionProperty(Design\\PreviewImages::class, 'gsTimeout'); \$t->setAccessible(true); \$t->setValue(null, 2);\n"
+            . "Design\\PreviewImages::make(\$argv[1], \$argv[2], 1);\n");
+        $null = ['file', '/dev/null', 'w'];
+        $before = glob(sys_get_temp_dir() . '/design-pdf-*') ?: [];
+        $proc = proc_open([PHP_BINARY, $script, $src, "$this->dir/o"], [0 => ['file', '/dev/null', 'r'], 1 => $null, 2 => $null], $pipes);
+        // Чекаємо, поки gs почне рендер, і вбиваємо PHP так, як це робить php-fpm
+        $rendering = fn() => array_filter(self::processesWith($src), fn($cmd) => str_contains($cmd, '-sDEVICE=ppmraw'));
+        for ($i = 0; $i < 100 && !$rendering(); $i++) usleep(50000);
+        $this->assertNotEmpty($rendering(), 'gs не почав рендер');
+        usleep(300000);
+        proc_terminate($proc, 9);
+        proc_close($proc);
+
+        $t = microtime(true);
+        while (self::processesWith($src) && microtime(true) - $t < 15) usleep(200000);
+        $this->assertSame([], self::processesWith($src), 'gs-сирота не зупинився');
+        $this->assertLessThan(10, microtime(true) - $t);
+        // Тимчасову папку прибрати нікому (воркер убито) — прибирає тест (лише ту, що з'явилась за цей тест);
+        // у проді — systemd-tmpfiles / tmpwatch
+        foreach (array_diff(glob(sys_get_temp_dir() . '/design-pdf-*') ?: [], $before) as $d) {
+            foreach (glob("$d/*") ?: [] as $f) unlink($f);
+            rmdir($d);
         }
     }
 

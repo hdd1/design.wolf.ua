@@ -23,7 +23,13 @@ final class PreviewImages
     /** Скільки stderr gs тримати для журналу */
     private const GS_ERR_BYTES = 4096;
     /** Шлях до файлу, який віддаємо gs/Imagick: лише безпечні символи (жодних «[», «:», пробілів, лапок) */
-    private const SAFE_PATH = '~^/[A-Za-z0-9._/-]+$~';
+    private const SAFE_PATH = '~^/[A-Za-z0-9._/-]+$~D';
+    /** «%PDF-» шукаємо лише в перших стільки байтах (заголовок цілком у них) */
+    private const PDF_HEAD = 1023;
+    /** Сигнатури картинок: такий файл ніколи не йде в gs, хоч би що було далі в перших байтах */
+    private const IMAGE_MAGIC = ["\xFF\xD8\xFF", "\x89PNG", "II*\0", "MM\0*"];
+    /** Другий, незалежний від PHP ліміт для gs (coreutils timeout): якщо воркер php-fpm уб'ють, gs не житиме вічно */
+    private const TIMEOUT_BIN = '/usr/bin/timeout';
 
     private const FONT = __DIR__ . '/fonts/Manrope-SemiBold.ttf';
     /** Кут знака (проти годинникової), розмір шрифту = √(площа) / FONT_DIV, непрозорість напису */
@@ -31,9 +37,10 @@ final class PreviewImages
     private const MARK_FONT_DIV = 26;
     private const MARK_OPACITY = 0.28;
 
-    private const ERR_TYPE = 'Підходять лише JPG, PNG або PDF';
+    private const ERR_TYPE = 'Підходять лише JPG, PNG, TIFF або PDF';
     private const ERR_PAGES = "Забагато сторінок: понад %d. Максимум — %d. Розбийте на кілька прев'ю";
     private const ERR_PAGE_HUGE = "Сторінка завелика для прев'ю";
+    private const ERR_PAGE_RATIO = "Незвичні пропорції сторінки: вона надто вузька для прев'ю";
     private const ERR_PDF_SLOW = 'Не вдалося обробити PDF — спробуйте менший файл';
 
     /** @var array<int, array{0:\Imagick, 1:float}> готові «штампи» знака за розміром шрифту — у межах одного make() */
@@ -42,6 +49,7 @@ final class PreviewImages
     /** @var resource|null запущений gs і тимчасова папка рендеру — для аварійного прибирання (abandon) */
     private static $proc = null;
     private static ?string $tmp = null;
+    private static bool $shutdownRegistered = false;
 
     /**
      * @return array{pages:int, type:string} type — image|pdf (як design_previews.source_type)
@@ -60,27 +68,35 @@ final class PreviewImages
         }
         $src = $real;
         // Якщо PHP впаде фатально (max_execution_time) посеред рендеру, finally не виконаються — тоді приберемо тут
-        register_shutdown_function(static function () {
-            self::abandon();
-        });
+        if (!self::$shutdownRegistered) {
+            register_shutdown_function(static function () {
+                self::abandon();
+            });
+            self::$shutdownRegistered = true;
+        }
 
         $written = [];
         $dirs = [];
         try {
-            $head = (string)file_get_contents($src, false, null, 0, 1024);
-            $image = strncmp($head, "\xFF\xD8\xFF", 3) === 0 || strncmp($head, "\x89PNG", 4) === 0;
-            // %PDF- може стояти не на самому початку (сміття перед заголовком gs пропускає з попередженням)
-            if (!$image && str_contains($head, '%PDF-')) {
-                $pages = self::pdf($src, $dir, $previewId, $written, $dirs);
+            $head = (string)file_get_contents($src, false, null, 0, self::PDF_HEAD);
+            $image = false;
+            foreach (self::IMAGE_MAGIC as $magic) $image = $image || str_starts_with($head, $magic);
+            // «%PDF-» може стояти не на самому початку (сміття перед заголовком) — тоді gs отримає копію з цього місця:
+            // gs сам вирішує «PDF чи PostScript», і файл з «%!PS…» попереду виконав би як PostScript
+            $pdfAt = $image ? false : strpos($head, '%PDF-');
+            if ($pdfAt !== false) {
+                $pages = self::pdf($src, $pdfAt, $dir, $previewId, $written, $dirs);
                 return ['pages' => $pages, 'type' => 'pdf'];
             }
             $type = @getimagesize($src);
             if ($type === false) throw new DesignerException(Images::ERR_BROKEN);
-            if ($type[2] !== IMAGETYPE_JPEG && $type[2] !== IMAGETYPE_PNG) throw new DesignerException(self::ERR_TYPE);
+            if (!in_array($type[2], [IMAGETYPE_JPEG, IMAGETYPE_PNG, IMAGETYPE_TIFF_II, IMAGETYPE_TIFF_MM], true)) {
+                throw new DesignerException(self::ERR_TYPE);
+            }
 
-            // Пропорції не обмежуємо (довгий банер — нормальне прев'ю); JPEG декодується зменшеним,
-            // але не менше 2000 по довшій стороні — далі лише вписування
-            $im = Images::load($src, Images::check($src, $maxBytes, false), self::VIEW_SIDE, 1);
+            // Пропорції не обмежуємо (довгий банер — нормальне прев'ю); TIFF — лише перша сторінка;
+            // JPEG декодується зменшеним, але не менше 2000 по довшій стороні — далі лише вписування
+            $im = Images::load($src, Images::check($src, $maxBytes, false, true), self::VIEW_SIDE, 1);
             try {
                 $dirs = Images::ensureDir($dir);
                 self::page($im, $dir, $previewId, 1, $written);
@@ -100,21 +116,54 @@ final class PreviewImages
 
     /**
      * Рахує сторінки (не далі за ліміт+1), рендерить їх одним процесом gs і обробляє кожну, щойно gs її дописав.
-     * Весь PDF — підрахунок, рендер, обробка — в межах $gsTimeout
+     * Весь PDF — підрахунок, рендер, обробка — в межах $gsTimeout. gs бачить лише файл, що починається рівно з «%PDF-»:
+     * якщо заголовок на зсуві $pdfAt > 0 — приватну копію з цього місця в тимчасовій папці (0700)
      */
-    private static function pdf(string $src, string $dir, int $previewId, array &$written, array &$dirs): int
+    private static function pdf(string $src, int $pdfAt, string $dir, int $previewId, array &$written, array &$dirs): int
     {
         Images::limitResources();
         $deadline = microtime(true) + self::$gsTimeout;
-        $max = Settings::previewMaxPages();
-        $sizes = self::pdfPages($src, $max + 1, $deadline);
-        $count = count($sizes);
-        if ($count === 0) throw new DesignerException(Images::ERR_BROKEN);
-        if ($count > $max) throw new DesignerException(sprintf(self::ERR_PAGES, $max, $max));
-        $dpi = self::pdfDpi($sizes);
+        $tmp = sys_get_temp_dir() . '/design-pdf-' . bin2hex(random_bytes(8));
+        if (!@mkdir($tmp, 0700)) throw new \RuntimeException("Не вдалося створити тимчасову папку $tmp");
+        self::$tmp = $tmp;
+        try {
+            chmod($tmp, 0700);
+            $pdf = $pdfAt === 0 ? $src : self::copyFrom($src, $pdfAt, "$tmp/source.pdf");
+            $max = Settings::previewMaxPages();
+            $sizes = self::pdfPages($pdf, $max + 1, $deadline);
+            $count = count($sizes);
+            if ($count === 0) throw new DesignerException(Images::ERR_BROKEN);
+            if ($count > $max) throw new DesignerException(sprintf(self::ERR_PAGES, $max, $max));
+            $dpi = self::pdfDpi($sizes);
 
-        $dirs = Images::ensureDir($dir);
-        self::renderPdf($src, $count, $dpi, $deadline, function (int $n, string $ppm) use ($dir, $previewId, &$written) {
+            $dirs = Images::ensureDir($dir);
+            self::renderPdf($pdf, $tmp, $count, $dpi, $deadline, self::pageFromPpm($dir, $previewId, $written));
+            return $count;
+        } finally {
+            self::removeTmp($tmp);
+            self::$tmp = null;
+        }
+    }
+
+    /** Копія $src від байта $offset — щоб файл для gs починався рівно з «%PDF-» */
+    private static function copyFrom(string $src, int $offset, string $dst): string
+    {
+        $in = fopen($src, 'rb');
+        $out = fopen($dst, 'xb');
+        if ($in === false || $out === false) throw new \RuntimeException("Не вдалося скопіювати $src");
+        try {
+            if (stream_copy_to_stream($in, $out, null, $offset) === false) throw new \RuntimeException("Не вдалося скопіювати $src");
+        } finally {
+            fclose($in);
+            fclose($out);
+        }
+        return $dst;
+    }
+
+    /** Обробник готової сторінки-PPM від gs: прочитати, видалити, sRGB без метаданих, view/card зі знаком */
+    private static function pageFromPpm(string $dir, int $previewId, array &$written): callable
+    {
+        return function (int $n, string $ppm) use ($dir, $previewId, &$written) {
             $im = new \Imagick();
             try {
                 try {
@@ -130,8 +179,7 @@ final class PreviewImages
             } finally {
                 $im->clear();
             }
-        });
-        return $count;
+        };
     }
 
     /**
@@ -258,19 +306,20 @@ final class PreviewImages
         }
         $fit = floor(self::VIEW_SIDE * 72 / $long * 100) / 100;
         if ($fit < 1) throw new DesignerException(self::ERR_PAGE_HUGE);
-        return min((float)self::PDF_DPI, $fit);
+        $dpi = min((float)self::PDF_DPI, $fit);
+        // Коротша сторона менше пікселя (напр. 143 000×1 pt) — gs такого не відрендерить
+        foreach ($sizes as [$w, $h]) {
+            if (min($w, $h) * $dpi / 72 < 1) throw new DesignerException(self::ERR_PAGE_RATIO);
+        }
+        return $dpi;
     }
 
     /**
-     * Рендер сторінок 1…$pages одним процесом gs (ppmraw) у приватну тимчасову папку. Сторінку n gs дописав, коли з'явилась
+     * Рендер сторінок 1…$pages одним процесом gs (ppmraw) у приватну тимчасову папку $tmp. Сторінку n gs дописав, коли з'явилась
      * n+1 або gs завершився — тоді $onPage(n, шлях) обробляє її, поки gs рендерить далі. Після $deadline процес убивається
      */
-    private static function renderPdf(string $src, int $pages, float $dpi, float $deadline, callable $onPage): void
+    private static function renderPdf(string $src, string $tmp, int $pages, float $dpi, float $deadline, callable $onPage): void
     {
-        $tmp = sys_get_temp_dir() . '/design-pdf-' . bin2hex(random_bytes(8));
-        if (!@mkdir($tmp, 0700)) throw new \RuntimeException("Не вдалося створити тимчасову папку $tmp");
-        self::$tmp = $tmp;
-        chmod($tmp, 0700);
         $file = fn(int $n) => sprintf('%s/p-%03d.ppm', $tmp, $n);
         try {
             $args = [
@@ -291,8 +340,7 @@ final class PreviewImages
                 $onPage($next, $file($next));
             }
         } finally {
-            self::removeTmp($tmp);
-            self::$tmp = null;
+            foreach (glob("$tmp/p-*.ppm") ?: [] as $f) @unlink($f);
         }
     }
 
@@ -311,6 +359,11 @@ final class PreviewImages
     private static function run(array $args, float $deadline, ?callable $tick, ?string &$out = null): int
     {
         if (!function_exists('proc_open')) throw new \RuntimeException('proc_open вимкнено — PDF-прев\'ю неможливі');
+        if (is_file(self::TIMEOUT_BIN) && is_executable(self::TIMEOUT_BIN)) {
+            // Із запасом після нашого ліміту: спрацює, лише якщо PHP уже не стежить (воркер убито)
+            $secs = (int)ceil(max(0, $deadline - microtime(true))) + 5;
+            $args = array_merge([self::TIMEOUT_BIN, '--signal=KILL', (string)$secs], $args);
+        }
         $pipes = [];
         $proc = proc_open($args, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (!is_resource($proc)) throw new \RuntimeException('Не вдалося запустити ' . $args[0]);
@@ -322,7 +375,10 @@ final class PreviewImages
             $open = [1 => $pipes[1], 2 => $pipes[2]];
             while ($open) {
                 if (microtime(true) > $deadline) {
-                    proc_terminate($proc, 9);
+                    foreach ($pipes as $p) fclose($p);
+                    $pipes = [];
+                    self::kill($proc);
+                    $proc = null;
                     error_log('Design\\PreviewImages: gs не вклався в ліміт часу, зупинено');
                     throw new DesignerException(self::ERR_PDF_SLOW);
                 }
@@ -351,13 +407,29 @@ final class PreviewImages
             }
             return $code;
         } finally {
-            foreach ($pipes as $p) @fclose($p);
-            if (is_resource($proc)) {
-                proc_terminate($proc, 9);
-                proc_close($proc);
+            foreach ($pipes as $p) {
+                if (is_resource($p)) fclose($p);
             }
+            if (is_resource($proc)) self::kill($proc);
             self::$proc = null;
         }
+    }
+
+    /**
+     * Зупинити gs і дочекатися. Під обгорткою timeout gs — її дочірній процес у її ж групі (timeout — лідер групи):
+     * KILL усій групі (posix), інакше TERM обгортці — вона передасть його gs; наостанок KILL тому, що лишилось
+     * @param resource $proc
+     */
+    private static function kill($proc): void
+    {
+        $status = @proc_get_status($proc);
+        if ($status && $status['running']) {
+            if (function_exists('posix_kill')) @posix_kill(-$status['pid'], 9);
+            @proc_terminate($proc, 15);
+            for ($i = 0; $i < 40 && (@proc_get_status($proc)['running'] ?? false); $i++) usleep(50000);
+            if (@proc_get_status($proc)['running'] ?? false) @proc_terminate($proc, 9);
+        }
+        @proc_close($proc);
     }
 
     /**
@@ -366,10 +438,7 @@ final class PreviewImages
      */
     private static function abandon(): void
     {
-        if (is_resource(self::$proc)) {
-            @proc_terminate(self::$proc, 9);
-            @proc_close(self::$proc);
-        }
+        if (is_resource(self::$proc)) self::kill(self::$proc);
         self::$proc = null;
         if (self::$tmp !== null) self::removeTmp(self::$tmp);
         self::$tmp = null;

@@ -27,6 +27,13 @@ final class Images
         IMAGETYPE_JPEG => ['jpg', 'JPEG'],
         IMAGETYPE_PNG => ['png', 'PNG'],
     ];
+    /** TIFF — лише для прев'ю ($allowTiff); читається тільки перша сторінка */
+    private const TIFF_TYPES = [
+        IMAGETYPE_TIFF_II => ['tif', 'TIFF'],
+        IMAGETYPE_TIFF_MM => ['tif', 'TIFF'],
+    ];
+    /** Шлях, який можна віддати Imagick як ім'я файлу з індексом сторінки «[0]» */
+    private const SAFE_PATH = '~^/[A-Za-z0-9._/-]+$~D';
 
     public const ERR_BROKEN = 'Файл пошкоджений або це не картинка';
 
@@ -103,11 +110,11 @@ final class Images
 
     /**
      * Розмір, тип, сторони й пропорції — до повного декодування. $maxBytes — інший ліміт, $checkRatio = false —
-     * без межі пропорцій (прев'ю: довгий банер — нормальна картинка)
-     * @return array{ext:string, jpeg:bool, w:int, h:int, width:int, height:int}
+     * без межі пропорцій (прев'ю: довгий банер — нормальна картинка), $allowTiff — ще й TIFF (прев'ю; перша сторінка)
+     * @return array{ext:string, jpeg:bool, tiff:bool, w:int, h:int, width:int, height:int}
      *         w/h — як у файлі, width/height — після повороту за EXIF
      */
-    public static function check(string $src, int $maxBytes = self::MAX_BYTES, bool $checkRatio = true): array
+    public static function check(string $src, int $maxBytes = self::MAX_BYTES, bool $checkRatio = true, bool $allowTiff = false): array
     {
         $bytes = is_file($src) && is_readable($src) ? filesize($src) : false;
         if ($bytes === false || $bytes === 0) throw new DesignerException(self::ERR_BROKEN);
@@ -116,14 +123,19 @@ final class Images
         // Тип — за сигнатурою силами PHP, щоб Imagick не підбирав кодек (SVG, MVG, PS…) до чужого файлу
         $info = @getimagesize($src);
         if ($info === false) throw new DesignerException(self::ERR_BROKEN);
-        if (!isset(self::TYPES[$info[2]])) throw new DesignerException('Підходять лише JPG або PNG');
-        [$ext, $format] = self::TYPES[$info[2]];
+        $types = $allowTiff ? self::TYPES + self::TIFF_TYPES : self::TYPES;
+        if (!isset($types[$info[2]])) throw new DesignerException('Підходять лише JPG або PNG');
+        [$ext, $format] = $types[$info[2]];
 
         self::limitResources();
         $ping = new \Imagick();
         $fh = fopen($src, 'rb');
         try {
-            $ping->pingImageFile($fh);
+            if ($format === 'TIFF') {
+                $ping->pingImage(self::firstTiffPage($src));
+            } else {
+                $ping->pingImageFile($fh);
+            }
             $actual = strtoupper($ping->getImageFormat());
             $w = $ping->getImageWidth();
             $h = $ping->getImageHeight();
@@ -142,7 +154,7 @@ final class Images
         // LEFTTOP…LEFTBOTTOM (5–8) повертають на 90°
         $turned = $orientation >= \Imagick::ORIENTATION_LEFTTOP && $orientation <= \Imagick::ORIENTATION_LEFTBOTTOM;
         return [
-            'ext' => $ext, 'jpeg' => $format === 'JPEG', 'w' => $w, 'h' => $h,
+            'ext' => $ext, 'jpeg' => $format === 'JPEG', 'tiff' => $format === 'TIFF', 'w' => $w, 'h' => $h,
             'width' => $turned ? $h : $w, 'height' => $turned ? $w : $h,
         ];
     }
@@ -163,7 +175,12 @@ final class Images
         }
         $fh = fopen($src, 'rb');
         try {
-            $im->readImageFile($fh);
+            if (!empty($info['tiff'])) {
+                $im->readImage(self::firstTiffPage($src));
+                $im->setImageFilename('');   // інакше префікс «TIFF:» з імені переважить формат при записі WebP
+            } else {
+                $im->readImageFile($fh);
+            }
             self::orient($im);
             self::toSrgb($im);
             $im->stripImage();
@@ -174,6 +191,16 @@ final class Images
         } finally {
             fclose($fh);
         }
+    }
+
+    /**
+     * «TIFF:/шлях[0]» — явний кодек і лише перша сторінка (багатосторінковий TIFF не декодується весь).
+     * Ім'я файлу Imagick розбирає сам, тож шлях — лише з безпечних символів
+     */
+    private static function firstTiffPage(string $src): string
+    {
+        if (!preg_match(self::SAFE_PATH, $src)) throw new \RuntimeException("Небезпечний шлях до TIFF: $src");
+        return "TIFF:{$src}[0]";
     }
 
     /**

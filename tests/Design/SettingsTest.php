@@ -80,4 +80,45 @@ final class SettingsTest extends TestCase
             Settings::reset();
         }
     }
+
+    public function test_stage4_limits_from_db(): void
+    {
+        Sql::pdo()->beginTransaction();
+        try {
+            foreach (['preview_max_pages' => '12', 'preview_max_mb' => '7', 'layout_max_mb' => '300', 'layout_max_files' => '5', 'layout_max_total_mb' => '900'] as $k => $v) {
+                Sql::exec('INSERT INTO design_settings (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)', [$k, $v]);
+            }
+            Settings::reset();
+            $this->assertSame(12, Settings::previewMaxPages());
+            $this->assertSame(7 * 1048576, Settings::previewMaxBytes());
+            $this->assertSame(300 * 1048576, Settings::layoutMaxBytes());
+            $this->assertSame(5, Settings::layoutMaxFiles());
+            $this->assertSame(900 * 1048576, Settings::layoutMaxTotalBytes());
+        } finally {
+            Sql::pdo()->rollBack();
+            Settings::reset();
+        }
+    }
+
+    public function test_stage4_limit_defaults_when_missing_or_invalid(): void
+    {
+        Sql::pdo()->beginTransaction();
+        try {
+            Sql::exec('DELETE FROM design_settings WHERE `key` IN (\'preview_max_pages\', \'preview_max_mb\', \'layout_max_mb\', \'layout_max_files\', \'layout_max_total_mb\')');
+            Settings::reset();
+            $this->assertSame(30, Settings::previewMaxPages());
+            $this->assertSame(50 * 1048576, Settings::previewMaxBytes());
+            $this->assertSame(1024 * 1048576, Settings::layoutMaxBytes());
+            $this->assertSame(20, Settings::layoutMaxFiles());
+            $this->assertSame(5120 * 1048576, Settings::layoutMaxTotalBytes());
+
+            Sql::exec('INSERT INTO design_settings (`key`, `value`) VALUES (\'layout_max_files\', \'0\'), (\'preview_max_mb\', \'abc\')');
+            Settings::reset();
+            $this->assertSame(20, Settings::layoutMaxFiles(), '0 → за замовчуванням');
+            $this->assertSame(50 * 1048576, Settings::previewMaxBytes(), 'не число → за замовчуванням');
+        } finally {
+            Sql::pdo()->rollBack();
+            Settings::reset();
+        }
+    }
 }

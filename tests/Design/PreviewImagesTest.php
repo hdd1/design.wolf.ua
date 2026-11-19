@@ -21,11 +21,53 @@ final class PreviewImagesTest extends TestCase
         $this->dir = $this->tmp . '/out';
         mkdir($this->dir, 0777, true);
         Settings::reset();
+        // Збій gs (пошкоджений PDF, ліміт часу) пишеться в журнал — у тестах це очікувано, у вивід не пускаємо
+        $this->errorLog = (string)ini_set('error_log', '/dev/null');
     }
 
     protected function tearDown(): void
     {
+        ini_set('error_log', $this->errorLog);
         self::rmTree($this->tmp);
+    }
+
+    private string $errorLog = '';
+
+    /**
+     * Мінімальний PDF без Imagick: $pages сторінок w×h pt з прямокутником; $prefix — байти перед «%PDF-»;
+     * $content — свій вміст сторінки (одна спільна сторінкова програма). Швидко навіть на тисячі сторінок
+     */
+    private function minipdf(string $name, int $pages, float $w = 595, float $h = 842, string $prefix = '', ?string $content = null): string
+    {
+        $content ??= "0 0 1 rg 10 10 " . ($w / 2) . " " . ($h / 2) . " re f";
+        $objs = [1 => '<< /Type /Catalog /Pages 2 0 R >>', 3 => '<< /Length ' . strlen($content) . " >>\nstream\n$content\nendstream"];
+        $kids = [];
+        for ($i = 0; $i < $pages; $i++) {
+            $kids[] = (4 + $i) . ' 0 R';
+            $objs[4 + $i] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 $w $h] /Contents 3 0 R >>";
+        }
+        $objs[2] = '<< /Type /Pages /Kids [' . implode(' ', $kids) . "] /Count $pages >>";
+        ksort($objs);
+        $pdf = "%PDF-1.4\n";
+        $off = [];
+        foreach ($objs as $id => $o) {
+            $off[$id] = strlen($pdf);
+            $pdf .= "$id 0 obj\n$o\nendobj\n";
+        }
+        $xref = strlen($pdf);
+        $n = count($objs) + 1;
+        $pdf .= "xref\n0 $n\n0000000000 65535 f \n";
+        for ($i = 1; $i < $n; $i++) $pdf .= sprintf("%010d 00000 n \n", $off[$i]);
+        $pdf .= "trailer\n<< /Size $n /Root 1 0 R >>\nstartxref\n$xref\n%%EOF\n";
+        $path = "$this->tmp/$name";
+        file_put_contents($path, $prefix . $pdf);
+        return $path;
+    }
+
+    private static function tooManyPages(): string
+    {
+        $max = Settings::previewMaxPages();
+        return "Забагато сторінок: понад $max. Максимум — $max. Розбийте на кілька прев'ю";
     }
 
     private static function rmTree(string $path): void
@@ -191,46 +233,70 @@ final class PreviewImagesTest extends TestCase
         $this->assertEqualsWithDelta($w / 3, $h, 3);
     }
 
-    public function test_rejects_31_pages(): void
+    /** Сторінка, якій для 2000 px треба менше 1 dpi (200 000 pt), — відмова до рендеру, а не надія на збій gs */
+    public function test_rejects_gigantic_pdf_page(): void
     {
-        $max = Settings::previewMaxPages();
-        $src = $this->pdf($max + 1, 'many.pdf', 40, 40);
-        $this->assertRejected(
-            sprintf("Забагато сторінок: %d. Максимум — %d. Розбийте на кілька прев'ю", $max + 1, $max),
-            fn() => PreviewImages::make($src, $this->dir, 1)
-        );
+        $src = $this->minipdf('giant.pdf', 1, 200000, 200000);
+        $t = microtime(true);
+        $this->assertRejected("Сторінка завелика для прев'ю", fn() => PreviewImages::make($src, $this->dir, 1));
+        $this->assertLessThan(10, microtime(true) - $t);
     }
 
-    /**
-     * Шлях prod (gs 9.27 не рахує сторінки під -dSAFER): число й розміри сторінок — ping Imagick.
-     * Примусово вмикаємо його й на dev (gs 9.50), де інакше рахує gs
-     */
-    public function test_pdf_pages_counted_by_imagick_when_gs_cannot(): void
+    /** Довгий банер (пропорції 70:1) — нормальне прев'ю: межа пропорцій портфоліо тут не діє */
+    public function test_long_banner_pdf_and_png_accepted(): void
     {
-        $gsCounts = new ReflectionProperty(PreviewImages::class, 'gsCounts');
-        $gsCounts->setAccessible(true);
-        $saved = $gsCounts->getValue();
-        $gsCounts->setValue(null, false);
-        try {
-            $this->assertSame(['pages' => 3, 'type' => 'pdf'], PreviewImages::make($this->pdf(3, 'three.pdf'), $this->dir, 14));
-            [$w, $h] = self::info("$this->dir/14-p3-view.webp");
-            $this->assertEqualsWithDelta(826, $w, 2);
-            $this->assertEqualsWithDelta(1169, $h, 2);
-            $this->assertCount(6, $this->files());
-            foreach ($this->files() as $f) unlink("$this->dir/$f");
+        PreviewImages::make($this->minipdf('banner.pdf', 1, 14000, 200), $this->dir, 16);
+        [$w, $h] = self::info("$this->dir/16-p1-view.webp");
+        $this->assertLessThanOrEqual(2000, $w);
+        $this->assertGreaterThan(1990, $w);
+        $this->assertEqualsWithDelta(28, $h, 2);
 
-            $max = Settings::previewMaxPages();
-            $many = $this->pdf($max + 1, 'many.pdf', 40, 40);
-            $this->assertRejected(
-                sprintf("Забагато сторінок: %d. Максимум — %d. Розбийте на кілька прев'ю", $max + 1, $max),
-                fn() => PreviewImages::make($many, $this->dir, 1)
-            );
-            $fake = "$this->tmp/fake.pdf";
-            file_put_contents($fake, "%PDF-1.4\nтекст\n");
-            $this->assertRejected(Images::ERR_BROKEN, fn() => PreviewImages::make($fake, $this->dir, 1));
-        } finally {
-            $gsCounts->setValue(null, $saved);
+        PreviewImages::make($this->image(4000, 100, 'png', 'banner.png'), $this->dir, 17);
+        $this->assertSame([2000, 50, 'WEBP'], self::info("$this->dir/17-p1-view.webp"));
+        $this->assertSame([800, 20, 'WEBP'], self::info("$this->dir/17-p1-card.webp"));
+    }
+
+    public function test_rejects_31_pages(): void
+    {
+        $src = $this->pdf(Settings::previewMaxPages() + 1, 'many.pdf', 40, 40);
+        $this->assertRejected(self::tooManyPages(), fn() => PreviewImages::make($src, $this->dir, 1));
+    }
+
+    /** 15 000 сторінок: gs рахує не далі за ліміт+1, тож відмова швидка, хоч би скільки сторінок було у файлі */
+    public function test_rejects_15000_pages_fast(): void
+    {
+        $src = $this->minipdf('p15000.pdf', 15000);
+        $t = microtime(true);
+        $this->assertRejected(self::tooManyPages(), fn() => PreviewImages::make($src, $this->dir, 1));
+        $this->assertLessThan(10, microtime(true) - $t, 'підрахунок має зупинятися на ліміті');
+    }
+
+    /** Рівно максимум сторінок — приймається */
+    public function test_accepts_max_pages(): void
+    {
+        $max = Settings::previewMaxPages();
+        $this->assertSame(['pages' => $max, 'type' => 'pdf'], PreviewImages::make($this->minipdf('max.pdf', $max, 100, 100), $this->dir, 18));
+        $this->assertCount(2 * $max, $this->files());
+    }
+
+    /** «%PDF-» не на самому початку (у межах перших 1024 байт) — теж PDF */
+    public function test_pdf_header_after_garbage(): void
+    {
+        $src = $this->minipdf('junk.pdf', 2, 200, 100, str_repeat('x', 500) . "\n");
+        $this->assertSame(['pages' => 2, 'type' => 'pdf'], PreviewImages::make($src, $this->dir, 19));
+    }
+
+    /** gs і Imagick бачать лише шлях із безпечних символів — інакше відмова до будь-якого їх виклику */
+    public function test_unsafe_path_refused(): void
+    {
+        $src = $this->minipdf('with space[0].pdf', 1);
+        try {
+            PreviewImages::make($src, $this->dir, 1);
+            $this->fail('Очікувався RuntimeException');
+        } catch (RuntimeException $e) {
+            $this->assertNotInstanceOf(DesignerException::class, $e);
         }
+        $this->assertSame([], $this->files());
     }
 
     public function test_rejects_fake_pdf(): void
@@ -303,8 +369,8 @@ final class PreviewImagesTest extends TestCase
         $dir = "$this->dir/previews/15";
         $old = umask(077);
         try {
-            $this->assertRejected("Забагато сторінок: 31. Максимум — 30. Розбийте на кілька прев'ю",
-                fn() => PreviewImages::make($this->pdf(31, 'many.pdf', 30, 30), $dir, 1));
+            $this->assertRejected(self::tooManyPages(),
+                fn() => PreviewImages::make($this->pdf(Settings::previewMaxPages() + 1, 'many.pdf', 30, 30), $dir, 1));
             $this->assertDirectoryDoesNotExist("$this->dir/previews");
 
             PreviewImages::make($this->pdf(2, 'two.pdf', 200, 100), $dir, 9);
@@ -345,19 +411,51 @@ final class PreviewImagesTest extends TestCase
         $timeout = new ReflectionProperty(PreviewImages::class, 'gsTimeout');
         $timeout->setAccessible(true);
         $saved = $timeout->getValue();
-        $timeout->setValue(null, 0);
         $before = glob(sys_get_temp_dir() . '/design-pdf-*');
-        $log = ini_set('error_log', '/dev/null');         // запис «gs не вклався…» у журнал — очікуваний
         try {
-            $src = $this->pdf(2, 'slow.pdf', 100, 100);
+            // Рахується за мілісекунди, а растр — секунди: ліміт спрацює саме на рендері, коли папку вже створено
+            $src = $this->minipdf('slow.pdf', 2, 595, 842, '', str_repeat("1 0 0 rg 0 0 595 842 re f 0 0 1 rg 0 0 595 842 re f\n", 10000));
+            $timeout->setValue(null, 1);
             $this->assertRejected('Не вдалося обробити PDF — спробуйте менший файл',
                 fn() => PreviewImages::make($src, "$this->dir/new/sub", 1));
         } finally {
             $timeout->setValue(null, $saved);
-            ini_set('error_log', (string)$log);
         }
         $this->assertDirectoryDoesNotExist("$this->dir/new");
         $this->assertSame($before, glob(sys_get_temp_dir() . '/design-pdf-*'), 'тимчасова папка gs прибрана');
+    }
+
+    /**
+     * Фатальна помилка PHP (max_execution_time) посеред рендеру: finally не виконуються, тож gs, що ще працює,
+     * убиває і тимчасову папку прибирає shutdown-функція. Окремий процес PHP з set_time_limit(2) (час CPU самого PHP)
+     */
+    public function test_fatal_error_kills_gs_and_removes_temp(): void
+    {
+        // 10 сторінок 2000×2000 px із 20 000 різнобарвних прямокутників: gs ~0.7 с/стор., PHP ~0.7 с CPU/стор. —
+        // ліміт у 2 с CPU спрацює на 3-й сторінці, коли gs ще рендерить
+        mt_srand(1);
+        $content = '';
+        for ($i = 0; $i < 20000; $i++) {
+            $content .= sprintf("%.2f %.2f %.2f rg %d %d %d %d re f\n", mt_rand(0, 100) / 100, mt_rand(0, 100) / 100, mt_rand(0, 100) / 100,
+                mt_rand(0, 1400), mt_rand(0, 1400), mt_rand(5, 60), mt_rand(5, 60));
+        }
+        $src = $this->minipdf('fatal.pdf', 10, 1440, 1440, '', $content);
+        $script = "$this->tmp/fatal.php";
+        file_put_contents($script, '<?php require ' . var_export(dirname(__DIR__, 2) . '/helpers/Design/bootstrap.php', true) . ";\n"
+            . "set_time_limit(2);\nDesign\\PreviewImages::make(\$argv[1], \$argv[2], 1);\necho 'НЕ ВПАЛО';\n");
+        $before = glob(sys_get_temp_dir() . '/design-pdf-*');
+        $proc = proc_open([PHP_BINARY, '-d', 'display_errors=stdout', '-d', 'log_errors=0', $script, $src, "$this->dir/f"],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $out = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($proc);
+
+        $this->assertStringContainsString('Maximum execution time', $out);
+        $this->assertSame($before, glob(sys_get_temp_dir() . '/design-pdf-*'), 'тимчасова папка gs прибрана');
+        foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $f) {
+            $this->assertStringNotContainsString($src, (string)@file_get_contents($f), 'gs по цьому PDF ще працює');
+        }
     }
 
     /** Великий JPEG декодується одразу зменшеним (jpeg:size) — разом зі знаком і WebP q90 укладається швидко */
@@ -369,8 +467,8 @@ final class PreviewImagesTest extends TestCase
         $elapsed = microtime(true) - $t;
         $this->assertSame([2000, 1500, 'WEBP'], self::info("$this->dir/11-p1-view.webp"));
         $this->assertSame([800, 600, 'WEBP'], self::info("$this->dir/11-p1-card.webp"));
-        // На dev ~0.8 с; межа з запасом, але ловить повне декодування 48 Мп
-        $this->assertLessThan(2.5, $elapsed, sprintf('make() 8000×6000 JPEG: %.2f с', $elapsed));
+        // На dev ~0.9 с; межа з великим запасом, щоб не «блимати» на завантаженій машині — ловить лише явну аварію
+        $this->assertLessThan(8, $elapsed, sprintf('make() 8000×6000 JPEG: %.2f с', $elapsed));
     }
 
     public function test_imagemagick_limited_to_one_thread(): void

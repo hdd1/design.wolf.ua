@@ -102,11 +102,12 @@ final class Images
     }
 
     /**
-     * Розмір, тип, сторони й пропорції — до повного декодування. $maxBytes — інший ліміт (прев'ю)
+     * Розмір, тип, сторони й пропорції — до повного декодування. $maxBytes — інший ліміт, $checkRatio = false —
+     * без межі пропорцій (прев'ю: довгий банер — нормальна картинка)
      * @return array{ext:string, jpeg:bool, w:int, h:int, width:int, height:int}
      *         w/h — як у файлі, width/height — після повороту за EXIF
      */
-    public static function check(string $src, int $maxBytes = self::MAX_BYTES): array
+    public static function check(string $src, int $maxBytes = self::MAX_BYTES, bool $checkRatio = true): array
     {
         $bytes = is_file($src) && is_readable($src) ? filesize($src) : false;
         if ($bytes === false || $bytes === 0) throw new DesignerException(self::ERR_BROKEN);
@@ -135,7 +136,7 @@ final class Images
         }
         if ($actual !== $format || $w < 1 || $h < 1) throw new DesignerException(self::ERR_BROKEN);
         if (max($w, $h) > self::MAX_SIDE) throw new DesignerException('Зображення завелике: до 12 000 px по стороні');
-        if (max($w, $h) > self::MAX_RATIO * min($w, $h)) {
+        if ($checkRatio && max($w, $h) > self::MAX_RATIO * min($w, $h)) {
             throw new DesignerException('Незвичні пропорції: сторони відрізняються більш ніж у 20 разів');
         }
         // LEFTTOP…LEFTBOTTOM (5–8) повертають на 90°

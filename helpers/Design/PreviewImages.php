@@ -18,12 +18,12 @@ final class PreviewImages
 
     /** Роздільність сторінок PDF; більші за 2000 px сторінки рендеряться з меншою (див. pdfDpi) */
     private const PDF_DPI = 100;
-    /** Скільки чекати gs на підрахунок сторінок і на --version, с */
-    private const GS_COUNT_TIMEOUT = 10;
-    /** Скільки чекати gs на рендер усіх сторінок (разом з обробкою готових), с; static — тест ставить 0 */
+    /** Скільки чекати gs на весь PDF — підрахунок сторінок, рендер і обробку готових сторінок, с; static — тест ставить 0 */
     private static int $gsTimeout = 40;
     /** Скільки stderr gs тримати для журналу */
     private const GS_ERR_BYTES = 4096;
+    /** Шлях до файлу, який віддаємо gs/Imagick: лише безпечні символи (жодних «[», «:», пробілів, лапок) */
+    private const SAFE_PATH = '~^/[A-Za-z0-9._/-]+$~';
 
     private const FONT = __DIR__ . '/fonts/Manrope-SemiBold.ttf';
     /** Кут знака (проти годинникової), розмір шрифту = √(площа) / FONT_DIV, непрозорість напису */
@@ -32,14 +32,16 @@ final class PreviewImages
     private const MARK_OPACITY = 0.28;
 
     private const ERR_TYPE = 'Підходять лише JPG, PNG або PDF';
-    private const ERR_PAGES = "Забагато сторінок: %d. Максимум — %d. Розбийте на кілька прев'ю";
+    private const ERR_PAGES = "Забагато сторінок: понад %d. Максимум — %d. Розбийте на кілька прев'ю";
+    private const ERR_PAGE_HUGE = "Сторінка завелика для прев'ю";
     private const ERR_PDF_SLOW = 'Не вдалося обробити PDF — спробуйте менший файл';
 
     /** @var array<int, array{0:\Imagick, 1:float}> готові «штампи» знака за розміром шрифту — у межах одного make() */
     private static array $stamps = [];
     private static ?string $gs = null;
-    /** gs ≥ 9.50 — сторінки рахує сам gs (--permit-file-read); null — ще не визначено */
-    private static ?bool $gsCounts = null;
+    /** @var resource|null запущений gs і тимчасова папка рендеру — для аварійного прибирання (abandon) */
+    private static $proc = null;
+    private static ?string $tmp = null;
 
     /**
      * @return array{pages:int, type:string} type — image|pdf (як design_previews.source_type)
@@ -52,11 +54,23 @@ final class PreviewImages
         if ($bytes === false || $bytes === 0) throw new DesignerException(Images::ERR_BROKEN);
         $maxBytes = Settings::previewMaxBytes();
         if ($bytes > $maxBytes) throw new DesignerException(Images::tooBig($bytes, $maxBytes));
+        $real = realpath($src);
+        if ($real === false || !preg_match(self::SAFE_PATH, $real)) {
+            throw new \RuntimeException("Небезпечний шлях до файлу прев'ю: $src");
+        }
+        $src = $real;
+        // Якщо PHP впаде фатально (max_execution_time) посеред рендеру, finally не виконаються — тоді приберемо тут
+        register_shutdown_function(static function () {
+            self::abandon();
+        });
 
         $written = [];
         $dirs = [];
         try {
-            if (file_get_contents($src, false, null, 0, 5) === '%PDF-') {
+            $head = (string)file_get_contents($src, false, null, 0, 1024);
+            $image = strncmp($head, "\xFF\xD8\xFF", 3) === 0 || strncmp($head, "\x89PNG", 4) === 0;
+            // %PDF- може стояти не на самому початку (сміття перед заголовком gs пропускає з попередженням)
+            if (!$image && str_contains($head, '%PDF-')) {
                 $pages = self::pdf($src, $dir, $previewId, $written, $dirs);
                 return ['pages' => $pages, 'type' => 'pdf'];
             }
@@ -64,8 +78,9 @@ final class PreviewImages
             if ($type === false) throw new DesignerException(Images::ERR_BROKEN);
             if ($type[2] !== IMAGETYPE_JPEG && $type[2] !== IMAGETYPE_PNG) throw new DesignerException(self::ERR_TYPE);
 
-            // JPEG декодується зменшеним, але не менше 2000 по довшій стороні — далі лише вписування
-            $im = Images::load($src, Images::check($src, $maxBytes), self::VIEW_SIDE, 1);
+            // Пропорції не обмежуємо (довгий банер — нормальне прев'ю); JPEG декодується зменшеним,
+            // але не менше 2000 по довшій стороні — далі лише вписування
+            $im = Images::load($src, Images::check($src, $maxBytes, false), self::VIEW_SIDE, 1);
             try {
                 $dirs = Images::ensureDir($dir);
                 self::page($im, $dir, $previewId, 1, $written);
@@ -83,17 +98,23 @@ final class PreviewImages
         }
     }
 
-    /** Рахує сторінки, рендерить їх одним процесом gs і обробляє кожну, щойно gs її дописав */
+    /**
+     * Рахує сторінки (не далі за ліміт+1), рендерить їх одним процесом gs і обробляє кожну, щойно gs її дописав.
+     * Весь PDF — підрахунок, рендер, обробка — в межах $gsTimeout
+     */
     private static function pdf(string $src, string $dir, int $previewId, array &$written, array &$dirs): int
     {
         Images::limitResources();
-        [$count, $sizes] = self::pdfPages($src);
-        if ($count === 0) throw new DesignerException(Images::ERR_BROKEN);
+        $deadline = microtime(true) + self::$gsTimeout;
         $max = Settings::previewMaxPages();
-        if ($count > $max) throw new DesignerException(sprintf(self::ERR_PAGES, $count, $max));
+        $sizes = self::pdfPages($src, $max + 1, $deadline);
+        $count = count($sizes);
+        if ($count === 0) throw new DesignerException(Images::ERR_BROKEN);
+        if ($count > $max) throw new DesignerException(sprintf(self::ERR_PAGES, $max, $max));
+        $dpi = self::pdfDpi($sizes);
 
         $dirs = Images::ensureDir($dir);
-        self::renderPdf($src, $count, self::pdfDpi($sizes), function (int $n, string $ppm) use ($dir, $previewId, &$written) {
+        self::renderPdf($src, $count, $dpi, $deadline, function (int $n, string $ppm) use ($dir, $previewId, &$written) {
             $im = new \Imagick();
             try {
                 try {
@@ -201,89 +222,64 @@ final class PreviewImages
     }
 
     /**
-     * Число сторінок і розміри (MediaBox, пункти) для вибору dpi. На gs ≥ 9.50 — pdfpagecount (~0.05 с); на старших
-     * (prod 9.27: під -dSAFER pdfpagecount не читає файл, а --permit-file-read ще немає) і якщо gs не відповів числом —
-     * ping Imagick на 10 dpi (повільніше: gs проходить кожну сторінку, але з мізерним растром)
-     * @return array{0:int, 1:array<int, array{0:float, 1:float}>} число сторінок і [ширина, висота] перших сторінок
+     * Розміри сторінок (PageSize, пункти) — і цим їх число. Прохід gs на nullpage з мізерною роздільністю: хук EndPage
+     * друкує «PAGE ширина висота» на кожну сторінку. PDF — названий вхідний файл (без оператора file, тож працює під
+     * -dSAFER і на prod 9.27); -dLastPage=$limit — далі за ліміт gs не йде, хоч би скільки сторінок було у файлі.
+     * Межа часу — та сама $deadline, що й для рендеру
+     * @return array<int, array{0:float, 1:float}> не більше $limit записів
      */
-    private static function pdfPages(string $src): array
+    private static function pdfPages(string $src, int $limit, float $deadline): array
     {
-        $res = self::gsCounts() ? self::pdfPagesGs($src) : null;
-        if ($res !== null) return $res;
-
-        $ping = new \Imagick();
-        try {
-            $ping->setResolution(10, 10);
-            $ping->pingImage("pdf:$src");
-            $sizes = [];
-            foreach ($ping as $frame) {
-                $sizes[] = [$frame->getImageWidth() * 7.2, $frame->getImageHeight() * 7.2];
-            }
-            return [count($sizes), $sizes];
-        } catch (\ImagickException $e) {
-            return [0, []];
-        } finally {
-            $ping->clear();
-        }
-    }
-
-    /** @return array{0:int, 1:array<int, array{0:float, 1:float}>}|null null — gs не дав зрозумілої відповіді (тоді — ping) */
-    private static function pdfPagesGs(string $src): ?array
-    {
-        $limit = Settings::previewMaxPages() + 1;
-        // «COUNT n», далі «BOX ширина висота» перших $limit сторінок (більше не треба). Мітки — бо скарги
-        // PDF-інтерпретатора на пошкоджений файл («**** Error…») gs теж пише в stdout
-        $ps = 'F (r) file runpdfbegin (COUNT ) print pdfpagecount dup = Limit 2 copy gt { exch } if pop 1 exch 1 exch {'
-            . ' (BOX ) print pdfgetpage /MediaBox pget { { oforce } forall 3 -1 roll sub abs 3 1 roll exch sub abs =only ( ) print = }'
-            . ' { (0 0) = } ifelse } for quit';
-        // -dSAFER завжди; з 9.50 файл, не названий як вхідний, читається лише з --permit-file-read
+        $hook = '<< /EndPage { exch pop dup 0 eq { (PAGE ) print currentpagedevice /PageSize get { =only ( ) print } forall'
+            . ' () = flush } if 2 ne } >> setpagedevice';
         $args = [
-            self::gs(), '-q', '-dSAFER', '-dNODISPLAY', '-dBATCH', '-dNOPAUSE', '-dNOPROMPT',
-            "--permit-file-read=$src", "-sF=$src", "-dLimit=$limit", '-c', $ps,
+            self::gs(), '-q', '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dNOPROMPT', '-dNoUserUnit', '-sDEVICE=nullpage', '-r10',
+            '-dFirstPage=1', "-dLastPage=$limit", '-c', $hook, '-f', $src,
         ];
-
         $out = '';
-        $code = self::run($args, self::GS_COUNT_TIMEOUT, null, $out);
-        // gs не відкрив PDF — його не відрендерить і ping (той самий gs), тож одразу «пошкоджений»
-        if ($code !== 0) return [0, []];
-        if (!preg_match('/^COUNT (\d+)$/m', $out, $m)) return null;
-        $count = (int)$m[1];
-        preg_match_all('/^BOX ([\d.]+) ([\d.]+)$/m', $out, $boxes, PREG_SET_ORDER);
+        if (self::run($args, $deadline, null, $out) !== 0) return [];
+        // Скарги PDF-інтерпретатора («**** Error…») gs теж пише в stdout — беремо лише рядки з міткою
+        preg_match_all('/^PAGE ([\d.]+) ([\d.]+) *$/m', $out, $m, PREG_SET_ORDER);
         $sizes = [];
-        foreach (array_slice($boxes, 0, $limit) as $b) $sizes[] = [(float)$b[1], (float)$b[2]];
-        return [$count, $sizes];
+        foreach (array_slice($m, 0, $limit) as $p) $sizes[] = [(float)$p[1], (float)$p[2]];
+        return $sizes;
     }
 
     /**
      * PDF_DPI, але не більше, ніж треба, щоб найбільша сторінка вийшла 2000 px по довшій стороні
-     * (дробова, до сотих униз — gs приймає -r16.93)
+     * (дробова, до сотих униз — gs приймає -r16.93). Сторінка, якій треба менше 1 dpi (понад 144 000 pt ≈ 50 м), — відмова
      */
     private static function pdfDpi(array $sizes): float
     {
         $long = 0.0;
-        foreach ($sizes as [$w, $h]) $long = max($long, $w, $h);
-        if ($long <= 0) return self::PDF_DPI;
-        return max(1.0, min((float)self::PDF_DPI, floor(self::VIEW_SIDE * 72 / $long * 100) / 100));
+        foreach ($sizes as [$w, $h]) {
+            if ($w <= 0 || $h <= 0) throw new DesignerException(Images::ERR_BROKEN);
+            $long = max($long, $w, $h);
+        }
+        $fit = floor(self::VIEW_SIDE * 72 / $long * 100) / 100;
+        if ($fit < 1) throw new DesignerException(self::ERR_PAGE_HUGE);
+        return min((float)self::PDF_DPI, $fit);
     }
 
     /**
      * Рендер сторінок 1…$pages одним процесом gs (ppmraw) у приватну тимчасову папку. Сторінку n gs дописав, коли з'явилась
-     * n+1 або gs завершився — тоді $onPage(n, шлях) обробляє її, поки gs рендерить далі. Довше $gsTimeout — процес убивається
+     * n+1 або gs завершився — тоді $onPage(n, шлях) обробляє її, поки gs рендерить далі. Після $deadline процес убивається
      */
-    private static function renderPdf(string $src, int $pages, float $dpi, callable $onPage): void
+    private static function renderPdf(string $src, int $pages, float $dpi, float $deadline, callable $onPage): void
     {
         $tmp = sys_get_temp_dir() . '/design-pdf-' . bin2hex(random_bytes(8));
         if (!@mkdir($tmp, 0700)) throw new \RuntimeException("Не вдалося створити тимчасову папку $tmp");
+        self::$tmp = $tmp;
         chmod($tmp, 0700);
         $file = fn(int $n) => sprintf('%s/p-%03d.ppm', $tmp, $n);
         try {
             $args = [
-                self::gs(), '-q', '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dNOPROMPT', '-sDEVICE=ppmraw', '-r' . round($dpi, 2),
-                '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', '-dFirstPage=1', "-dLastPage=$pages",
+                self::gs(), '-q', '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dNOPROMPT', '-dNoUserUnit', '-sDEVICE=ppmraw',
+                '-r' . round($dpi, 2), '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', '-dFirstPage=1', "-dLastPage=$pages",
                 "-sOutputFile=$tmp/p-%03d.ppm", '-f', $src,
             ];
             $next = 1;
-            $code = self::run($args, self::$gsTimeout, function () use (&$next, $pages, $file, $onPage) {
+            $code = self::run($args, $deadline, function () use (&$next, $pages, $file, $onPage) {
                 while ($next < $pages && is_file($file($next + 1))) {
                     $onPage($next, $file($next));
                     $next++;
@@ -295,33 +291,39 @@ final class PreviewImages
                 $onPage($next, $file($next));
             }
         } finally {
-            foreach (glob("$tmp/*") ?: [] as $f) @unlink($f);
-            @rmdir($tmp);
+            self::removeTmp($tmp);
+            self::$tmp = null;
         }
+    }
+
+    private static function removeTmp(string $tmp): void
+    {
+        foreach (glob("$tmp/*") ?: [] as $f) @unlink($f);
+        @rmdir($tmp);
     }
 
     /**
      * Запуск gs без оболонки (масив аргументів), stdin — /dev/null, stdout — у $out (не більше 64 КБ),
-     * stderr — у журнал при збої. $tick викликається між читаннями (≈ кожні 50 мс).
+     * stderr — у журнал лише при збої. $tick викликається між читаннями (≈ кожні 50 мс).
      * @return int код завершення
-     * @throws DesignerException ERR_PDF_SLOW, якщо процес не вклався в $timeout (його вбито)
+     * @throws DesignerException ERR_PDF_SLOW, якщо процес не завершився до $deadline (його вбито)
      */
-    private static function run(array $args, int $timeout, ?callable $tick, ?string &$out = null): int
+    private static function run(array $args, float $deadline, ?callable $tick, ?string &$out = null): int
     {
         if (!function_exists('proc_open')) throw new \RuntimeException('proc_open вимкнено — PDF-прев\'ю неможливі');
         $pipes = [];
         $proc = proc_open($args, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (!is_resource($proc)) throw new \RuntimeException('Не вдалося запустити ' . $args[0]);
+        self::$proc = $proc;
         $out = '';
         $err = '';
-        $deadline = microtime(true) + $timeout;
         try {
             foreach ($pipes as $p) stream_set_blocking($p, false);
             $open = [1 => $pipes[1], 2 => $pipes[2]];
             while ($open) {
                 if (microtime(true) > $deadline) {
                     proc_terminate($proc, 9);
-                    error_log('Design\\PreviewImages: gs не вклався в ' . $timeout . ' с, зупинено');
+                    error_log('Design\\PreviewImages: gs не вклався в ліміт часу, зупинено');
                     throw new DesignerException(self::ERR_PDF_SLOW);
                 }
                 $read = array_values($open);
@@ -354,7 +356,23 @@ final class PreviewImages
                 proc_terminate($proc, 9);
                 proc_close($proc);
             }
+            self::$proc = null;
         }
+    }
+
+    /**
+     * Аварійне прибирання після фатальної помилки PHP (max_execution_time тощо), коли finally не виконуються:
+     * убити gs, що ще працює, і прибрати тимчасову папку. Реєструється на кожен make(); якщо все завершилось — нічого не робить
+     */
+    private static function abandon(): void
+    {
+        if (is_resource(self::$proc)) {
+            @proc_terminate(self::$proc, 9);
+            @proc_close(self::$proc);
+        }
+        self::$proc = null;
+        if (self::$tmp !== null) self::removeTmp(self::$tmp);
+        self::$tmp = null;
     }
 
     /** Абсолютний шлях до gs: /usr/bin/gs, /usr/local/bin/gs або з PATH */
@@ -371,17 +389,5 @@ final class PreviewImages
             if (self::$gs === null) throw new \RuntimeException('Не знайдено Ghostscript (gs) — PDF-прев\'ю неможливі');
         }
         return self::$gs;
-    }
-
-    /** Чи вміє цей gs порахувати сторінки під -dSAFER: лише з 9.50 (--permit-file-read); версія визначається раз */
-    private static function gsCounts(): bool
-    {
-        if (self::$gsCounts === null) {
-            $out = '';
-            $code = self::run([self::gs(), '--version'], self::GS_COUNT_TIMEOUT, null, $out);
-            self::$gsCounts = $code === 0 && preg_match('/^(\d+)\.(\d+)/', trim($out), $m) === 1
-                && version_compare("$m[1].$m[2]", '9.50', '>=');
-        }
-        return self::$gsCounts;
     }
 }

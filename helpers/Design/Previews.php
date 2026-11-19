@@ -11,8 +11,14 @@ namespace Design;
 final class Previews
 {
     private const ERR_CLOSED = "Додавати й приховувати прев'ю може лише обраний дизайнер замовлення в роботі";
-    private const ERR_NOT_FOUND = "Прев'ю не знайдено";
     private const ERR_BASED_ON = "Версію, на основі якої зроблено прев'ю, не знайдено";
+
+    /**
+     * Тести: викликається перед рендером (поза транзакцією) — щоб перевірити, що замок замовлення в цей час вільний
+     * @internal
+     * @var (\Closure(int): void)|null
+     */
+    public static ?\Closure $beforeRender = null;
 
     /**
      * Обрана пропозиція, якщо дизайнер може працювати з прев'ю замовлення: замовлення «В роботі», його chosen_offer_id —
@@ -32,47 +38,61 @@ final class Previews
     }
 
     /**
-     * Нова версія прев'ю з файлу $tmp (склеєне завантаження). Одна транзакція з замком рядка замовлення:
-     * num = MAX + 1, рядок прев'ю, повідомлення дизайнера (text = підпис, може бути порожнім; preview_id), картинки
-     * (PreviewImages::make — у тій самій транзакції: рендер PDF тримає замок замовлення до ~40 с, дизайнер у замовленні один).
-     * Будь-яка помилка — відкат і видалення картинок цього прев'ю. Після коммиту — сповіщення клієнту (правило «перше непрочитане»).
-     * $tmp видаляється в будь-якому разі. basedOn — id неприхованої версії цього ж замовлення
+     * Нова версія прев'ю з файлу $tmp (склеєне завантаження).
+     * 1) Без замка: доступ (canWork), «на основі», підпис — дешева відмова до рендеру.
+     * 2) Рендер (PreviewImages::make, PDF — до ~40 с) поза транзакцією — у тимчасові імена tmp-<16 hex>-p{n}-*.webp у папці замовлення.
+     * 3) Коротка транзакція з замком рядка замовлення: повторна перевірка доступу й «на основі», num = MAX + 1, рядок прев'ю,
+     *    повідомлення дизайнера (text = підпис, може бути порожнім; preview_id), перейменування файлів у {id}-p{n}-*.webp, коммит.
+     * Будь-яка помилка — відкат і видалення і тимчасових, і вже перейменованих файлів. $tmp видаляється в будь-якому разі.
+     * Після коммиту — сповіщення клієнту (правило «перше непрочитане»). basedOn — id неприхованої версії цього ж замовлення
      * @return array{id:int, num:int, message_id:int}
      * @throws DesignerException доступ, підпис, «на основі», файл (текст для користувача)
      */
     public static function add(int $orderId, int $designerId, string $tmp, string $caption, ?int $basedOn): array
     {
+        $base = 'tmp-' . bin2hex(random_bytes(8));
+        $dir = '';
+        $id = 0;
         try {
+            $caption = Messages::caption($caption);
+            self::check($orderId, $designerId, $basedOn);
+
+            $dir = Paths::previews($orderId);
+            if (self::$beforeRender !== null) (self::$beforeRender)($orderId);
+            $made = PreviewImages::make($tmp, $dir, $base);
+
             $pdo = Sql::pdo();
-            $id = 0;
-            $dir = '';
             $pdo->beginTransaction();
             try {
                 Sql::one('SELECT id FROM design_orders WHERE id = ? FOR UPDATE', [$orderId]);
-                $offer = self::canWork($orderId, $designerId);
-                if ($offer === null) throw new DesignerException(self::ERR_CLOSED);
-                if ($basedOn !== null && Sql::value('SELECT id FROM design_previews WHERE id = ? AND order_id = ? AND hidden_at IS NULL',
-                        [$basedOn, $orderId]) === null) {
-                    throw new DesignerException(self::ERR_BASED_ON);
-                }
+                $offer = self::check($orderId, $designerId, $basedOn);
                 $num = (int)Sql::value('SELECT COALESCE(MAX(num), 0) + 1 FROM design_previews WHERE order_id = ?', [$orderId]);
                 $id = Sql::insert('design_previews', [
                     'order_id' => $orderId,
                     'offer_id' => $offer['id'],
                     'num' => $num,
                     'based_on_id' => $basedOn,
+                    'pages' => $made['pages'],
+                    'source_type' => $made['type'],
                 ]);
                 $messageId = Messages::preview($offer['id'], $designerId, $id, $caption);
                 Sql::exec('UPDATE design_previews SET message_id = ? WHERE id = ?', [$messageId, $id]);
-                $dir = Paths::previews($orderId);
-                $made = PreviewImages::make($tmp, $dir, $id);
-                Sql::exec('UPDATE design_previews SET pages = ?, source_type = ? WHERE id = ?', [$made['pages'], $made['type'], $id]);
+                for ($n = 1; $n <= $made['pages']; $n++) {
+                    foreach (['view', 'card'] as $size) {
+                        if (!@rename("$dir/$base-p$n-$size.webp", "$dir/$id-p$n-$size.webp")) {
+                            throw new \RuntimeException("Не вдалося перейменувати картинку прев'ю $base-p$n-$size → $id");
+                        }
+                    }
+                }
                 $pdo->commit();
             } catch (\Throwable $e) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
-                if ($id > 0 && $dir !== '') self::removeFiles($dir, $id);
+                if ($id > 0) self::removeFiles($dir, $id);
                 throw $e;
             }
+        } catch (\Throwable $e) {
+            if ($dir !== '') self::removeFiles($dir, $base);
+            throw $e;
         } finally {
             if (is_file($tmp)) @unlink($tmp);
         }
@@ -88,14 +108,30 @@ final class Previews
     }
 
     /**
+     * Доступ і «на основі» для add: обрана пропозиція або DesignerException
+     * @return array пропозиція у вигляді Offers::get
+     */
+    private static function check(int $orderId, int $designerId, ?int $basedOn): array
+    {
+        $offer = self::canWork($orderId, $designerId);
+        if ($offer === null) throw new DesignerException(self::ERR_CLOSED);
+        if ($basedOn !== null && Sql::value('SELECT id FROM design_previews WHERE id = ? AND order_id = ? AND hidden_at IS NULL',
+                [$basedOn, $orderId]) === null) {
+            throw new DesignerException(self::ERR_BASED_ON);
+        }
+        return $offer;
+    }
+
+    /**
      * Приховати прев'ю (лише обраний дизайнер замовлення в роботі): hidden_at = NOW(), картинки видаляються з диска,
-     * рядок і підпис лишаються. Повтор нічого не змінює (лише добирає файли, якщо попередній раз їх не вдалося видалити)
-     * @throws DesignerException прев'ю не знайдено або дизайнер не може з ним працювати
+     * рядок і підпис лишаються. Повтор нічого не змінює (лише добирає файли, якщо попередній раз їх не вдалося видалити).
+     * Немає прев'ю і немає доступу — та сама відповідь (id не перебрати)
+     * @throws DesignerException
      */
     public static function hide(int $previewId, int $designerId): void
     {
         $orderId = Sql::value('SELECT order_id FROM design_previews WHERE id = ?', [$previewId]);
-        if ($orderId === null) throw new DesignerException(self::ERR_NOT_FOUND);
+        if ($orderId === null) throw new DesignerException(self::ERR_CLOSED);
         $orderId = (int)$orderId;
 
         $pdo = Sql::pdo();
@@ -120,13 +156,31 @@ final class Previews
      */
     public static function forOrder(int $orderId): array
     {
+        return self::load($orderId, null);
+    }
+
+    /**
+     * Лише вказані прев'ю замовлення (стрічка листування: адреси будуються тільки для потрібних), у вигляді forOrder;
+     * чужі й відсутні id пропускаються
+     * @param list<int> $ids
+     */
+    public static function byIds(int $orderId, array $ids): array
+    {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        return $ids === [] ? [] : self::load($orderId, $ids);
+    }
+
+    /** @param list<int>|null $ids null — усі прев'ю замовлення */
+    private static function load(int $orderId, ?array $ids): array
+    {
         $rows = Sql::all(
             'SELECT p.id, p.num, p.pages, p.hidden_at, b.num AS based_on_num, m.text AS caption
              FROM design_previews p
              LEFT JOIN design_previews b ON b.id = p.based_on_id
              LEFT JOIN design_messages m ON m.id = p.message_id
-             WHERE p.order_id = ? ORDER BY p.num',
-            [$orderId]
+             WHERE p.order_id = ?' . ($ids === null ? '' : ' AND p.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')')
+            . ' ORDER BY p.num',
+            array_merge([$orderId], $ids ?? [])
         );
         $dir = self::dir($orderId);
         $out = [];
@@ -164,11 +218,11 @@ final class Previews
         return \ImageGlobal::encode($file);
     }
 
-    /** Видаляє всі картинки прев'ю: {id}-p{n}-view.webp і -card.webp */
-    private static function removeFiles(string $dir, int $previewId): void
+    /** Видаляє всі картинки прев'ю з основою імен $base (id або тимчасова tmp-…): {base}-p{n}-view.webp і -card.webp */
+    private static function removeFiles(string $dir, int|string $base): void
     {
-        foreach (glob("$dir/$previewId-p*-{view,card}.webp", GLOB_BRACE) ?: [] as $f) {
-            if (preg_match('~/' . $previewId . '-p\d+-(?:view|card)\.webp$~', $f)) @unlink($f);
+        foreach (glob("$dir/$base-p*-{view,card}.webp", GLOB_BRACE) ?: [] as $f) {
+            if (preg_match('~/' . preg_quote((string)$base, '~') . '-p\d+-(?:view|card)\.webp$~', $f)) @unlink($f);
         }
     }
 }

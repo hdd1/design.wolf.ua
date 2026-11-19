@@ -46,17 +46,23 @@ final class Messages
     /** Повідомлення дизайнера, яким надіслано прев'ю: text — підпис (може бути порожнім, до TEXT_MAX) */
     public static function preview(int $offerId, int $designerId, int $previewId, string $caption): int
     {
-        $caption = trim($caption);
-        if (mb_strlen($caption) > self::TEXT_MAX) {
-            throw new DesignerException('Підпис — не більше ' . self::TEXT_MAX . ' символів');
-        }
         return Sql::insert('design_messages', [
             'offer_id' => $offerId,
             'author_id' => $designerId,
             'author_role' => self::ROLE_DESIGNER,
-            'text' => $caption,
+            'text' => self::caption($caption),
             'preview_id' => $previewId,
         ]);
+    }
+
+    /** Підпис прев'ю: обрізані пробіли, може бути порожнім, не довший за TEXT_MAX */
+    public static function caption(string $caption): string
+    {
+        $caption = trim($caption);
+        if (mb_strlen($caption) > self::TEXT_MAX) {
+            throw new DesignerException('Підпис — не більше ' . self::TEXT_MAX . ' символів');
+        }
+        return $caption;
     }
 
     /** Системний запис у листуванні (зміна ціни, вибір тощо); data — машинні дані події */

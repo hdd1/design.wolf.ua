@@ -45,6 +45,7 @@ final class PreviewsTest extends TestCase
 
     protected function tearDown(): void
     {
+        Previews::$beforeRender = null;
         putenv($this->oldRoot === false ? 'DESIGN_WORK_ROOT' : 'DESIGN_WORK_ROOT=' . $this->oldRoot);
         self::rmTree($this->root);
         $this->cleanup();
@@ -292,7 +293,8 @@ final class PreviewsTest extends TestCase
             Previews::hide($v2['id'] + 1000000, self::A);
             $this->fail('Неіснуюче прев\'ю');
         } catch (DesignerException $e) {
-            $this->assertSame("Прев'ю не знайдено", $e->getMessage());
+            $this->assertSame("Додавати й приховувати прев'ю може лише обраний дизайнер замовлення в роботі", $e->getMessage(),
+                'неіснуюче — та сама відповідь, що й «немає доступу»: id не перебрати');
         }
         $this->assertNull(Sql::value('SELECT hidden_at FROM design_previews WHERE id = ?', [$v1['id']]));
 
@@ -338,5 +340,86 @@ final class PreviewsTest extends TestCase
         Sql::exec('UPDATE design_offers SET client_notified_at = NOW() - INTERVAL 120 SECOND, client_seen_at = NOW() - INTERVAL 60 SECOND WHERE id = ?', [$offerId]);
         Previews::add($orderId, self::A, $this->upload(), 'v4', null);
         $this->assertCount(2, Notify::$sent);
+    }
+
+    /** Друге зʼєднання з БД — як паралельний запит */
+    private static function otherConnection(): \PDO
+    {
+        return new \PDO(
+            'mysql:host=' . \CdnConfig::get('db_host') . ';port=' . \CdnConfig::get('db_port') . ';dbname=w2p;charset=utf8mb4',
+            \CdnConfig::get('db_username'), \CdnConfig::get('db_password'),
+            [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]
+        );
+    }
+
+    /**
+     * Рендер іде поза транзакцією: під час make() транзакції немає, рядок замовлення вільний для інших запитів,
+     * і друге прев'ю того самого замовлення проходить, не чекаючи першого (воно отримує v1, перше — v2)
+     */
+    public function test_render_outside_transaction(): void
+    {
+        [$orderId] = $this->inWork();
+        $other = self::otherConnection();
+        $seen = [];
+        $nested = null;
+        Previews::$beforeRender = function (int $order) use (&$seen, &$nested, $other, $orderId): void {
+            $seen[] = $order;
+            $this->assertFalse(Sql::pdo()->inTransaction(), 'під час рендеру транзакції немає');
+            // інший запит може взяти замок замовлення одразу (NOWAIT кинув би 3572, якби рядок був замкнений)
+            $other->beginTransaction();
+            $this->assertSame($orderId, (int)$other->query("SELECT id FROM design_orders WHERE id = $orderId FOR UPDATE NOWAIT")->fetchColumn());
+            $other->rollBack();
+            if ($nested === null) {
+                $nested = false;
+                $nested = Previews::add($orderId, self::A, $this->upload('#00aa00'), 'Паралельне', null);
+            }
+        };
+        $outer = Previews::add($orderId, self::A, $this->upload(), 'Повільне', null);
+
+        $this->assertSame([$orderId, $orderId], $seen);
+        $this->assertSame(1, $nested['num']);
+        $this->assertSame(2, $outer['num']);
+        $this->assertEqualsCanonicalizing([
+            "{$nested['id']}-p1-view.webp", "{$nested['id']}-p1-card.webp",
+            "{$outer['id']}-p1-view.webp", "{$outer['id']}-p1-card.webp",
+        ], $this->files($orderId), 'тимчасових tmp-* не лишилось');
+    }
+
+    /** Доступ чи «на основі» змінились, поки йшов рендер: повторна перевірка під замком відмовляє, картинки tmp-* прибрано */
+    public function test_recheck_after_render_removes_temp_files(): void
+    {
+        [$orderId, $offerId] = $this->inWork();
+        $v1 = Previews::add($orderId, self::A, $this->upload(), 'v1', null);
+
+        $cases = [
+            'дизайнера заблоковано' => [fn() => Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::BLOCKED, self::A]),
+                null, "Додавати й приховувати прев'ю може лише обраний дизайнер замовлення в роботі"],
+            'v1 приховано' => [fn() => Sql::exec('UPDATE design_previews SET hidden_at = NOW() WHERE id = ?', [$v1['id']]),
+                $v1['id'], "Версію, на основі якої зроблено прев'ю, не знайдено"],
+        ];
+        foreach ($cases as $why => [$change, $basedOn, $error]) {
+            Previews::$beforeRender = function () use ($change): void {
+                $change();
+            };
+            $tmp = $this->upload();
+            try {
+                Previews::add($orderId, self::A, $tmp, 'Спроба', $basedOn);
+                $this->fail("Повторна перевірка має відмовити: $why");
+            } catch (DesignerException $e) {
+                $this->assertSame($error, $e->getMessage(), $why);
+            }
+            $this->assertFileDoesNotExist($tmp);
+            $this->assertEqualsCanonicalizing(["{$v1['id']}-p1-view.webp", "{$v1['id']}-p1-card.webp"], $this->files($orderId), $why);
+            $this->assertSame(1, (int)Sql::value('SELECT COUNT(*) FROM design_previews WHERE order_id = ?', [$orderId]), $why);
+            $this->assertCount(1, Messages::list($offerId), $why);
+            Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::APPROVED, self::A]);
+        }
+    }
+
+    /** Тимчасова основа імен для PreviewImages — лише «tmp-<16 hex>» */
+    public function test_temp_base_name_is_strict(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        \Design\PreviewImages::make($this->upload(), $this->root, '../x');
     }
 }

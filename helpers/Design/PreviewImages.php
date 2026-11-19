@@ -4,7 +4,8 @@ namespace Design;
 
 /**
  * Картинки прев'ю: JPG/PNG — одна сторінка, PDF — кожна сторінка окремо (Ghostscript напряму).
- * Кожна сторінка — {previewId}-p{n}-view.webp (вписати в 2000×2000) і -card.webp (вписати в 800×800), WebP q90,
+ * Кожна сторінка — {base}-p{n}-view.webp (вписати в 2000×2000) і -card.webp (вписати в 800×800), WebP q90,
+ * base — id прев'ю або тимчасове «tmp-<16 hex>»;
  * sRGB без метаданих, з напівпрозорим водяним знаком під кутом по всій площі. Оригінал не зберігається.
  * Без БД (крім лімітів із Settings) — лише файли в переданій папці.
  */
@@ -24,6 +25,8 @@ final class PreviewImages
     private const GS_ERR_BYTES = 4096;
     /** Шлях до файлу, який віддаємо gs/Imagick: лише безпечні символи (жодних «[», «:», пробілів, лапок) */
     private const SAFE_PATH = '~^/[A-Za-z0-9._/-]+$~D';
+    /** Тимчасова основа імен файлів (рендер до появи id) */
+    public const TMP_BASE = '~^tmp-[0-9a-f]{16}$~D';
     /** «%PDF-» шукаємо лише в перших стільки байтах (заголовок цілком у них) */
     private const PDF_HEAD = 1023;
     /** Сигнатури картинок: такий файл ніколи не йде в gs, хоч би що було далі в перших байтах */
@@ -52,12 +55,16 @@ final class PreviewImages
     private static bool $shutdownRegistered = false;
 
     /**
+     * $base — початок імен файлів: id прев'ю або тимчасове «tmp-<16 hex>» (рендер до транзакції, див. Previews::add)
      * @return array{pages:int, type:string} type — image|pdf (як design_previews.source_type)
      * @throws DesignerException файл не підходить (текст для користувача); помилки запису летять як є.
      *         При будь-якій помилці створене цим викликом (файли, папки) прибирається.
      */
-    public static function make(string $src, string $dir, int $previewId): array
+    public static function make(string $src, string $dir, int|string $base): array
     {
+        if (is_string($base) && !preg_match(self::TMP_BASE, $base)) {
+            throw new \InvalidArgumentException("Недопустиме ім'я файлів прев'ю: $base");
+        }
         $bytes = is_file($src) && is_readable($src) ? filesize($src) : false;
         if ($bytes === false || $bytes === 0) throw new DesignerException(Images::ERR_BROKEN);
         $maxBytes = Settings::previewMaxBytes();
@@ -85,7 +92,7 @@ final class PreviewImages
             // gs сам вирішує «PDF чи PostScript», і файл з «%!PS…» попереду виконав би як PostScript
             $pdfAt = $image ? false : strpos($head, '%PDF-');
             if ($pdfAt !== false) {
-                $pages = self::pdf($src, $pdfAt, $dir, $previewId, $written, $dirs);
+                $pages = self::pdf($src, $pdfAt, $dir, $base, $written, $dirs);
                 return ['pages' => $pages, 'type' => 'pdf'];
             }
             $type = @getimagesize($src);
@@ -99,7 +106,7 @@ final class PreviewImages
             $im = Images::load($src, Images::check($src, $maxBytes, false, true), self::VIEW_SIDE, 1);
             try {
                 $dirs = Images::ensureDir($dir);
-                self::page($im, $dir, $previewId, 1, $written);
+                self::page($im, $dir, $base, 1, $written);
             } finally {
                 $im->clear();
             }
@@ -119,7 +126,7 @@ final class PreviewImages
      * Весь PDF — підрахунок, рендер, обробка — в межах $gsTimeout. gs бачить лише файл, що починається рівно з «%PDF-»:
      * якщо заголовок на зсуві $pdfAt > 0 — приватну копію з цього місця в тимчасовій папці (0700)
      */
-    private static function pdf(string $src, int $pdfAt, string $dir, int $previewId, array &$written, array &$dirs): int
+    private static function pdf(string $src, int $pdfAt, string $dir, int|string $base, array &$written, array &$dirs): int
     {
         Images::limitResources();
         $deadline = microtime(true) + self::$gsTimeout;
@@ -137,7 +144,7 @@ final class PreviewImages
             $dpi = self::pdfDpi($sizes);
 
             $dirs = Images::ensureDir($dir);
-            self::renderPdf($pdf, $tmp, $count, $dpi, $deadline, self::pageFromPpm($dir, $previewId, $written));
+            self::renderPdf($pdf, $tmp, $count, $dpi, $deadline, self::pageFromPpm($dir, $base, $written));
             return $count;
         } finally {
             self::removeTmp($tmp);
@@ -161,9 +168,9 @@ final class PreviewImages
     }
 
     /** Обробник готової сторінки-PPM від gs: прочитати, видалити, sRGB без метаданих, view/card зі знаком */
-    private static function pageFromPpm(string $dir, int $previewId, array &$written): callable
+    private static function pageFromPpm(string $dir, int|string $base, array &$written): callable
     {
-        return function (int $n, string $ppm) use ($dir, $previewId, &$written) {
+        return function (int $n, string $ppm) use ($dir, $base, &$written) {
             $im = new \Imagick();
             try {
                 try {
@@ -175,7 +182,7 @@ final class PreviewImages
                 @unlink($ppm);
                 Images::toSrgb($im);
                 $im->stripImage();
-                self::page($im, $dir, $previewId, $n, $written);
+                self::page($im, $dir, $base, $n, $written);
             } finally {
                 $im->clear();
             }
@@ -186,7 +193,7 @@ final class PreviewImages
      * Одна сторінка: view (вписати в 2000) і card (вписати в 800 — з view ще до знака), кожна зі своїм знаком.
      * $im змінюється (стає view)
      */
-    private static function page(\Imagick $im, string $dir, int $previewId, int $n, array &$written): void
+    private static function page(\Imagick $im, string $dir, int|string $base, int $n, array &$written): void
     {
         Images::fitInto($im, self::VIEW_SIDE);
         $card = clone $im;
@@ -194,7 +201,7 @@ final class PreviewImages
             Images::fitInto($card, self::CARD_SIDE);
             foreach (['view' => $im, 'card' => $card] as $size => $img) {
                 self::watermark($img);
-                $path = "$dir/$previewId-p$n-$size.webp";
+                $path = "$dir/$base-p$n-$size.webp";
                 $written[] = $path;
                 Images::writeWebp($img, $path, self::WEBP_QUALITY);
             }

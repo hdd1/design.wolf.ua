@@ -4,6 +4,7 @@ use Design\DesignerException;
 use Design\DesignerStatus;
 use Design\Messages;
 use Design\Notify;
+use Design\OfferStatus;
 use Design\Sql;
 use PHPUnit\Framework\TestCase;
 
@@ -219,7 +220,7 @@ final class MessagesTest extends TestCase
     /** Відповідь (коментар) — лише на наявне повідомлення того самого листування; list віддає reply_to_id і preview_id */
     public function test_reply_to_same_offer_only(): void
     {
-        $other = Sql::insert('design_offers', ['order_id' => self::FAKE_ORDER, 'designer_id' => self::FAKE_DESIGNER + 10, 'status' => 3]);
+        $other = Sql::insert('design_offers', ['order_id' => self::FAKE_ORDER, 'designer_id' => self::FAKE_DESIGNER + 10, 'status' => OfferStatus::SENT]);
         $foreign = Messages::add($other, self::FAKE_CLIENT, Messages::ROLE_CLIENT, 'В іншому листуванні');
         $base = Messages::add($this->offerId, self::FAKE_DESIGNER, Messages::ROLE_DESIGNER, 'Варіант із темним фоном');
 

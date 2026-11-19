@@ -17,7 +17,7 @@ final class Chat
     /**
      * Повідомлення пропозиції так, як їх бачить сторона з Offers::access.
      * author — від клієнта: коротке імʼя «Тарас Г.»; від дизайнера: design_designers.name; системні — ''. mine — відносно глядача.
-     * preview — у повідомлення, яким надіслано прев'ю: елемент Previews::forOrder (text — його підпис); інакше null.
+     * preview — у повідомлення, яким надіслано прев'ю: елемент Previews::byIds / forOrder (text — його підпис); інакше null.
      * reply — у відповіді: цитата {id, author, text до QUOTE_LEN символів, preview_num — vN, якщо цитується прев'ю,
      * thumb — мініатюра першої сторінки неприхованого прев'ю}; інакше null. Тексти — як є: екранує той, хто виводить
      * @param array{offer:array, role:int, write:bool} $access
@@ -35,9 +35,8 @@ final class Chat
         };
         $list = Messages::list($offer['id'], $after, $limit);
         $quoted = Messages::byIds($offer['id'], array_filter(array_column($list, 'reply_to_id')));
-        // Прев'ю замовлення (з адресами картинок) — лише якщо вони потрібні цій порції
-        $previews = array_filter(array_column(array_merge($list, $quoted), 'preview_id')) === []
-            ? [] : Previews::forOrder($offer['order_id']);
+        // Прев'ю (з адресами картинок) — лише ті, що є в цій порції або в її цитатах
+        $previews = Previews::byIds($offer['order_id'], array_filter(array_column(array_merge($list, $quoted), 'preview_id')));
 
         return array_map(static function (array $m) use ($access, $name, $quoted, $previews): array {
             $q = $m['reply_to_id'] === null ? null : ($quoted[$m['reply_to_id']] ?? null);

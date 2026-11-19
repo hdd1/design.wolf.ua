@@ -91,10 +91,10 @@ final class Images
         }
     }
 
-    /** «Файл завеликий: 48 МБ. Максимум — 20 МБ»; розмір невідомий (відкинув сервер) — без числа */
-    public static function tooBig(?int $bytes): string
+    /** «Файл завеликий: 48 МБ. Максимум — 20 МБ»; розмір невідомий (відкинув сервер) — без числа; $maxBytes — інший ліміт (прев'ю, макети) */
+    public static function tooBig(?int $bytes, int $maxBytes = self::MAX_BYTES): string
     {
-        $max = self::MAX_BYTES / 1048576;
+        $max = intdiv($maxBytes, 1048576);
         return $bytes !== null && $bytes > 0
             ? sprintf('Файл завеликий: %d МБ. Максимум — %d МБ', (int)ceil($bytes / 1048576), $max)
             : sprintf('Файл завеликий. Максимум — %d МБ', $max);

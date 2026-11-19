@@ -184,7 +184,7 @@ final class ChunkUploadTest extends TestCase
         foreach (['-1', '1.5', 'a', '', ' 1', '1'] as $bad) {   // '1' — індекс поза межами при totalChunks=1
             $this->assertSame(self::ERR_META, $this->error(self::meta(['chunkIndex' => $bad])), "chunkIndex $bad");
         }
-        foreach (['0', '-1', 'x', '12'] as $bad) {   // 50 МБ: не більше ceil(50/5)+1 = 11 частин
+        foreach (['0', '-1', 'x', '52'] as $bad) {   // 50 МБ: не більше ceil(50/1)+1 = 51 частини (частина в браузері — від 1 МБ)
             $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => $bad])), "totalChunks $bad");
         }
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalSize' => 'x'])));
@@ -193,8 +193,8 @@ final class ChunkUploadTest extends TestCase
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => -1])));
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalSize' => -5])));
         $this->assertSame('Файл порожній', $this->error(self::meta(['totalSize' => '0'])));
-        // 11 частин — ще можна: далі перевіряється сама частина
-        $this->assertSame('Файл не надіслано', $this->error(self::meta(['totalChunks' => '11', 'chunkIndex' => '10'])));
+        // 51 частина — ще можна (на dev upload_max_filesize 2M: частини ~1,9 МБ): далі перевіряється сама частина
+        $this->assertSame('Файл не надіслано', $this->error(self::meta(['totalChunks' => '51', 'chunkIndex' => '50'])));
         // Межа рахується від ліміту: 1 МБ — до 2 частин
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => '3']), [], self::MB));
     }
@@ -342,6 +342,63 @@ final class ChunkUploadTest extends TestCase
 
         $this->expectException(InvalidArgumentException::class);
         ChunkUpload::recall('../../etc/passwd');
+    }
+
+    public function test_remember_rejects_unencodable_result_and_releases_lock(): void
+    {
+        $key = $this->keys[] = sha1('test|' . bin2hex(random_bytes(8)));
+        try {
+            ChunkUpload::remember($key, ['error' => "\xff\xfe"]);
+            $this->fail('Очікувався JsonException');
+        } catch (JsonException) {
+        }
+        $this->assertFileDoesNotExist(self::RESULTS . "$key.json");
+        // Блокування знято: інший власник бере його одразу
+        $fh = fopen(self::RESULTS . "$key.lock", 'c');
+        $this->assertTrue(flock($fh, LOCK_EX | LOCK_NB));
+        fclose($fh);
+    }
+
+    public function test_part_size_follows_php_limits(): void
+    {
+        $this->assertSame(2097152, ChunkUpload::iniBytes('2M'));
+        $this->assertSame(524288, ChunkUpload::iniBytes('512k'));
+        $this->assertSame(1073741824, ChunkUpload::iniBytes('1G'));
+        $this->assertSame(8388608, ChunkUpload::iniBytes('8388608'));
+        $this->assertSame(0, ChunkUpload::iniBytes('0'));
+        $this->assertSame(0, ChunkUpload::iniBytes('lots'));
+        $expect = ChunkUpload::CHUNK;
+        foreach (['upload_max_filesize', 'post_max_size'] as $ini) {
+            $v = ChunkUpload::iniBytes((string)ini_get($ini));
+            if ($v > 0) $expect = min($expect, $v);
+        }
+        $this->assertSame($expect - 65536, ChunkUpload::partSize());
+        $this->assertLessThanOrEqual(ChunkUpload::CHUNK - 65536, ChunkUpload::partSize());
+    }
+
+    public function test_lock_wait_is_bounded(): void
+    {
+        $key = $this->keys[] = sha1('test|' . bin2hex(random_bytes(8)));
+        ChunkUpload::recall($key);   // каталог результатів
+        $fh = fopen(self::RESULTS . "$key.lock", 'c');
+        $this->assertTrue(flock($fh, LOCK_EX));
+        $old = ChunkUpload::$lockWait;
+        ChunkUpload::$lockWait = 1;
+        $started = microtime(true);
+        try {
+            ChunkUpload::recall($key);
+            $this->fail('Очікувалась DesignerException');
+        } catch (DesignerException $e) {
+            $this->assertSame('Сервер зайнятий — спробуйте ще раз', $e->getMessage());
+            $this->assertSame(503, $e->getCode());
+        } finally {
+            ChunkUpload::$lockWait = $old;
+            flock($fh, LOCK_UN);
+            fclose($fh);
+        }
+        $this->assertGreaterThanOrEqual(0.9, microtime(true) - $started);
+        $this->assertLessThan(5, microtime(true) - $started);
+        $this->assertNull(ChunkUpload::recall($key), 'після звільнення — звичайна робота');
     }
 
     public function test_concurrent_request_with_same_id_waits_for_lock(): void

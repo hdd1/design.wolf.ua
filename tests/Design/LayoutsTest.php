@@ -291,6 +291,37 @@ final class LayoutsTest extends TestCase
         $this->assertSame([], $this->tmpFiles());
     }
 
+    public function test_precheck_by_declared_size(): void
+    {
+        [$orderId] = $this->inWork();
+        [$other] = $this->inWork(OrderStatus::IN_WORK, self::B, self::A);
+        Layouts::precheck($orderId, self::A, 10);
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::B, 10));
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::CLIENT, 10));
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 0), 'Файл порожній');
+        self::override(['layout_max_mb' => '1', 'layout_max_total_mb' => '2', 'layout_max_files' => '2']);
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 1048577), 'Файл більший за 1' . self::NB . 'МБ — це максимум для одного макета');
+        Layouts::precheck($orderId, self::A, 1048576);
+
+        $a = Layouts::add($orderId, self::A, $this->upload(1000000), 'a.pdf');
+        $b = Layouts::add($orderId, self::A, $this->upload(1000000), 'b.pdf');
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 1), 'Макетів уже 2 — це максимум');
+        // заміна: замінюваний не рахується ні в кількість, ні в суму
+        Layouts::precheck($orderId, self::A, 1048576, $a['id']);
+        self::override(['layout_max_mb' => '1', 'layout_max_total_mb' => '2', 'layout_max_files' => '3']);
+        // сума: 2 000 000 з 2 097 152 зайнято
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 97153), 'Разом не більше 2' . self::NB . 'МБ на замовлення');
+        Layouts::precheck($orderId, self::A, 97152);
+        Layouts::precheck($orderId, self::A, 1048576, $b['id']);
+        Layouts::remove($b['id'], self::A);
+        // замінювати можна лише активний макет цього замовлення
+        $gone = 'Макет не знайдено: його вже замінено або видалено';
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 10, $b['id']), $gone);
+        $theirs = Layouts::add($other, self::B, $this->upload(10), 'c.pdf');
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 10, $theirs['id']), $gone);
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 10, 999999999), $gone);
+    }
+
     public function test_file_size_limit_and_empty_file(): void
     {
         [$orderId] = $this->inWork();

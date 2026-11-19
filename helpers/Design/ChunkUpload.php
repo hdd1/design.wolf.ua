@@ -9,8 +9,10 @@ namespace Design;
  */
 final class ChunkUpload
 {
-    /** Розмір частини в браузері */
+    /** Найбільша частина в браузері (менша — коли upload_max_filesize / post_max_size сервера менші, див. partSize) */
     public const CHUNK = 5 * 1048576;
+    /** Найменша частина, яку розраховує сервер: від неї — межа кількості частин */
+    public const MIN_CHUNK = 1048576;
     /** Запас на частину понад CHUNK */
     private const SLACK = 65536;
     /** Відповіді на останню частину й блокування — поруч із частинами UppyChunkGlobal (та сама ФС, той самий крон чистки) */
@@ -20,6 +22,14 @@ final class ChunkUpload
 
     /** @var array<string, resource> утримувані блокування цього запиту */
     private static array $locks = [];
+
+    /**
+     * Скільки секунд чекати блокування (інший запит з тим самим файлом ще обробляє його); далі — DesignerException з кодом 503.
+     * Нескінченне очікування тримало б воркер php-fpm (листопад 2026: зависання пулу dev)
+     * @internal змінюють лише тести
+     */
+    public static int $lockWait = 90;
+    public const ERR_BUSY = 'Сервер зайнятий — спробуйте ще раз';
 
     private const ERR_META = 'Невірні дані завантаження. Оновіть сторінку і спробуйте ще раз';
     private const ERR_NONE = 'Файл не надіслано';
@@ -50,7 +60,7 @@ final class ChunkUpload
         $size = self::int($meta['totalSize'] ?? null);
         if (!is_string($fileId) || !preg_match('/^[A-Za-z0-9_-]{8,64}$/D', $fileId)
             || $index === null || $total === null || $size === null
-            || $total < 1 || $total > intdiv($maxBytes + self::CHUNK - 1, self::CHUNK) + 1 || $index >= $total) {
+            || $total < 1 || $total > intdiv($maxBytes + self::MIN_CHUNK - 1, self::MIN_CHUNK) + 1 || $index >= $total) {
             throw new DesignerException(self::ERR_META);
         }
         if ($size < 1) throw new DesignerException('Файл порожній');
@@ -115,7 +125,8 @@ final class ChunkUpload
         try {
             $file = self::dir() . $key . '.json';
             $tmp = $file . '.' . bin2hex(random_bytes(4));
-            if (file_put_contents($tmp, json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) === false
+            $json = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            if (file_put_contents($tmp, $json) === false
                 || !chmod($tmp, 0600) || !rename($tmp, $file)) {
                 @unlink($tmp);
                 throw new \RuntimeException('ChunkUpload: не записати результат ' . $key);
@@ -147,14 +158,30 @@ final class ChunkUpload
         }
     }
 
-    /** Ексклюзивне блокування $key (файл {key}.lock; повторно в тому самому запиті — без змін) */
+    /**
+     * Ексклюзивне блокування $key (файл {key}.lock; повторно в тому самому запиті — без змін).
+     * Чекає не довше за $lockWait секунд
+     * @throws DesignerException ERR_BUSY з кодом 503 — блокування так і не звільнилось
+     */
     private static function lock(string $key): void
     {
         if (!preg_match('/^[0-9a-f]{40}$/D', $key)) throw new \InvalidArgumentException('ChunkUpload: поганий ключ');
         if (isset(self::$locks[$key])) return;
         $file = self::dir() . $key . '.lock';
         $fh = @fopen($file, 'c');
-        if ($fh === false || !flock($fh, LOCK_EX)) throw new \RuntimeException('ChunkUpload: не заблокувати ' . $key);
+        if ($fh === false) throw new \RuntimeException('ChunkUpload: не заблокувати ' . $key);
+        $until = microtime(true) + self::$lockWait;
+        while (!flock($fh, LOCK_EX | LOCK_NB, $wouldBlock)) {
+            if (!$wouldBlock) {
+                fclose($fh);
+                throw new \RuntimeException('ChunkUpload: не заблокувати ' . $key);
+            }
+            if (microtime(true) >= $until) {
+                fclose($fh);
+                throw new DesignerException(self::ERR_BUSY, 503);
+            }
+            usleep(200000);
+        }
         @chmod($file, 0600);
         touch($file);   // свіжий mtime — sweep() не видалить файл, поки ним користуються
         self::$locks[$key] = $fh;
@@ -188,6 +215,32 @@ final class ChunkUpload
         foreach (glob(self::RESULTS_DIR . '*.{json,lock}', GLOB_BRACE) ?: [] as $file) {
             if (@filemtime($file) < $old) @unlink($file);
         }
+    }
+
+    /**
+     * Розмір частини для браузера (data-chunk сторінки): min(CHUNK, upload_max_filesize, post_max_size) − SLACK —
+     * частина з полями форми мусить пройти обидва ліміти PHP (на dev upload_max_filesize 2M, на проді 1000M → 5 МБ)
+     */
+    public static function partSize(): int
+    {
+        $limit = self::CHUNK;
+        foreach (['upload_max_filesize', 'post_max_size'] as $ini) {
+            $v = self::iniBytes((string)ini_get($ini));
+            if ($v > 0) $limit = min($limit, $v);
+        }
+        return max(self::SLACK, $limit - self::SLACK);
+    }
+
+    /** «2M», «512K», «1G», «8388608» → байти; 0 / порожньо / незрозуміле — 0 (без ліміту) */
+    public static function iniBytes(string $v): int
+    {
+        if (!preg_match('/^\s*(\d+)\s*([KMG]?)\s*$/iD', $v, $m)) return 0;
+        return (int)$m[1] * match (strtoupper($m[2])) {
+            'K' => 1024,
+            'M' => 1048576,
+            'G' => 1073741824,
+            default => 1,
+        };
     }
 
     /** Вихідне імʼя без шляху й керівних символів, до 255 символів; порожнє → «file» */

@@ -105,6 +105,23 @@ final class Layouts
         ], $rows);
     }
 
+    /**
+     * Перевірка до прийому файла (перша частина завантаження, заявлений розмір): доступ, розмір одного макета, ліміти замовлення.
+     * replaceFileId — замінюваний макет: має бути активним макетом цього замовлення і в підрахунок лімітів не входить.
+     * Без замка: остаточно ліміти перевіряє add/replace після склеювання
+     * @throws DesignerException
+     */
+    public static function precheck(int $orderId, int $designerId, int $declaredSize, ?int $replaceFileId = null): void
+    {
+        if (Previews::canWork($orderId, $designerId) === null) throw new DesignerException(self::ERR_ACCESS);
+        if ($replaceFileId !== null && Sql::value('SELECT id FROM design_files WHERE id = ? AND order_id = ? AND status = ?',
+                [$replaceFileId, $orderId, self::ACTIVE]) === null) {
+            throw new DesignerException(self::ERR_GONE);
+        }
+        self::checkSize($declaredSize);
+        self::checkLimits($orderId, $declaredSize, $replaceFileId);
+    }
+
     /** Кількість активних макетів замовлення (для «чий хід») */
     public static function count(int $orderId): int
     {
@@ -128,10 +145,7 @@ final class Layouts
             clearstatcache(true, $tmp);
             if (!is_file($tmp)) throw new DesignerException('Файл не знайдено — завантажте його ще раз');
             $size = (int)filesize($tmp);
-            if ($size <= 0) throw new DesignerException('Файл порожній');
-            if ($size > Settings::layoutMaxBytes()) {
-                throw new DesignerException('Файл більший за ' . View::bytes(Settings::layoutMaxBytes()) . ' — це максимум для одного макета');
-            }
+            self::checkSize($size);
             $dir = self::dir($orderId);
             // Права — до перенесення: у папку макетів файл потрапляє вже закритим для «інших»
             if (!chmod($tmp, 0600)) throw new \RuntimeException('Не вдалося закрити права файла макета');
@@ -217,11 +231,20 @@ final class Layouts
         }
     }
 
-    /** Ліміти активних макетів замовлення з новим файлом розміром $size (під замком замовлення) */
-    private static function checkLimits(int $orderId, int $size): void
+    /** Розмір одного макета: 1 байт … layout_max_mb */
+    private static function checkSize(int $size): void
     {
-        $r = Sql::one('SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS total FROM design_files WHERE order_id = ? AND status = ?',
-            [$orderId, self::ACTIVE]);
+        if ($size <= 0) throw new DesignerException('Файл порожній');
+        if ($size > Settings::layoutMaxBytes()) {
+            throw new DesignerException('Файл більший за ' . View::bytes(Settings::layoutMaxBytes()) . ' — це максимум для одного макета');
+        }
+    }
+
+    /** Ліміти активних макетів замовлення з новим файлом розміром $size (без макета $exclude — замінюваного) */
+    private static function checkLimits(int $orderId, int $size, ?int $exclude = null): void
+    {
+        $r = Sql::one('SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS total FROM design_files WHERE order_id = ? AND status = ? AND id <> ?',
+            [$orderId, self::ACTIVE, $exclude ?? 0]);
         if ((int)$r['n'] >= Settings::layoutMaxFiles()) {
             throw new DesignerException('Макетів уже ' . Settings::layoutMaxFiles() . ' — це максимум');
         }

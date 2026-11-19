@@ -1,7 +1,8 @@
 <?php
 /**
- * Вибір дизайнера для режиму «Одразу обрати»: GET /orders/{id}/pick/ — з кроку 3 брифу (чернетка) або «Обрати іншого»
- * після відмови дизайнера (режим 2 без активної пропозиції). Каталог схвалених без самого клієнта, пошук за імʼям, сторінки.
+ * Вибір дизайнера для режиму «Одразу обрати»: GET /orders/{id}/pick/ — з кроку 3 брифу (чернетка), «Обрати іншого»
+ * після відмови дизайнера або «Запросити іншого» після його ціни (тоді його пропозицію буде закрито — попередження
+ * і підтвердження перед запрошенням, а його самого в списку немає). Каталог схвалених без самого клієнта, пошук за імʼям, сторінки.
  * Вибір іде POST /orders/{id} action=invite. В інших станах — на сторінку замовлення.
  * Після помилки запрошення сторінку рендерить pages/order-update.php з $posted
  * @var array $params
@@ -23,7 +24,8 @@ $id = $order['id'];
 $posted ??= null;
 $draft = $order['status'] === OrderStatus::DRAFT;
 
-if (!$draft && (Offers::mode2State($id, $me)['state'] ?? null) !== 'declined') {
+$mode2 = $draft ? null : Offers::mode2State($id, $me);
+if (!$draft && !in_array($mode2['state'] ?? null, ['declined', 'offer'], true)) {
     // Запрошення не вдалося, а вибирати вже нема з чого (дизайнер щойно погодився, бриф уже у зборі) — помилка на сторінці замовлення
     if ($posted !== null) {
         require __DIR__ . '/order.php';
@@ -39,12 +41,15 @@ if ($page > $list['pages']) {
     $page = $list['pages'];
     $list = Designers::catalog($q, $page);
 }
-// Клієнт, який сам дизайнер, себе не обирає
-$items = array_values(array_filter($list['items'], static fn(array $d): bool => $d['customer_id'] !== $me));
+// Клієнт, який сам дизайнер, себе не обирає; дизайнер, що вже назвав ціну, — не «інший»
+$offered = ($mode2['state'] ?? null) === 'offer' ? $mode2['offer'] : null;
+$items = array_values(array_filter($list['items'], static fn(array $d): bool => $d['customer_id'] !== $me
+    && $d['customer_id'] !== ($offered['designer_id'] ?? 0)));
 
 View::render('layout', [
     'title' => $draft ? 'Оберіть дизайнера' : 'Оберіть іншого дизайнера',
     'active' => $draft ? 'brief' : 'orders',
+    'scripts' => $offered !== null ? ['/assets/js/offer-form.js'] : [],
     'body' => View::fetch('order-pick', [
         'orderId' => $id,
         'draft' => $draft,
@@ -54,6 +59,7 @@ View::render('layout', [
         'items' => $items,
         'picked' => $posted !== null ? (int)Http::str($_POST, 'designer_id') : 0,
         'error' => $posted['error'] ?? null,
+        'closing' => $offered === null ? null : 'Пропозицію ' . ($offered['designer_name'] !== '' ? $offered['designer_name'] : 'дизайнера') . ' буде закрито',
         'csrf' => Csrf::token($me),
     ]),
 ]);

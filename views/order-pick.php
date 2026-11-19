@@ -1,10 +1,11 @@
 <?php
 /**
  * Вибір дизайнера для режиму «Одразу обрати» (макет 6.2 «Бриф · крок 3 Режим · одразу обрати»): пошук, список з перемикачами,
- * «Опублікувати і запросити» (з чернетки) або «Запросити дизайнера» (після відмови). Без рейтингу й кількості замовлень
+ * «Опублікувати і запросити» (з чернетки) або «Запросити дизайнера» (після відмови або ціни дизайнера). Без рейтингу й кількості замовлень
  * @var int $orderId @var bool $draft @var string $q @var int $page @var int $pages
  * @var list<array{customer_id:int,name:string,about:string,photo:string,works:list<int>}> $items
  * @var int $picked обраний до помилки @var ?string $error @var string $csrf
+ * @var ?string $closing «Пропозицію {імʼя} буде закрито» — запрошення після ціни дизайнера (попередження і підтвердження)
  */
 use Design\Media;
 use Design\View;
@@ -20,6 +21,7 @@ $href = static fn(int $p): string => View::e($base . ($q !== '' || $p > 1 ? '?' 
   <?php endif ?>
   <h1 class="<?= $draft ? '' : 'mt-3' ?>"><?= $draft ? 'Оберіть дизайнера' : 'Оберіть іншого дизайнера' ?></h1>
   <p class="text-2 mt-2">Дизайнер отримає запрошення і назве ціну й термін. Зазвичай відповідають за кілька годин.</p>
+  <?php if ($closing !== null): ?><div class="alert-d info mt-3"><i class="fal fa-info-circle mt-1"></i><div class="fw-semibold"><?= View::e($closing) ?>, а дизайнер побачить, що обрано іншого.</div></div><?php endif ?>
   <?php if ($error !== null): ?><div class="alert-d error mt-3" role="alert"><i class="fal fa-exclamation-circle mt-1"></i><div class="fw-semibold"><?= View::e($error) ?></div></div><?php endif ?>
 
   <div class="card-d pick-card mt-4">
@@ -40,7 +42,7 @@ $href = static fn(int $p): string => View::e($base . ($q !== '' || $p > 1 ? '?' 
       </div>
     <?php endif ?>
 
-    <form id="pick-form" method="post" action="/orders/<?= $orderId ?>" data-lock>
+    <form id="pick-form" method="post" action="/orders/<?= $orderId ?>" data-lock<?= $closing !== null ? ' data-confirm="' . View::e($closing . '. Запросити іншого дизайнера?') . '"' : '' ?>>
       <input type="hidden" name="csrf" value="<?= View::e($csrf) ?>">
       <input type="hidden" name="action" value="invite">
       <?php if ($items): ?>

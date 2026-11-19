@@ -4,7 +4,7 @@ namespace Design;
 
 /**
  * Пропозиції дизайнерів (design_offers): надіслати, змінити, відкликати; вибір клієнтом; стрічка брифів і «Мої пропозиції»;
- * режим 2 «Одразу обрати»: запрошення, «Так» / «Ні», «Запросити іншого», «Збирати пропозиції».
+ * режим 2 «Одразу обрати»: запрошення, «Так» / «Ні», «Запросити іншого», «Збирати пропозиції» (після відмови або після ціни).
  * Одна пара замовлення+дизайнер — один рядок. Переходи статусів — атомарні, у транзакціях замок завжди спершу на рядок
  * замовлення, потім на рядок пропозиції
  */
@@ -23,11 +23,14 @@ final class Offers
     private const ERR_INVITE_GONE = 'Запрошення вже неактуальне';
     private const ERR_ALREADY_SENT = 'Ви вже запропонували — змініть пропозицію';
 
-    /** Пропозиції, що тримають замовлення режиму 2: запрошення без відповіді або «Так» (якщо дизайнер досі схвалений) */
+    /** Активні пропозиції режиму 2: запрошення без відповіді або «Так» (для клієнта — якщо дизайнер досі схвалений; див. reopenable) */
     private const ACTIVE = [OfferStatus::INVITED, OfferStatus::SENT];
 
     /** Статуси, при яких дизайнер може надіслати пропозицію в той самий рядок ще раз */
     private const RESENDABLE = [OfferStatus::DECLINED, OfferStatus::WITHDRAWN];
+
+    /** Режим 2: кого клієнт може запросити знову в той самий рядок — ще й закритого «Запросити іншого» після ціни */
+    private const REINVITABLE = [OfferStatus::DECLINED, OfferStatus::WITHDRAWN, OfferStatus::OTHER_CHOSEN];
 
     /** Вкладка «Пропозиції» в «Мої пропозиції»; «В роботі» — CHOSEN */
     private const MINE_OFFERS = [OfferStatus::INVITED, OfferStatus::SENT, OfferStatus::DECLINED, OfferStatus::WITHDRAWN, OfferStatus::OTHER_CHOSEN];
@@ -137,10 +140,12 @@ final class Offers
 
     /**
      * Режим 2: клієнт обирає схваленого дизайнера з каталогу. З чернетки — публікація з вибором
-     * (WAITING_DESIGNER, mode = 2, published_at = NOW()); зі збору режиму 2 без активної пропозиції — «Запросити іншого».
-     * Рядок новий або той самий після відмови / відкликання → «запрошено». Запрошення недоступних (заблокованих) дизайнерів
-     * клієнт бачить як відмову — їх закриваємо. Повтор (подвійний клік: цей дизайнер уже запрошений і чекаємо його) нічого
-     * не змінює і не шле. Сповіщає дизайнера
+     * (WAITING_DESIGNER, mode = 2, published_at = NOW()); зі збору режиму 2 — «Запросити іншого»: після відмови або після
+     * «Так» з ціною (рішення власника 2026-11-19) — тоді в тій самій транзакції надіслана пропозиція попереднього дизайнера
+     * → «обрано іншого» (він бачить «Вже обрано іншого дизайнера», без сповіщення). Того, хто вже назвав ціну, «іншим» не запросити.
+     * Рядок новий або той самий після відмови / відкликання / закриття → «запрошено». Запрошення недоступних (заблокованих)
+     * дизайнерів клієнт бачить як відмову — їх закриваємо. Повтор (подвійний клік: цей дизайнер уже запрошений і чекаємо його)
+     * нічого не змінює і не шле. Сповіщає дизайнера
      */
     public static function invite(int $orderId, int $customerId, int $designerId): void
     {
@@ -163,13 +168,21 @@ final class Offers
             }
             self::closeStaleInvites($orderId);
 
-            $row = Sql::one('SELECT id FROM design_offers WHERE order_id = ? AND designer_id = ? FOR UPDATE', [$orderId, $designerId]);
+            $row = Sql::one('SELECT id, status FROM design_offers WHERE order_id = ? AND designer_id = ? FOR UPDATE', [$orderId, $designerId]);
+            if ($row !== null && (int)$row['status'] === OfferStatus::SENT) {
+                throw new DesignerException('Цей дизайнер уже назвав ціну — оберіть його пропозицію');
+            }
+            // Режим 2 після «Так»: клієнт пішов до іншого — надіслана пропозиція попереднього закривається (у режимі 2 вона
+            // буває лише з запрошення; у чернетці пропозицій немає)
+            Sql::exec('UPDATE design_offers SET status = ? WHERE order_id = ? AND status = ?',
+                [OfferStatus::OTHER_CHOSEN, $orderId, OfferStatus::SENT]);
+
             if ($row === null) {
                 Sql::insert('design_offers', ['order_id' => $orderId, 'designer_id' => $designerId, 'status' => OfferStatus::INVITED]);
             } else {
                 // Нове запрошення — з чистими полями: текст, ціна й термін попереднього раунду не мають показуватися
                 $n = Sql::exec('UPDATE design_offers SET status = ?, text = NULL, price_designer = 0, markup_percent = 0, price_client = 0, deadline = NULL
-                                WHERE id = ? AND status IN (' . implode(', ', self::RESENDABLE) . ')',
+                                WHERE id = ? AND status IN (' . implode(', ', self::REINVITABLE) . ')',
                     [OfferStatus::INVITED, (int)$row['id']]);
                 if ($n === 0) throw new DesignerException(self::ERR_ORDER_LOCKED);
             }
@@ -251,8 +264,9 @@ final class Offers
     }
 
     /**
-     * Режим 2 → «Збирати пропозиції»: замовлення без активної пропозиції стає режимом 1 і зʼявляється в стрічці як нове
-     * (published_at = NOW(), крон рахує добу від цього моменту). Повтор (подвійний клік) нічого не змінює
+     * Режим 2 → «Збирати пропозиції»: після відмови або після «Так» з ціною (рішення власника 2026-11-19) замовлення стає
+     * режимом 1 і зʼявляється в стрічці як нове (published_at = NOW(), крон рахує добу від цього моменту). Надіслана пропозиція
+     * дизайнера лишається надісланою — серед нових, її можна обрати. Повтор (подвійний клік) нічого не змінює
      */
     public static function collect(int $orderId, int $customerId): void
     {
@@ -630,15 +644,18 @@ final class Offers
     }
 
     /**
-     * Замовлення режиму 2 можна знову віддати іншому дизайнеру або на збір пропозицій: у ньому немає активної пропозиції
-     * схваленого дизайнера (запрошення недоступного клієнт бачить як відмову). Викликати під замком замовлення
+     * Замовлення режиму 2 можна знову віддати іншому дизайнеру або на збір пропозицій: його не тримає пропозиція схваленого
+     * дизайнера (запрошення недоступного клієнт бачить як відмову). Збір (дизайнер сказав «Так» або відмовився) тримає лише
+     * запрошення без відповіді — «Так» з ціною не тримає (рішення власника 2026-11-19); очікування відповіді тримають і
+     * запрошення, і надіслана. Викликати під замком замовлення
      */
     private static function reopenable(int $orderId, int $status, int $mode): bool
     {
         if ($mode !== 2 || !in_array($status, [OrderStatus::COLLECTING, OrderStatus::WAITING_DESIGNER], true)) return false;
+        $holding = $status === OrderStatus::COLLECTING ? [OfferStatus::INVITED] : self::ACTIVE;
         return !(bool)Sql::value(
             'SELECT EXISTS (SELECT 1 FROM design_offers f JOIN design_designers d ON d.customer_id = f.designer_id
-                            WHERE f.order_id = ? AND f.status IN (' . implode(', ', self::ACTIVE) . ') AND d.status = ?)',
+                            WHERE f.order_id = ? AND f.status IN (' . implode(', ', $holding) . ') AND d.status = ?)',
             [$orderId, DesignerStatus::APPROVED]);
     }
 

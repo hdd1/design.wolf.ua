@@ -251,10 +251,7 @@ final class OffersMode2Test extends TestCase
         $this->assertError('Ви вже запропонували — змініть пропозицію', fn() => Offers::accept($offerId, self::A, 'Ще', 900, $deadline));
         $this->assertCount(1, Notify::$sent);
 
-        // поки є пропозиція — не запросити іншого і не перемкнути на збір
-        $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::invite($orderId, self::CLIENT, self::B));
-        $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::collect($orderId, self::CLIENT));
-
+        // «Запросити іншого» / «Збирати пропозиції» після ціни — test_offer_invite_other_*, test_offer_collect_*;
         // клієнт обирає — далі як режим 1
         Offers::choose($orderId, self::CLIENT, $offerId, $p);
         $this->assertSame(OrderStatus::IN_WORK, (int)$this->orderRow($orderId)['status']);
@@ -446,6 +443,140 @@ final class OffersMode2Test extends TestCase
         Offers::accept($a, self::A, 'Знову так', 450, $this->inDays(1));
         $this->assertSame(450, (int)$this->offerRow($a)['price_designer']);
         $this->assertSame(OrderStatus::COLLECTING, (int)$this->orderRow($orderId)['status']);
+    }
+
+    /**
+     * Рішення власника 2026-11-19: після «Беру» з ціною клієнт може запросити іншого — «Так» попереднього закривається
+     * як «обрано іншого» (без сповіщення йому), новий дизайнер — запрошення і сповіщення
+     */
+    public function test_offer_invite_other_closes_previous_as_other_chosen(): void
+    {
+        $orderId = $this->draft();
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $a = $this->offerId($orderId, self::A);
+        Offers::accept($a, self::A, 'Зроблю', 500, $this->inDays(2));
+        Messages::add($a, self::A, Messages::ROLE_DESIGNER, 'Є питання щодо кольорів');
+        $this->assertSame('offer', Offers::mode2State($orderId, self::CLIENT)['state']);
+        $this->assertTrue(Offers::access($a, self::A)['write']);
+        Notify::$sent = [];
+
+        // того самого дизайнера «запросити іншим» не можна: його ціна вже є — нічого не змінюється
+        $this->assertError('Цей дизайнер уже назвав ціну — оберіть його пропозицію', fn() => Offers::invite($orderId, self::CLIENT, self::A));
+        $this->assertSame(OfferStatus::SENT, (int)$this->offerRow($a)['status']);
+        $this->assertSame(OrderStatus::COLLECTING, (int)$this->orderRow($orderId)['status']);
+        // чужий клієнт — ні
+        $this->assertError('Замовлення не знайдено', fn() => Offers::invite($orderId, self::B, self::A));
+        $this->assertSame([], Notify::$sent);
+
+        Offers::invite($orderId, self::CLIENT, self::B);
+
+        $row = $this->offerRow($a);
+        $this->assertSame(OfferStatus::OTHER_CHOSEN, (int)$row['status']);
+        $this->assertSame(500, (int)$row['price_designer'], 'знімок ціни A лишається — він бачить, що пропонував');
+        $b = $this->offerId($orderId, self::B);
+        $this->assertSame(OfferStatus::INVITED, (int)$this->offerRow($b)['status']);
+        $order = $this->orderRow($orderId);
+        $this->assertSame(OrderStatus::WAITING_DESIGNER, (int)$order['status']);
+        $this->assertSame(2, (int)$order['mode']);
+        $this->assertNull($order['chosen_offer_id']);
+        // сповіщення — лише новому дизайнеру
+        $this->assertSame([self::B], array_column(Notify::$sent, 'customer_id'));
+        $state = Offers::mode2State($orderId, self::CLIENT);
+        $this->assertSame('waiting', $state['state']);
+        $this->assertSame($b, $state['offer']['id']);
+
+        // A: писати не може, листування — лише читання; у стрічці і «Мої пропозиції» — «обрано іншого»
+        $access = Offers::access($a, self::A);
+        $this->assertFalse($access['write']);
+        $this->assertSame(OfferStatus::OTHER_CHOSEN, $access['offer']['status']);
+        $this->assertFalse(Offers::access($a, self::CLIENT)['write']);
+        $feed = array_column(Offers::feed(self::A, 1)['items'], null, 'order_id');
+        $this->assertArrayHasKey($orderId, $feed);
+        $this->assertTrue($feed[$orderId]['chosen_other']);
+        $this->assertSame([OfferStatus::OTHER_CHOSEN], array_column(array_filter(Offers::mine(self::A)['offers'],
+            static fn(array $o): bool => $o['order_id'] === $orderId), 'status'));
+        // A більше не змінює і не відкликає
+        $this->assertError('Пропозицію вже не можна відкликати', fn() => Offers::withdraw($a, self::A));
+        $this->assertError('Пропозицію вже не можна змінити', fn() => Offers::update($a, self::A, 'Інша', 400, $this->inDays(2)));
+
+        // подвійний клік «Запросити дизайнера» — нічого не змінює і не шле
+        Notify::$sent = [];
+        $before = [$this->orderRow($orderId), $this->offerRow($a), $this->offerRow($b)];
+        Offers::invite($orderId, self::CLIENT, self::B);
+        $this->assertSame($before, [$this->orderRow($orderId), $this->offerRow($a), $this->offerRow($b)]);
+        $this->assertSame([], Notify::$sent);
+
+        // поки чекаємо B — як і раніше, ні іншого, ні збору
+        $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::invite($orderId, self::CLIENT, self::A));
+        $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::collect($orderId, self::CLIENT));
+
+        // B відмовився — клієнт може знову запросити A: той самий рядок, чисті поля, сповіщення A
+        Offers::decline($b, self::B, '');
+        Notify::$sent = [];
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $row = $this->offerRow($a);
+        $this->assertSame(OfferStatus::INVITED, (int)$row['status']);
+        $this->assertNull($row['text']);
+        $this->assertSame(0, (int)$row['price_client']);
+        $this->assertSame([self::A], array_column(Notify::$sent, 'customer_id'));
+        $this->assertSame('waiting', Offers::mode2State($orderId, self::CLIENT)['state']);
+    }
+
+    /**
+     * Рішення власника 2026-11-19: після «Беру» з ціною клієнт може «Збирати пропозиції» — режим 1, бриф у стрічці як новий,
+     * пропозиція дизайнера лишається надісланою і її можна обрати
+     */
+    public function test_offer_collect_keeps_sent_and_republishes(): void
+    {
+        $orderId = $this->draft();
+        Offers::invite($orderId, self::CLIENT, self::A);
+        $a = $this->offerId($orderId, self::A);
+        Offers::accept($a, self::A, 'Зроблю', 500, $this->inDays(2));
+        $p = (int)$this->offerRow($a)['price_client'];
+        Sql::exec("UPDATE design_orders SET published_at = NOW() - INTERVAL 2 DAY, notified_no_offers_at = NOW() - INTERVAL 1 DAY WHERE id = ?", [$orderId]);
+        $this->assertNotContains($orderId, array_column(Offers::feed(self::B, 1)['items'], 'order_id'));
+        Notify::$sent = [];
+
+        $this->assertError('Замовлення не знайдено', fn() => Offers::collect($orderId, self::A));
+        Offers::collect($orderId, self::CLIENT);
+
+        $order = $this->orderRow($orderId);
+        $this->assertSame(OrderStatus::COLLECTING, (int)$order['status']);
+        $this->assertSame(1, (int)$order['mode']);
+        $this->assertLessThan(5, abs(strtotime($order['published_at']) - time()));
+        $this->assertNull($order['notified_no_offers_at']);
+        $this->assertSame(OfferStatus::SENT, (int)$this->offerRow($a)['status']);
+        $this->assertNull(Offers::mode2State($orderId, self::CLIENT));
+        $this->assertSame([$a], array_column(Offers::forOrder($orderId, self::CLIENT), 'id'));
+        $this->assertSame([], Notify::$sent);
+
+        // подвійний клік — нічого не змінює
+        $before = [$this->orderRow($orderId), $this->offerRow($a)];
+        Offers::collect($orderId, self::CLIENT);
+        $this->assertSame($before, [$this->orderRow($orderId), $this->offerRow($a)]);
+
+        // бриф у стрічці як новий для інших; A — зі своєю пропозицією, листування відкрите
+        $feed = array_column(Offers::feed(self::B, 1)['items'], null, 'order_id');
+        $this->assertArrayHasKey($orderId, $feed);
+        $this->assertTrue($feed[$orderId]['is_new']);
+        $this->assertSame(1, $feed[$orderId]['offers']);
+        $mine = array_column(Offers::feed(self::A, 1)['items'], null, 'order_id')[$orderId]['mine'];
+        $this->assertSame(OfferStatus::SENT, $mine['status']);
+        $this->assertTrue(Offers::access($a, self::A)['write']);
+        // у режимі 1 запросити вже не можна; нова пропозиція B — поруч з A
+        $this->assertError('Замовлення зараз не можна змінити', fn() => Offers::invite($orderId, self::CLIENT, self::B));
+        $b = Offers::propose($orderId, self::B, 'І я можу', 700, $this->inDays(3));
+        $this->assertSame([$a, $b], array_column(Offers::forOrder($orderId, self::CLIENT), 'id'));
+
+        // клієнт обирає збережену пропозицію A — як у режимі 1: B → «обрано іншого»
+        Notify::$sent = [];
+        Offers::choose($orderId, self::CLIENT, $a, $p);
+        $order = $this->orderRow($orderId);
+        $this->assertSame(OrderStatus::IN_WORK, (int)$order['status']);
+        $this->assertSame($a, (int)$order['chosen_offer_id']);
+        $this->assertSame(OfferStatus::CHOSEN, (int)$this->offerRow($a)['status']);
+        $this->assertSame(OfferStatus::OTHER_CHOSEN, (int)$this->offerRow($b)['status']);
+        $this->assertSame([self::A], array_column(Notify::$sent, 'customer_id'));
     }
 
     public function test_collect_republishes(): void

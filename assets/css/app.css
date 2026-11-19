@@ -538,6 +538,9 @@ main{flex:1 0 auto}
 .next-card.accent{border:2px solid var(--orange)}
 .next-card .ic{font-size:1.6rem;color:var(--text)}
 .next-card h2{font-family:var(--font-ui);font-weight:700;font-size:1.35rem;margin:var(--s-3) 0 var(--s-2)}
+.next-card.secondary{padding:var(--s-4)}
+.next-card.secondary .ic{font-size:1.3rem}
+.next-card.secondary h2{font-size:1.1rem}
 .choose-modal .modal-content{border:0;border-radius:var(--r-l);padding:var(--s-5);gap:var(--s-4)}
 .choose-modal .modal-dialog{max-width:560px}
 .cm-grip{display:none}

@@ -25,10 +25,13 @@ final class ClientOffersHttpTest extends TestCase
     private const DESIGNER_NAME = 'Тест Дизайнер <b>клієнта</b>';
     private const STRANGER = 999999751;   // чужий клієнт (рядка в customers немає)
     private const GHOST = 999999752;      // дизайнер без рядка design_designers — недоступний
+    private const OTHER = 999999753;      // схвалений дизайнер без рядка в customers (тест заводить і прибирає сам)
+    private const OTHER_NAME = 'Олена <i>Дизайн</i>';
 
     /** @var list<int> */
     private array $orders = [];
     private bool $ownsDesigner = false;
+    private bool $ownsOther = false;
 
     protected function tearDown(): void
     {
@@ -43,6 +46,19 @@ final class ClientOffersHttpTest extends TestCase
             Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::designerId()]);
             $this->ownsDesigner = false;
         }
+        if ($this->ownsOther) {
+            Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::OTHER]);
+            $this->ownsOther = false;
+        }
+    }
+
+    /** Другий схвалений дизайнер (фіктивний id; увійти ним не можна) */
+    private function other(): int
+    {
+        Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::OTHER]);
+        Sql::insert('design_designers', ['customer_id' => self::OTHER, 'status' => DesignerStatus::APPROVED, 'name' => self::OTHER_NAME]);
+        $this->ownsOther = true;
+        return self::OTHER;
     }
 
     private static function clientId(): int
@@ -363,6 +379,103 @@ final class ClientOffersHttpTest extends TestCase
         $this->assertStringContainsString('В роботі', $body);
         $this->assertStringContainsString('Обраний дизайнер', $body);
         $this->assertStringContainsString('data-write="1"', $body);
+    }
+
+    /**
+     * Рішення власника 2026-11-19: дизайнер сказав «Беру» з ціною — у клієнта, крім «Обрати за N грн», «Запросити іншого
+     * дизайнера» (пропозицію попереднього буде закрито) і «Збирати пропозиції». Тут — «Запросити іншого»: попередній
+     * (фіктивний, без сповіщення) → «обрано іншого», запрошення — дизайнеру 25
+     */
+    public function test_mode2_offer_invite_other(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        $other = $this->other();
+        $orderId = $this->order($client, OrderStatus::COLLECTING, 2);
+        $offerId = $this->offer($orderId, $other, OfferStatus::SENT, 700);
+        $csrf = self::csrf($client);
+
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString('Дизайнер назвав ціну і термін — підтвердіть вибір', $body);
+        $this->assertStringContainsString('data-bs-target="#choose-' . $offerId . '"', $body);
+        $this->assertStringContainsString('Запросити іншого дизайнера', $body);
+        $this->assertStringContainsString("href=\"/orders/$orderId/pick/\"", $body);
+        $this->assertStringContainsString('Пропозицію Олена &lt;i&gt;Дизайн&lt;/i&gt; буде закрито', $body);
+        $this->assertStringContainsString('value="collect"', $body);
+        $this->assertStringContainsString('Збирати пропозиції', $body);
+        $this->assertStringNotContainsString('<i>Дизайн</i>', $body);
+
+        // Вибір іншого: без того, хто вже назвав ціну; попередження і підтвердження перед запрошенням
+        $body = $this->page("/orders/$orderId/pick/", $client);
+        $this->assertStringContainsString('name="designer_id" value="' . $designer . '"', $body);
+        $this->assertStringNotContainsString('name="designer_id" value="' . $other . '"', $body);
+        $this->assertStringContainsString('Пропозицію Олена &lt;i&gt;Дизайн&lt;/i&gt; буде закрито', $body);
+        $this->assertMatchesRegularExpression('/<form id="pick-form"[^>]* data-confirm="Пропозицію Олена &lt;i&gt;Дизайн&lt;\/i&gt; буде закрито[^"]*"/', $body);
+        $this->assertStringContainsString('/assets/js/offer-form.js', self::fetch("/orders/$orderId/pick/", $client)[2]);
+
+        [$code, $loc] = self::act($orderId, $client, ['action' => 'invite', 'designer_id' => $designer, 'csrf' => $csrf]);
+        $this->assertSame(302, $code);
+        $this->assertSame("/orders/$orderId/?done=invited", $loc);
+        $row = self::orderRow($orderId);
+        $this->assertSame([OrderStatus::WAITING_DESIGNER, 2], [(int)$row['status'], (int)$row['mode']]);
+        $this->assertSame(OfferStatus::OTHER_CHOSEN, (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$offerId]));
+        $this->assertSame(OfferStatus::INVITED,
+            (int)Sql::value('SELECT status FROM design_offers WHERE order_id = ? AND designer_id = ?', [$orderId, $designer]));
+
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString('Чекаємо відповіді дизайнера', $body);
+        $this->assertStringContainsString('Тест Дизайнер &lt;b&gt;клієнта&lt;/b&gt;', $body);
+        $this->assertStringNotContainsString('Запросити іншого дизайнера', $body);
+    }
+
+    /**
+     * Рішення власника 2026-11-19, «Збирати пропозиції» після ціни: пропозиція 25 лишається і обирається вже в режимі 1.
+     * І дизайнер, чию пропозицію закрило «Запросити іншого», бачить «обрано іншого» без можливості писати
+     */
+    public function test_mode2_offer_collect_then_choose_and_closed_designer_view(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        $other = $this->other();
+        $orderId = $this->order($client, OrderStatus::COLLECTING, 2);
+        $offerId = $this->offer($orderId, $designer, OfferStatus::SENT, 800);
+        $csrf = self::csrf($client);
+
+        $this->assertStringContainsString('Пропозицію Тест Дизайнер &lt;b&gt;клієнта&lt;/b&gt; буде закрито', $this->page("/orders/$orderId/", $client));
+
+        foreach ([1, 2] as $_) {
+            [$code, $loc] = self::act($orderId, $client, ['action' => 'collect', 'csrf' => $csrf]);
+            $this->assertSame(302, $code);
+            $this->assertSame("/orders/$orderId/?done=collect", $loc);
+        }
+        $row = self::orderRow($orderId);
+        $this->assertSame([OrderStatus::COLLECTING, 1], [(int)$row['status'], (int)$row['mode']]);
+        $this->assertSame(OfferStatus::SENT, (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$offerId]));
+
+        $body = $this->page("/orders/$orderId/", $client);
+        $this->assertStringContainsString('data-bs-target="#choose-' . $offerId . '"', $body);
+        $this->assertStringNotContainsString('Запросити іншого дизайнера', $body);
+        $this->assertStringNotContainsString('value="collect"', $body);
+        // вибір іншого в режимі 1 закритий
+        $this->assertSame(302, self::fetch("/orders/$orderId/pick/", $client)[0]);
+
+        [$code, $loc] = self::act($orderId, $client, ['action' => 'choose', 'offer_id' => $offerId, 'expected_price' => 960, 'csrf' => $csrf]);
+        $this->assertSame(302, $code);
+        $this->assertSame("/orders/$orderId/?done=chosen", $loc);
+        $row = self::orderRow($orderId);
+        $this->assertSame([OrderStatus::IN_WORK, 1, $offerId], [(int)$row['status'], (int)$row['mode'], (int)$row['chosen_offer_id']]);
+
+        // 25 сказав «Беру», а клієнт запросив іншого (бібліотекою — сповіщень немає): 25 бачить «обрано іншого», писати не може
+        $closed = $this->order($client, OrderStatus::COLLECTING, 2);
+        $mine = $this->offer($closed, $designer, OfferStatus::SENT, 800);
+        Messages::add($mine, $designer, Messages::ROLE_DESIGNER, 'Уточню формат');
+        Offers::invite($closed, $client, $other);
+        $this->assertSame(OfferStatus::OTHER_CHOSEN, (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$mine]));
+        $body = $this->page("/feed/$closed/", $designer);
+        $this->assertStringContainsString('Клієнт обрав іншого дизайнера', $body);
+        $this->assertStringContainsString('data-chat="' . $mine . '"', $body);
+        $this->assertStringContainsString('data-write="0"', $body);
+        $this->assertStringContainsString('Вже обрано іншого дизайнера', $this->page('/feed/', $designer));
     }
 
     /** Вибір пропозиції з іншого свого замовлення — відмова, нічого не змінилося */

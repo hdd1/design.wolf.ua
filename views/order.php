@@ -4,7 +4,7 @@
  * (на телефоні — окремим екраном, коли відкрите посиланням ?chat=)
  * @var array $order Orders::get @var ?string $state Offers::mode2State()['state'] @var array{mine:bool,icon:string,title:string,sub:string} $alert
  * @var ?string $error @var bool $list чи показувати пропозиції @var list<array> $cards Offers::forOrder без відмов
- * @var ?array $chosen обрана пропозиція @var \Closure $choosable @var ?array $waiting @var ?array $refused картки режиму 2
+ * @var ?array $chosen обрана пропозиція @var \Closure $choosable @var ?array $waiting @var ?array $refused @var ?array $offered картки режиму 2
  * @var ?array $reason повідомлення дизайнера з причиною відмови @var int $sel відкрите листування
  * @var ?array $chat параметри partials/chat @var bool $chatOpen @var string $csrf
  */
@@ -67,28 +67,13 @@ $filled = count(array_filter($order['answers'], static fn($p) => $p['a'] !== '')
         <?php else: ?>
           <p class="text-2 mt-3 mb-0">Дизайнер не вказав причину. Ваш бриф збережено — його можна віддати іншому дизайнеру або всім одразу.</p>
         <?php endif ?>
-        <div class="row g-4 mt-0">
-          <div class="col-md-6">
-            <div class="card-d next-card">
-              <i class="fal fa-users ic"></i>
-              <h2>Обрати іншого дизайнера</h2>
-              <p class="text-2">Ваш бриф збережено — оберіть зі списку, і запрошення піде новому дизайнеру.</p>
-              <a class="btn btn-outline-blue btn-lg w-100 mt-auto" href="/orders/<?= $id ?>/pick/">Обрати іншого</a>
-            </div>
-          </div>
-          <div class="col-md-6">
-            <form class="card-d next-card accent" method="post" action="/orders/<?= $id ?>" data-lock>
-              <input type="hidden" name="csrf" value="<?= View::e($csrf) ?>">
-              <i class="fal fa-inbox ic"></i>
-              <h2>Зібрати пропозиції</h2>
-              <p class="text-2">Бриф побачать усі дизайнери Майстерні. Пропозиції — зазвичай протягом дня.</p>
-              <button class="btn btn-primary btn-lg w-100 mt-auto" type="submit" name="action" value="collect">Зібрати пропозиції</button>
-            </form>
-          </div>
-        </div>
+        <?php View::render('partials/order-next', ['orderId' => $id, 'csrf' => $csrf, 'closing' => null]) ?>
 
       <?php elseif ($cards): ?>
         <?php View::render('order-offers', ['orderId' => $id, 'cards' => $cards, 'chosen' => $chosen, 'choosable' => $choosable, 'sel' => $sel, 'csrf' => $csrf]) ?>
+        <?php if ($offered !== null): ?>
+          <?php View::render('partials/order-next', ['orderId' => $id, 'csrf' => $csrf, 'closing' => $offered['designer_name']]) ?>
+        <?php endif ?>
 
       <?php elseif ($order['status'] === OrderStatus::COLLECTING): ?>
         <div class="card-d empty-state mt-3">

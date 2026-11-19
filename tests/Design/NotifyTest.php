@@ -1,10 +1,13 @@
 <?php
 
+use Design\Config;
 use Design\Notify;
 use PHPUnit\Framework\TestCase;
 
 final class NotifyTest extends TestCase
 {
+    private const NO_MARKER = '/немає-маркера-dev-сервера';
+
     private string $log;
     private string|false $oldLog;
     private string|false $oldEnv;
@@ -74,5 +77,51 @@ final class NotifyTest extends TestCase
         Notify::send(['customer_id' => 55, 'msg' => 'x', 'msgSMS' => 'x']);
         $this->assertFalse($called);
         $this->assertCount(1, Notify::$sent);
+    }
+
+    /** CLI на dev: на час виклику HTTP_HOST = dev.design.wolf.ua (CalcApiGlobal іде в dev api2), потім знову нема */
+    public function test_cli_on_dev_fakes_host_only_during_call(): void
+    {
+        $hadHost = array_key_exists('HTTP_HOST', $_SERVER);
+        $oldHost = $_SERVER['HTTP_HOST'] ?? null;
+        unset($_SERVER['HTTP_HOST']);
+        Config::$devMarker = __DIR__;
+        try {
+            $seen = 'не викликано';
+            Notify::$transport = function (array $p) use (&$seen) { $seen = $_SERVER['HTTP_HOST'] ?? null; return ['error' => false]; };
+            Notify::send(['customer_id' => 55, 'msg' => 'x', 'msgSMS' => 'x']);
+            $this->assertSame('dev.design.wolf.ua', $seen);
+            $this->assertArrayNotHasKey('HTTP_HOST', $_SERVER);
+
+            // збій у transport теж не лишає підміненого хоста
+            Notify::$transport = function (array $p) { throw new \RuntimeException('boom'); };
+            Notify::send(['customer_id' => 55, 'msg' => 'x', 'msgSMS' => 'x']);
+            $this->assertArrayNotHasKey('HTTP_HOST', $_SERVER);
+
+            // на проді (маркера немає) хост не підставляється
+            Config::$devMarker = self::NO_MARKER;
+            Notify::$transport = function (array $p) use (&$seen) { $seen = $_SERVER['HTTP_HOST'] ?? null; return ['error' => false]; };
+            Notify::send(['customer_id' => 55, 'msg' => 'x', 'msgSMS' => 'x']);
+            $this->assertNull($seen);
+        } finally {
+            Config::$devMarker = self::NO_MARKER;
+            if ($hadHost) $_SERVER['HTTP_HOST'] = $oldHost; else unset($_SERVER['HTTP_HOST']);
+        }
+    }
+
+    public function test_web_host_untouched(): void
+    {
+        $hadHost = array_key_exists('HTTP_HOST', $_SERVER);
+        $oldHost = $_SERVER['HTTP_HOST'] ?? null;
+        $_SERVER['HTTP_HOST'] = 'design.wolf.ua';
+        try {
+            $seen = null;
+            Notify::$transport = function (array $p) use (&$seen) { $seen = $_SERVER['HTTP_HOST']; return ['error' => false]; };
+            Notify::send(['customer_id' => 55, 'msg' => 'x', 'msgSMS' => 'x']);
+            $this->assertSame('design.wolf.ua', $seen);
+            $this->assertSame('design.wolf.ua', $_SERVER['HTTP_HOST']);
+        } finally {
+            if ($hadHost) $_SERVER['HTTP_HOST'] = $oldHost; else unset($_SERVER['HTTP_HOST']);
+        }
     }
 }

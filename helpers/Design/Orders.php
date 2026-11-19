@@ -52,7 +52,24 @@ final class Orders
             'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at
              FROM design_orders o JOIN design_products p ON p.id = o.product_id
              WHERE o.id = ? AND o.customer_id = ?', [$orderId, $customerId]);
-        if ($r === null) return null;
+        return $r === null ? null : self::withAnswers($r);
+    }
+
+    /**
+     * Замовлення без перевірки власника — для сторінки дизайнера (хто що бачить, вирішує сторінка)
+     * @return array{id:int, customer_id:int, status:int, mode:int, product_id:int, product_name:string, title:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string}|null
+     */
+    public static function find(int $orderId): ?array
+    {
+        $r = Sql::one(
+            'SELECT o.id, o.customer_id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at
+             FROM design_orders o JOIN design_products p ON p.id = o.product_id
+             WHERE o.id = ?', [$orderId]);
+        return $r === null ? null : ['customer_id' => (int)$r['customer_id']] + self::withAnswers($r);
+    }
+
+    private static function withAnswers(array $r): array
+    {
         $row = self::row($r);
         // Колонка JSON у MySQL сама переставляє ключі — повертаємо пари у вигляді {q, a}
         $answers = json_decode((string)$r['answers'], true);
@@ -63,14 +80,28 @@ final class Orders
         return $row;
     }
 
-    /** @return list<array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, created:string, published_at:?string}> нові зверху */
+    /**
+     * Замовлення клієнта для «Мої замовлення», нові зверху. offers — пропозиції, які можна обрати (надіслані схваленими
+     * дизайнерами) — для «чий хід»; designer / price — обраний дизайнер і ціна для клієнта, поки не обрано — '' і 0
+     * @return list<array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, created:string, published_at:?string, offers:int, designer:string, price:int}>
+     */
     public static function forCustomer(int $customerId): array
     {
         $rows = Sql::all(
-            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.created, o.published_at
-             FROM design_orders o JOIN design_products p ON p.id = o.product_id
-             WHERE o.customer_id = ? ORDER BY o.id DESC', [$customerId]);
-        return array_map([self::class, 'row'], $rows);
+            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.created, o.published_at,
+                    (SELECT COUNT(*) FROM design_offers f JOIN design_designers d ON d.customer_id = f.designer_id
+                     WHERE f.order_id = o.id AND f.status = ? AND d.status = ?) AS offers,
+                    cd.name AS designer, c.price_client AS price
+             FROM design_orders o
+             JOIN design_products p ON p.id = o.product_id
+             LEFT JOIN design_offers c ON c.id = o.chosen_offer_id
+             LEFT JOIN design_designers cd ON cd.customer_id = c.designer_id
+             WHERE o.customer_id = ? ORDER BY o.id DESC', [OfferStatus::SENT, DesignerStatus::APPROVED, $customerId]);
+        return array_map(static fn(array $r): array => self::row($r) + [
+            'offers' => (int)$r['offers'],
+            'designer' => (string)$r['designer'],
+            'price' => (int)$r['price'],
+        ], $rows);
     }
 
     private static function row(array $r): array

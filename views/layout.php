@@ -1,7 +1,7 @@
 <?php
 /**
  * @var string $title @var string $body
- * @var string $active  'brief' | 'orders' | 'designers' | 'designer' | ''
+ * @var string $active  'brief' | 'orders' | 'designers' | 'designer' | 'feed' | 'my-offers' | ''
  * @var list<string> $scripts  додаткові скрипти сторінки (шляхи від кореня сайту)
  */
 use Design\Auth;
@@ -9,15 +9,21 @@ use Design\Config;
 use Design\Customers;
 use Design\Designers;
 use Design\DesignerStatus;
+use Design\Offers;
 use Design\View;
 
 $me = Auth::current();
 $h = $me > 0 ? Customers::header($me) : null;
 $active = $active ?? '';
-$nav = [['brief', '/brief/', 'Новий бриф'], ['orders', '/orders/', 'Мої замовлення'], ['designers', '/designers/', 'Дизайнери']];
-if ($h !== null) {
-    $nav[] = ['designer', '/designer/', Designers::status($me) === DesignerStatus::APPROVED ? 'Мій профіль' : 'Стати дизайнером'];
-}
+$approved = $h !== null && Designers::status($me) === DesignerStatus::APPROVED;
+// Схвалений дизайнер: меню дизайнера (кружечок — нові брифи в стрічці); «Мої замовлення» — його замовлення як клієнта
+$nav = $approved
+    ? [['feed', '/feed/', 'Стрічка брифів'], ['my-offers', '/my-offers/', 'Мої пропозиції'], ['orders', '/orders/', 'Мої замовлення'], ['designer', '/designer/', 'Мій профіль']]
+    : [['brief', '/brief/', 'Новий бриф'], ['orders', '/orders/', 'Мої замовлення'], ['designers', '/designers/', 'Дизайнери']];
+if ($h !== null && !$approved) $nav[] = ['designer', '/designer/', 'Стати дизайнером'];
+$feedNew = $approved ? Offers::feedNewCount($me) : 0;
+$badge = static fn(string $key): string => $key === 'feed' && $feedNew > 0
+    ? ' <span class="nav-badge" title="Нові брифи">' . ($feedNew > 99 ? '99+' : $feedNew) . '</span>' : '';
 ?><!doctype html>
 <html lang="uk">
 <head>
@@ -41,7 +47,7 @@ if ($h !== null) {
       <?php if ($h !== null): ?>
         <nav class="main-nav ms-3">
           <?php foreach ($nav as [$key, $href, $label]): ?>
-            <a href="<?= $href ?>" class="<?= $active === $key ? 'active' : '' ?>"><?= $label ?></a>
+            <a href="<?= $href ?>" class="<?= $active === $key ? 'active' : '' ?>"><?= $label ?><?= $badge($key) ?></a>
           <?php endforeach ?>
         </nav>
         <div class="ms-auto d-flex align-items-center gap-3">
@@ -58,7 +64,7 @@ if ($h !== null) {
     <?php if ($h !== null): ?>
       <nav class="mobile-nav">
         <?php foreach ($nav as [$key, $href, $label]): ?>
-          <a href="<?= $href ?>" class="<?= $active === $key ? 'active' : '' ?>"><?= $label ?></a>
+          <a href="<?= $href ?>" class="<?= $active === $key ? 'active' : '' ?>"><?= $label ?><?= $badge($key) ?></a>
         <?php endforeach ?>
       </nav>
     <?php endif ?>

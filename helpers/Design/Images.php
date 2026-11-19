@@ -18,6 +18,8 @@ final class Images
     private const VIEW_SIDE = 2000;
     private const AVATAR_SIDE = 320;
     private const WEBP_QUALITY = 82;
+    /** Права нових файлів: їх читає nginx i.fastcdn (WebP) */
+    private const FILE_MODE = 0644;
 
     /** Тип getimagesize → розширення оригіналу і формат, який має побачити Imagick */
     private const TYPES = [
@@ -43,6 +45,7 @@ final class Images
             $file = "$base.{$info['ext']}";
             $written[] = "$dir/$file";
             if (!@copy($src, "$dir/$file")) throw new \RuntimeException("Не вдалося записати $dir/$file");
+            chmod("$dir/$file", self::FILE_MODE);
 
             $view = clone $im;
             self::fitInto($view, self::VIEW_SIDE);
@@ -247,13 +250,23 @@ final class Images
         } finally {
             fclose($fh);
         }
+        // Файл створено за umask процесу; nginx на prod читає як «other»
+        chmod($path, self::FILE_MODE);
     }
 
-    private static function ensureDir(string $dir): void
+    /**
+     * Створює папку (і відсутні батьківські) з правами 0755: на prod nginx читає як «other», а mkdir віддає права
+     * за umask процесу. Наявні папки не чіпаємо.
+     */
+    public static function ensureDir(string $dir): void
     {
-        if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
+        $missing = [];
+        for ($d = $dir; !is_dir($d); $d = dirname($d)) $missing[] = $d;
+        if ($missing === []) return;
+        if (!@mkdir($dir, 0755, true) && !is_dir($dir)) {
             throw new \RuntimeException("Не вдалося створити папку $dir");
         }
+        foreach ($missing as $d) @chmod($d, 0755);
     }
 
     /** @param string[] $paths */

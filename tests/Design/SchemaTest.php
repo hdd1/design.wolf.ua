@@ -30,4 +30,20 @@ final class SchemaTest extends TestCase
         $this->assertSame('1', Sql::value("SELECT value FROM design_settings WHERE `key` = 'applications_notify_user_id'"));
         $this->assertSame('5.00', Sql::value("SELECT column_default FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'design_designers' AND column_name = 'rating'"));
     }
+
+    public function test_stage3_tables(): void
+    {
+        foreach (['design_offers', 'design_messages'] as $t) {
+            $this->assertStringStartsWith('utf8mb4', (string)Sql::value(
+                'SELECT table_collation FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?', [$t]), $t);
+        }
+        $this->assertSame('1', (string)Sql::value("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'design_designers' AND column_name = 'feed_seen_at'"));
+        $this->assertSame('20', Sql::value("SELECT value FROM design_settings WHERE `key` = 'markup_percent'"));
+        $this->assertSame('10', Sql::value("SELECT value FROM design_settings WHERE `key` = 'price_round'"));
+        // UNIQUE (order_id, designer_id) — одна пара замовлення+дизайнер = один рядок
+        $this->assertSame('2', (string)Sql::value("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'design_offers' AND index_name = 'uq_order_designer' AND non_unique = 0"));
+        foreach (['client_seen_at', 'designer_seen_at', 'client_notified_at', 'designer_notified_at'] as $c) {
+            $this->assertSame('1', (string)Sql::value("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'design_offers' AND column_name = ?", [$c]), $c);
+        }
+    }
 }

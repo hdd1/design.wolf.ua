@@ -1,5 +1,5 @@
 <?php
-/** @var int $orderId @var string $csrf */
+/** @var int $orderId @var string $csrf @var bool $canPick чи є кого обрати одразу */
 use Design\View;
 ?>
 <div class="container page"><div class="narrow">
@@ -18,12 +18,22 @@ use Design\View;
         </div>
       </div>
       <div class="col-md-6">
-        <div class="mode-card disabled" aria-disabled="true" role="radio">
-          <span class="radio"></span><span class="ic"><i class="fal fa-user-check"></i></span>
-          <h3>Одразу обрати дизайнера <span class="soon-chip">Незабаром</span></h3>
-          <p class="text-2">Знаєте, з ким хочете працювати? Оберіть зі списку — дизайнер отримає запрошення і назве ціну.</p>
-          <div class="text-3 small fw-semibold">Зʼявиться, щойно в Майстерні будуть дизайнери</div>
-        </div>
+        <?php if ($canPick): ?>
+          <a class="mode-card mode-link" href="/orders/<?= $orderId ?>/pick/">
+            <span class="radio"></span><span class="ic"><i class="fal fa-user-check"></i></span>
+            <h3>Одразу обрати дизайнера</h3>
+            <p class="text-2">Знаєте, з ким хочете працювати? Оберіть зі списку — дизайнер отримає запрошення і назве ціну.</p>
+            <div class="meta">Дизайнер відповідає зазвичай за кілька годин</div>
+            <span class="go">Обрати зі списку <i class="fal fa-arrow-right"></i></span>
+          </a>
+        <?php else: ?>
+          <div class="mode-card disabled" aria-disabled="true" role="radio">
+            <span class="radio"></span><span class="ic"><i class="fal fa-user-check"></i></span>
+            <h3>Одразу обрати дизайнера</h3>
+            <p class="text-2">Знаєте, з ким хочете працювати? Оберіть зі списку — дизайнер отримає запрошення і назве ціну.</p>
+            <div class="text-3 small fw-semibold">Зʼявиться, щойно в Майстерні будуть дизайнери</div>
+          </div>
+        <?php endif ?>
       </div>
     </div>
     <div class="actions">

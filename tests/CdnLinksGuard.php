@@ -1,0 +1,42 @@
+<?php
+
+/**
+ * Прибирання за тестами, які в процесі PHPUnit викликають Media::url → ImageGlobal::encode.
+ * encode створює в спільному дереві CDN /home/connect/cloud-links/ci шарди xx/yy/zz і симлінк від користувача процесу
+ * (тести йдуть від root — каталоги root:root 755, у них php-fpm уже нічого не створить).
+ * snapshot() — до виклику, cleanup() — після: прибирає лише нові симлінки й нові порожні каталоги цього користувача,
+ * найглибші спершу. Наявні до тесту записи (і чужі) не чіпає.
+ */
+final class CdnLinksGuard
+{
+    public const ROOT = '/home/connect/cloud-links/ci';
+
+    /** @return array{dirs: array<string, true>, links: array<string, true>} */
+    public static function snapshot(): array
+    {
+        return ['dirs' => array_fill_keys(self::find('d'), true), 'links' => array_fill_keys(self::find('l'), true)];
+    }
+
+    /** @param array{dirs: array<string, true>, links: array<string, true>} $before */
+    public static function cleanup(array $before): void
+    {
+        $uid = posix_geteuid();
+        clearstatcache();
+        foreach (self::find('l') as $l) {
+            if (!isset($before['links'][$l]) && is_link($l) && (lstat($l)['uid'] ?? -1) === $uid) unlink($l);
+        }
+        $dirs = array_filter(self::find('d'), fn($d) => !isset($before['dirs'][$d]) && (stat($d)['uid'] ?? -1) === $uid);
+        usort($dirs, fn($a, $b) => substr_count($b, '/') <=> substr_count($a, '/'));
+        foreach ($dirs as $d) {
+            if (is_dir($d) && count(scandir($d)) === 2) rmdir($d);
+        }
+    }
+
+    /** @return list<string> каталоги (d) або симлінки (l) у дереві шардів */
+    private static function find(string $type): array
+    {
+        if (!is_dir(self::ROOT)) return [];
+        exec('find ' . escapeshellarg(self::ROOT) . ' -mindepth 1 -maxdepth 4 -type ' . $type, $out);
+        return $out;
+    }
+}

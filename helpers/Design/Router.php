@@ -16,6 +16,7 @@ final class Router
         ['GET', '#^/orders/$#', 'orders'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/$#', 'order'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/mode/$#', 'order-mode'],
+        ['GET', '#^/orders/(?<id>' . self::ID . ')/pick/$#', 'order-pick'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')$#', 'order-update'],
         ['GET', '#^/designer/$#', 'designer'],
         ['POST', '#^/designer$#', 'designer-save'],
@@ -25,8 +26,12 @@ final class Router
         ['POST', '#^/designer/photo$#', 'designer-photo'],
         ['GET', '#^/designers/$#', 'designers'],
         ['GET', '#^/designers/(?<id>' . self::ID . ')/$#', 'designer-public'],
-        // Без розширення: nginx-локація статики (\.jpg|png…$) такий шлях не перехоплює. Оригінали сюди не потрапляють
-        ['GET', '#^/media/(?<designer>' . self::ID . ')/(?<name>\d{1,9}-(?:card|view)|avatar-[0-9a-f]{8})$#', 'media'],
+        ['GET', '#^/offers/(?<id>' . self::ID . ')/messages$#', 'offer-messages'],
+        ['POST', '#^/offers/(?<id>' . self::ID . ')/messages$#', 'offer-message-add'],
+        ['GET', '#^/feed/$#', 'feed'],
+        ['GET', '#^/feed/(?<id>' . self::ID . ')/$#', 'feed-order'],
+        ['POST', '#^/feed/(?<id>' . self::ID . ')$#', 'feed-offer'],
+        ['GET', '#^/my-offers/$#', 'my-offers'],
     ];
 
     /** @return array{page:string,params:array<string,string>}|null */

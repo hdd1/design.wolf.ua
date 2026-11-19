@@ -14,11 +14,14 @@ final class Messages
     /** Через скільки секунд після відкриття листування співрозмовник вважається «в чаті» і його не сповіщають */
     private const IN_CHAT_SECONDS = 45;
 
+    private const COLS = 'id, author_role, author_id, text, data, preview_id, reply_to_id, created';
+
     /**
      * Додає повідомлення. Права (чи може автор писати в цю пропозицію) не перевіряє.
-     * data — машинна позначка (як у системних), напр. ['event' => 'decline'] для причини відмови від запрошення
+     * data — машинна позначка (як у системних), напр. ['event' => 'decline'] для причини відмови від запрошення;
+     * replyTo — відповідь (коментар) на повідомлення чи прев'ю того самого листування
      */
-    public static function add(int $offerId, int $authorId, int $role, string $text, array $data = []): int
+    public static function add(int $offerId, int $authorId, int $role, string $text, array $data = [], ?int $replyTo = null): int
     {
         $text = trim($text);
         if ($text === '') {
@@ -27,12 +30,32 @@ final class Messages
         if (mb_strlen($text) > self::TEXT_MAX) {
             throw new DesignerException('Повідомлення — не більше ' . self::TEXT_MAX . ' символів');
         }
+        if ($replyTo !== null && Sql::value('SELECT id FROM design_messages WHERE id = ? AND offer_id = ?', [$replyTo, $offerId]) === null) {
+            throw new DesignerException('Повідомлення, на яке ви відповідаєте, не знайдено');
+        }
         return Sql::insert('design_messages', [
             'offer_id' => $offerId,
             'author_id' => $authorId,
             'author_role' => $role,
             'text' => $text,
+            'reply_to_id' => $replyTo,
             'data' => $data === [] ? null : json_encode($data, JSON_UNESCAPED_UNICODE),
+        ]);
+    }
+
+    /** Повідомлення дизайнера, яким надіслано прев'ю: text — підпис (може бути порожнім, до TEXT_MAX) */
+    public static function preview(int $offerId, int $designerId, int $previewId, string $caption): int
+    {
+        $caption = trim($caption);
+        if (mb_strlen($caption) > self::TEXT_MAX) {
+            throw new DesignerException('Підпис — не більше ' . self::TEXT_MAX . ' символів');
+        }
+        return Sql::insert('design_messages', [
+            'offer_id' => $offerId,
+            'author_id' => $designerId,
+            'author_role' => self::ROLE_DESIGNER,
+            'text' => $caption,
+            'preview_id' => $previewId,
         ]);
     }
 
@@ -50,23 +73,47 @@ final class Messages
 
     /**
      * Повідомлення після afterId за порядком; limit > 0 — не більше стількох (опитування листування)
-     * @return list<array{id:int, role:int, author_id:int, text:string, data:?array, created:string}>
+     * @return list<array{id:int, role:int, author_id:int, text:string, data:?array, preview_id:?int, reply_to_id:?int, created:string}>
      */
     public static function list(int $offerId, int $afterId = 0, int $limit = 0): array
     {
         $rows = Sql::all(
-            'SELECT id, author_role, author_id, text, data, created FROM design_messages WHERE offer_id = ? AND id > ? ORDER BY id'
+            'SELECT ' . self::COLS . ' FROM design_messages WHERE offer_id = ? AND id > ? ORDER BY id'
             . ($limit > 0 ? ' LIMIT ' . $limit : ''),
             [$offerId, $afterId]
         );
-        return array_map(static fn(array $r): array => [
+        return array_map([self::class, 'row'], $rows);
+    }
+
+    /**
+     * Повідомлення листування за id (цитати відповідей), у вигляді list; чужі й відсутні id пропускаються
+     * @param list<int> $ids
+     * @return array<int, array> ключ — id
+     */
+    public static function byIds(int $offerId, array $ids): array
+    {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        if ($ids === []) return [];
+        $rows = Sql::all(
+            'SELECT ' . self::COLS . ' FROM design_messages WHERE offer_id = ? AND id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') ORDER BY id',
+            array_merge([$offerId], $ids)
+        );
+        return array_column(array_map([self::class, 'row'], $rows), null, 'id');
+    }
+
+    /** Рядок design_messages у вигляді list() */
+    private static function row(array $r): array
+    {
+        return [
             'id' => (int)$r['id'],
             'role' => (int)$r['author_role'],
             'author_id' => (int)$r['author_id'],
             'text' => (string)$r['text'],
             'data' => $r['data'] === null ? null : json_decode((string)$r['data'], true),
+            'preview_id' => $r['preview_id'] === null ? null : (int)$r['preview_id'],
+            'reply_to_id' => $r['reply_to_id'] === null ? null : (int)$r['reply_to_id'],
             'created' => (string)$r['created'],
-        ], $rows);
+        ];
     }
 
     /** Кількість повідомлень без системних */

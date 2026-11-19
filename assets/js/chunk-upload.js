@@ -1,6 +1,7 @@
 // Майстерня дизайну: завантаження файлу частинами по 5 МБ (сервер — Design\ChunkUpload::receive через \UppyChunkGlobal)
 //
-// DesignUpload.send(file, {url, csrf, fields, onProgress, signal}) → Promise<JSON відповіді на останню частину>
+// DesignUpload.send(file, {url, csrf, fields, chunk, onProgress, signal}) → Promise<JSON відповіді на останню частину>
+//   chunk      — розмір частини, байти: data-chunk сторінки (ChunkUpload::partSize — ліміти PHP сервера); за замовчуванням 5 МБ
 //   fields     — додаткові поля форми (purpose, caption…), ідуть з кожною частиною
 //   onProgress — function(sentBytes, totalBytes)
 //   signal     — AbortSignal (AbortController) для скасування
@@ -81,16 +82,17 @@
     opts = opts || {};
     var signal = opts.signal;
     var fields = opts.fields || {};
-    var total = Math.max(1, Math.ceil(file.size / CHUNK));
+    var size = opts.chunk > 0 ? Math.min(CHUNK, Math.floor(opts.chunk)) : CHUNK;
+    var total = Math.max(1, Math.ceil(file.size / size));
     var fileId = randomId();
     var index = 0;
 
     function progress(sentInPart) {
-      if (opts.onProgress) opts.onProgress(Math.min(file.size, index * CHUNK + sentInPart), file.size);
+      if (opts.onProgress) opts.onProgress(Math.min(file.size, index * size + sentInPart), file.size);
     }
 
     function part(attempt) {
-      var blob = file.slice(index * CHUNK, (index + 1) * CHUNK);
+      var blob = file.slice(index * size, (index + 1) * size);
       var fd = new FormData();
       Object.keys(fields).forEach(function (k) { fd.append(k, fields[k]); });
       fd.append('csrf', opts.csrf);

@@ -10,6 +10,7 @@
  */
 use Design\BriefPage;
 use Design\Chat;
+use Design\ChunkUpload;
 use Design\Csrf;
 use Design\Guard;
 use Design\Http;
@@ -93,6 +94,9 @@ if (isset($byId[$sel])) {
         'messages' => $messages,
         'write' => $access['write'],
         'footer' => $footer,
+        // Робочий простір — листування обраного дизайнера: прев'ю, цитати, перегляд (клієнт лише дивиться й коментує)
+        'workspace' => $card['status'] === OfferStatus::CHOSEN
+            ? ['orderId' => $id, 'upload' => false, 'hide' => false, 'chunk' => ChunkUpload::partSize()] : null,
     ];
 }
 
@@ -125,7 +129,7 @@ $toasts = [
 View::render('layout', [
     'title' => $order['title'],
     'active' => 'orders',
-    'scripts' => $chat !== null ? ['/assets/js/chat.js'] : [],
+    'scripts' => $chat === null ? [] : ($chat['workspace'] !== null ? ['/assets/js/chat.js', '/assets/js/workspace.js'] : ['/assets/js/chat.js']),
     'toast' => $posted === null ? ($toasts[Http::str($_GET, 'done')] ?? null) : null,
     'body' => View::fetch('order', [
         'order' => $order,

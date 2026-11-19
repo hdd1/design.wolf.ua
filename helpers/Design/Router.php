@@ -18,6 +18,8 @@ final class Router
         ['GET', '#^/orders/(?<id>' . self::ID . ')/mode/$#', 'order-mode'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/pick/$#', 'order-pick'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')$#', 'order-update'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/upload$#', 'order-upload'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/previews/(?<preview>' . self::ID . ')$#', 'order-preview'],
         ['GET', '#^/designer/$#', 'designer'],
         ['POST', '#^/designer$#', 'designer-save'],
         ['POST', '#^/designer/works$#', 'designer-work-add'],

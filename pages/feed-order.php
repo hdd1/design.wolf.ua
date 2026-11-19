@@ -8,6 +8,7 @@
  * @var ?array{form:string, values:array{text:string,price:string,deadline:string,reason:string}, error:string} $posted
  */
 use Design\Chat;
+use Design\ChunkUpload;
 use Design\Csrf;
 use Design\Customers;
 use Design\Designers;
@@ -19,6 +20,7 @@ use Design\Offers;
 use Design\OfferStatus;
 use Design\Orders;
 use Design\OrderStatus;
+use Design\Previews;
 use Design\Settings;
 use Design\View;
 
@@ -74,6 +76,11 @@ if ($offer !== null && $status !== OfferStatus::INVITED) {
             'messages' => $messages,
             'write' => $access['write'],
             'footer' => null,
+            // Робочий простір: обраний дизайнер; додавати й приховувати прев'ю — поки замовлення в роботі
+            'workspace' => $status === OfferStatus::CHOSEN ? (static function () use ($id, $me): array {
+                $can = Previews::canWork($id, $me) !== null;
+                return ['orderId' => $id, 'upload' => $can, 'hide' => $can, 'chunk' => ChunkUpload::partSize()];
+            })() : null,
         ];
     }
 }
@@ -88,6 +95,10 @@ $toasts = [
 
 $scripts = ['/assets/js/offer-form.js'];
 if ($chat !== null) $scripts[] = '/assets/js/chat.js';
+if ($chat['workspace'] ?? null) {
+    if ($chat['workspace']['upload']) $scripts[] = '/assets/js/chunk-upload.js';
+    $scripts[] = '/assets/js/workspace.js';
+}
 View::render('layout', [
     'title' => $order['title'],
     'active' => 'feed',

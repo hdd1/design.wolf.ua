@@ -4,6 +4,7 @@ namespace Design;
 
 /**
  * Картинки портфоліо й аватари: перевірка завантаження, оригінал як є, зменшені копії WebP через Imagick.
+ * Публічні кроки (check, load, toSrgb, fitInto, writeWebp, ensureDir…) використовує й PreviewImages.
  * Без БД і без знання про дизайнерів — лише файли в переданій папці.
  */
 final class Images
@@ -27,7 +28,7 @@ final class Images
         IMAGETYPE_PNG => ['png', 'PNG'],
     ];
 
-    private const ERR_BROKEN = 'Файл пошкоджений або це не картинка';
+    public const ERR_BROKEN = 'Файл пошкоджений або це не картинка';
 
     /**
      * Перевіряє картинку, кладе оригінал як є в $dir/$base.jpg|png, робить $base-card.webp (обрізка по центру 600×480)
@@ -101,15 +102,15 @@ final class Images
     }
 
     /**
-     * Розмір, тип, сторони й пропорції — до повного декодування.
+     * Розмір, тип, сторони й пропорції — до повного декодування. $maxBytes — інший ліміт (прев'ю)
      * @return array{ext:string, jpeg:bool, w:int, h:int, width:int, height:int}
      *         w/h — як у файлі, width/height — після повороту за EXIF
      */
-    private static function check(string $src): array
+    public static function check(string $src, int $maxBytes = self::MAX_BYTES): array
     {
         $bytes = is_file($src) && is_readable($src) ? filesize($src) : false;
         if ($bytes === false || $bytes === 0) throw new DesignerException(self::ERR_BROKEN);
-        if ($bytes > self::MAX_BYTES) throw new DesignerException(self::tooBig($bytes));
+        if ($bytes > $maxBytes) throw new DesignerException(self::tooBig($bytes, $maxBytes));
 
         // Тип — за сигнатурою силами PHP, щоб Imagick не підбирав кодек (SVG, MVG, PS…) до чужого файлу
         $info = @getimagesize($src);
@@ -150,7 +151,7 @@ final class Images
      * JPEG декодується одразу зменшеним (DCT-масштаб libjpeg), але не менше ніж $needLong по довшій стороні
      * і $needShort по коротшій (або оригінал, якщо він менший) — щоб копії не довелося збільшувати.
      */
-    private static function load(string $src, array $info, int $needLong, int $needShort): \Imagick
+    public static function load(string $src, array $info, int $needLong, int $needShort): \Imagick
     {
         $im = new \Imagick();
         if ($info['jpeg']) {
@@ -178,7 +179,7 @@ final class Images
      * Ліміти, щоб 20-мегабайтний JPEG не роздув php-fpm: надлишок піксельного кешу йде на диск.
      * Один потік: max_execution_time рахує CPU всіх потоків процесу, а паралельні завантаження й так дає клієнт
      */
-    private static function limitResources(): void
+    public static function limitResources(): void
     {
         \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_MEMORY, 256 * 1024 * 1024);
         \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_MAP, 512 * 1024 * 1024);
@@ -214,7 +215,7 @@ final class Images
      * До sRGB: вбудований не-sRGB профіль (CMYK, Adobe RGB, Display P3…) — конвертація через ICC, бо stripImage
      * його далі викине і кольори зблякнуть; CMYK без профілю (або з битим) — формулою.
      */
-    private static function toSrgb(\Imagick $im): void
+    public static function toSrgb(\Imagick $im): void
     {
         if ($im->getImageProfiles('icc', false) && stripos((string)$im->getImageProperty('icc:description'), 'sRGB') === false) {
             try {
@@ -229,7 +230,7 @@ final class Images
     }
 
     /** Вписати в квадрат $side, не збільшуючи */
-    private static function fitInto(\Imagick $im, int $side): void
+    public static function fitInto(\Imagick $im, int $side): void
     {
         $w = $im->getImageWidth();
         $h = $im->getImageHeight();
@@ -238,11 +239,12 @@ final class Images
         $im->resizeImage(max(1, (int)round($w * $scale)), max(1, (int)round($h * $scale)), \Imagick::FILTER_LANCZOS, 1);
     }
 
-    private static function writeWebp(\Imagick $im, string $path): void
+    /** WebP з правами 0644; $quality — інша якість (прев'ю) */
+    public static function writeWebp(\Imagick $im, string $path, int $quality = self::WEBP_QUALITY): void
     {
         $im->setImagePage(0, 0, 0, 0);
         $im->setImageFormat('webp');
-        $im->setImageCompressionQuality(self::WEBP_QUALITY);
+        $im->setImageCompressionQuality($quality);
         $fh = @fopen($path, 'wb');
         if ($fh === false) throw new \RuntimeException("Не вдалося записати $path");
         try {
@@ -257,20 +259,22 @@ final class Images
     /**
      * Створює папку (і відсутні батьківські) з правами 0755: на prod nginx читає як «other», а mkdir віддає права
      * за umask процесу. Наявні папки не чіпаємо.
+     * @return string[] створені папки, від найглибшої — щоб прибрати їх після невдачі
      */
-    public static function ensureDir(string $dir): void
+    public static function ensureDir(string $dir): array
     {
         $missing = [];
         for ($d = $dir; !is_dir($d); $d = dirname($d)) $missing[] = $d;
-        if ($missing === []) return;
+        if ($missing === []) return [];
         if (!@mkdir($dir, 0755, true) && !is_dir($dir)) {
             throw new \RuntimeException("Не вдалося створити папку $dir");
         }
         foreach ($missing as $d) @chmod($d, 0755);
+        return $missing;
     }
 
     /** @param string[] $paths */
-    private static function remove(array $paths): void
+    public static function remove(array $paths): void
     {
         foreach ($paths as $p) {
             if (is_file($p)) unlink($p);

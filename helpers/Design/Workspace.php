@@ -13,6 +13,8 @@ final class Workspace
 {
     /** Статуси замовлення, у яких сторінки показують робочий простір (після купівлі — теж: куплені макети, листування) */
     public const STATUSES = [OrderStatus::IN_WORK, OrderStatus::PURCHASED, OrderStatus::REWORK];
+    /** «Чий хід» дизайнера скасованого замовлення (і стан пропозиції на його сторінках) */
+    public const CANCELLED_DESIGNER = 'Замовлення скасовано клієнтом';
 
     /**
      * Хто дивиться робочий простір замовлення: клієнт замовлення або дизайнер обраної пропозиції (як Offers::access), інакше null
@@ -58,6 +60,7 @@ final class Workspace
      * Плашка «чий хід» над стрічкою для сторони role (Messages::ROLE_CLIENT / ROLE_DESIGNER) обраної пропозиції offer (Offers::get).
      * Клієнт — OrderStatus::turn, дизайнер — OrderStatus::designerTurn; «В роботі» і «Доопрацювання» — з кількістю нових (ще не
      * куплених) макетів, «Куплено» — з пропозицією доопрацювання без відповіді (Rework::pending: сума доплати й дата в sub).
+     * «Скасовано» — клієнту «Скасовано: {причина}», дизайнеру «Замовлення скасовано клієнтом» (причину бачать клієнт і куратор).
      * $order — Rework::order (немає — читається тут)
      * @return array{mine:bool, text:string, sub:string, icon:string}
      */
@@ -65,6 +68,10 @@ final class Workspace
     {
         $orderId = $offer['order_id'];
         $status = $offer['order_status'];
+        if ($status === OrderStatus::CANCELLED) {
+            return ['mine' => false, 'sub' => '', 'icon' => 'fa-ban', 'text' => $role === Messages::ROLE_DESIGNER ? self::CANCELLED_DESIGNER
+                : OrderStatus::cancelled((string)Sql::value('SELECT cancel_reason FROM design_orders WHERE id = ?', [$orderId]))];
+        }
         $order ??= Rework::order($orderId);
         $pending = $order !== null && $order['status'] === $status ? Rework::pending($order) : null;
         $layouts = in_array($status, [OrderStatus::IN_WORK, OrderStatus::REWORK], true) ? Layouts::countNew($orderId) : 0;

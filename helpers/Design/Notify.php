@@ -38,6 +38,20 @@ final class Notify
         }
     }
 
+    /**
+     * Куратору клієнта — customers.curator_id (users.id); немає куратора — лише запис у журнал
+     * (пропозиції режиму 2, «без пропозицій», скасування замовлення, скарга)
+     */
+    public static function curator(int $customerId, string $msg, string $msgSMS): void
+    {
+        $curatorId = (int)Sql::value('SELECT curator_id FROM customers WHERE id = ?', [$customerId]);
+        if ($curatorId <= 0) {
+            error_log('Design\\Notify: у клієнта id ' . $customerId . ' немає куратора — сповіщення не надіслано: ' . $msg);
+            return;
+        }
+        self::send(['user_id' => $curatorId, 'msg' => $msg, 'msgSMS' => $msgSMS]);
+    }
+
     private static function fail(array $params, string $reason): void
     {
         $to = isset($params['customer_id']) ? 'customer_id=' . $params['customer_id'] : 'user_id=' . ($params['user_id'] ?? '?');

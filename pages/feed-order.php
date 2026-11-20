@@ -7,6 +7,8 @@
  * шапка «Ви отримаєте · клієнт побачить», «Термін до …», «Завантажити макети» (поки можна працювати), «чий хід» дизайнера,
  * стрічка і панель «Макети для друку» (куплені — без змін, без посилань). «Куплено» — «Ще не закінчили» (?form=rework — форма
  * пропозиції доопрацювання, POST /orders/{id}/rework), «чий хід» з пропозицією без відповіді; «Доопрацювання» — як «В роботі».
+ * Скасоване клієнтом замовлення — лише для читання: «Замовлення скасовано клієнтом» (без причини), без форм, листування без
+ * робочого простору (прев'ю видалено з диска).
  * Після помилки POST сторінку рендерить pages/feed-offer.php (або pages/order-rework.php, form = rework) з $posted (form, values, error)
  * @var array $params
  * @var ?array{form:string, values:array{text:string,price:string,deadline:string,reason:string}, error:string} $posted
@@ -42,11 +44,12 @@ $offer = Offers::forDesigner($id, $me);
 $open = $order['status'] === OrderStatus::COLLECTING && $order['mode'] === 1;
 if ($offer === null && !$open) Http::notFound();
 $status = $offer['status'] ?? null;
+$cancelled = $order['status'] === OrderStatus::CANCELLED;
 
 $invite = $status === OfferStatus::INVITED && $order['status'] === OrderStatus::WAITING_DESIGNER && $order['mode'] === 2;
 $forms = array_filter([
     'propose' => $open && in_array($status, [null, OfferStatus::DECLINED, OfferStatus::WITHDRAWN], true),
-    'edit' => $status === OfferStatus::SENT,
+    'edit' => $status === OfferStatus::SENT && !$cancelled,
     'take' => $invite,
     'decline' => $invite,
 ]);
@@ -77,13 +80,13 @@ if ($offer !== null && $status !== OfferStatus::INVITED) {
             'title' => $client,
             'subtitle' => $offer['price_designer'] <= 0 ? ''
                 : 'Ви: ' . View::price($offer['price_designer']) . ' на руки' . ($offer['deadline'] ? ' · до ' . View::date($offer['deadline']) : ''),
-            'note' => $status === OfferStatus::CHOSEN ? null : 'До вибору — лише текстові повідомлення. Файли і прев\'ю — після вибору дизайнера',
+            'note' => $status === OfferStatus::CHOSEN || $cancelled ? null : 'До вибору — лише текстові повідомлення. Файли і прев\'ю — після вибору дизайнера',
             'csrf' => $csrf,
             'messages' => $messages,
             'write' => $access['write'],
             'footer' => null,
             // Робочий простір: обраний дизайнер; додавати й приховувати прев'ю — поки замовлення в роботі
-            'workspace' => $status === OfferStatus::CHOSEN ? (static function () use ($id, $me): array {
+            'workspace' => $status === OfferStatus::CHOSEN && !$cancelled ? (static function () use ($id, $me): array {
                 $can = Previews::canWork($id, $me) !== null;
                 return ['orderId' => $id, 'upload' => $can, 'hide' => $can, 'chunk' => ChunkUpload::partSize()];
             })() : null,

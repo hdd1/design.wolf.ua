@@ -1,7 +1,7 @@
 <?php
 /**
  * «Мої пропозиції і замовлення» схваленого дизайнера: GET /my-offers/ — вкладка «Пропозиції», ?tab=work — «В роботі».
- * У замовлень робочого простору («В роботі», «Куплено», «Доопрацювання») — «чий хід» дизайнера (Workspace::turn, як у шапці)
+ * У замовлень робочого простору («В роботі», «Куплено», «Доопрацювання») і скасованих — «чий хід» дизайнера (Workspace::turn, як у шапці)
  */
 use Design\Csrf;
 use Design\Designers;
@@ -10,6 +10,7 @@ use Design\Guard;
 use Design\Http;
 use Design\Messages;
 use Design\Offers;
+use Design\OrderStatus;
 use Design\View;
 use Design\Workspace;
 
@@ -18,7 +19,8 @@ if (Designers::status($me) !== DesignerStatus::APPROVED) Http::notFound();
 $mine = Offers::mine($me);
 // Рядок Offers::mine має все, що потрібно Workspace::turn: id, order_id, order_status, deadline
 foreach ($mine['work'] as &$o) {
-    $o['turn'] = in_array($o['order_status'], Workspace::STATUSES, true) ? Workspace::turn($o, Messages::ROLE_DESIGNER) : null;
+    $o['turn'] = in_array($o['order_status'], [...Workspace::STATUSES, OrderStatus::CANCELLED], true)
+        ? Workspace::turn($o, Messages::ROLE_DESIGNER) : null;
 }
 unset($o);
 

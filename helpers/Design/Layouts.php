@@ -93,6 +93,19 @@ final class Layouts
     }
 
     /**
+     * Скасування замовлення (Orders::cancel, після коммиту): файли некуплених макетів замовлення (будь-якого статусу рядка)
+     * видаляються з диска, порожня папка — теж; рядки лишаються. Куплені (purchase_id) не чіпаємо — у скасованому замовленні їх
+     * і не буває (скасувати можна лише до першої купівлі). Посилань i.fastcdn у некуплених немає
+     */
+    public static function removeUnpurchasedFiles(int $orderId): void
+    {
+        foreach (Sql::all('SELECT file FROM design_files WHERE order_id = ? AND purchase_id IS NULL', [$orderId]) as $r) {
+            self::deleteFile($orderId, (string)$r['file']);
+        }
+        @rmdir(Paths::root() . '/layouts/' . $orderId);
+    }
+
+    /**
      * Активні макети замовлення за порядком завантаження — без шляхів і посилань; purchased — макет куплено (purchase_id)
      * @return list<array{id:int, label:string, original_name:string, size:int, ext:string, created:string, purchased:bool}>
      */

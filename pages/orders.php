@@ -13,6 +13,8 @@ foreach (Orders::forCustomer($me) as $o) {
         ? ['mine' => true, 'text' => 'Ваш хід: оберіть, як продовжити']
         : OrderStatus::turn($o['status'], $o['offers'],
             in_array($o['status'], [OrderStatus::IN_WORK, OrderStatus::REWORK], true) ? Layouts::countNew($o['id']) : 0, $o['rework']);
+    // Скасоване — «Скасовано: {причина}» коротко, одним рядком
+    if ($o['status'] === OrderStatus::CANCELLED) $o['turn'] = ['mine' => false, 'text' => OrderStatus::cancelled((string)$o['cancel_reason'], 80)];
     if ($o['turn']['mine']) $mine[] = $o; else $other[] = $o;
 }
 View::render('layout', ['title' => 'Мої замовлення', 'active' => 'orders', 'body' => View::fetch('orders', ['mine' => $mine, 'other' => $other])]);

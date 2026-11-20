@@ -148,9 +148,10 @@ final class PreviewsTest extends TestCase
         // forOrder: ключ — id, за номером; по сторінці — адреси view і card
         $list = Previews::forOrder($orderId);
         $this->assertSame([$first['id'], $second['id']], array_keys($list));
-        $this->assertSame(['id', 'num', 'pages', 'hidden', 'based_on_num', 'caption', 'urls'], array_keys($list[$first['id']]));
+        $this->assertSame(['id', 'num', 'pages', 'hidden', 'removed', 'based_on_num', 'caption', 'urls'], array_keys($list[$first['id']]));
         $this->assertSame('Перший варіант <b>&</b>', $list[$first['id']]['caption']);
         $this->assertFalse($list[$first['id']]['hidden']);
+        $this->assertFalse($list[$first['id']]['removed'], 'замовлення не скасоване');
         $this->assertNull($list[$first['id']]['based_on_num']);
         $this->assertCount(1, $list[$first['id']]['urls']);
         $this->assertMatchesRegularExpression('~^https://\S+\.webp$~', $list[$first['id']]['urls'][0]['view']);

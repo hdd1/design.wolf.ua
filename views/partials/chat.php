@@ -71,12 +71,14 @@ foreach ($messages as $m) {
         <?php endif ?>
         <?php if ($m['system']): // текст системного містить текст дизайнера (підпис макета) — без посилань ?>
       <div class="chat-sys"><?= View::e($m['text']) ?></div>
-        <?php elseif ($m['preview'] !== null): $p = $m['preview']; $card = $p['urls'][0]['card'] ?? '' ?>
+        <?php elseif ($m['preview'] !== null): $p = $m['preview']; $card = $p['urls'][0]['card'] ?? ''; $gone = $p['hidden'] || !empty($p['removed']) ?>
       <div class="chat-msg is-preview<?= $m['mine'] ? ' mine' : '' ?>" data-id="<?= $m['id'] ?>">
         <?php if (!$m['mine']): ?><span class="avatar avatar-sm"><?= View::e(Chat::initials($m['author'])) ?></span><?php endif ?>
-        <div class="pv-card<?= $p['hidden'] ? ' is-hidden' : '' ?>" data-preview="<?= $p['id'] ?>">
+        <div class="pv-card<?= $gone ? ' is-hidden' : '' ?>" data-preview="<?= $p['id'] ?>">
           <?php if ($p['hidden']): ?>
           <div class="pv-hidden"><i class="fal fa-eye-slash"></i><span>Прев'ю приховано дизайнером · v<?= $p['num'] ?></span></div>
+          <?php elseif ($gone): // замовлення скасовано — картинки видалено з диска (Orders::cancel) ?>
+          <div class="pv-hidden"><i class="fal fa-ban"></i><span>Прев'ю видалено — замовлення скасовано · v<?= $p['num'] ?></span></div>
           <?php else: ?>
           <button type="button" class="pv-img" data-pv-open="<?= $p['id'] ?>" aria-label="Відкрити v<?= $p['num'] ?>">
             <?php if ($card !== ''): ?><img src="<?= View::e($card) ?>" alt="" loading="lazy"><?php else: ?><i class="fal fa-image"></i><?php endif ?>
@@ -87,7 +89,7 @@ foreach ($messages as $m) {
           <div class="pv-body">
             <div class="meta"><b><?= $m['mine'] ? 'Ви' : View::e($m['author']) ?></b> <?= $hm ?><?php if ($p['based_on_num'] !== null): ?> <span class="pv-based"><i class="fal fa-code-branch"></i> на основі v<?= $p['based_on_num'] ?></span><?php endif ?></div>
             <?php if ($m['text'] !== ''): ?><div class="text"><?= Chat::html($m['text']) ?></div><?php endif ?>
-            <?php if (!$p['hidden']): ?>
+            <?php if (!$gone): ?>
             <div class="pv-acts">
               <?php if ($reply): ?><button type="button" class="pv-act"<?= $replyAttrs($m['id'], 'Коментар до v' . $p['num'], $m['text'], $card) ?>><i class="fal fa-comment-alt-lines"></i> Коментувати</button><?php endif ?>
               <button type="button" class="pv-act" data-pv-open="<?= $p['id'] ?>"><i class="fal fa-expand-alt"></i> Відкрити</button>

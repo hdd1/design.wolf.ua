@@ -33,10 +33,10 @@ final class OrderStatus
     /**
      * «Чий хід» для клієнта: mine — чекаємо дії клієнта. «В роботі» з макетами — хід клієнта: «Купую» (етап 5).
      * «Доопрацювання» — як «В роботі» (layouts — нові, ще не куплені макети); «Куплено» з пропозицією доопрацювання без
-     * відповіді ($reworkPending, Rework::pending) — «Чекає вашої відповіді»
+     * відповіді ($reworkPending, Rework::pending) — «Чекає вашої відповіді»; «Скасовано» — «Скасовано: {причина}» (cancelled())
      * @return array{mine:bool, text:string}
      */
-    public static function turn(int $status, int $offers = 0, int $layouts = 0, bool $reworkPending = false): array
+    public static function turn(int $status, int $offers = 0, int $layouts = 0, bool $reworkPending = false, string $cancelReason = ''): array
     {
         return match ($status) {
             self::DRAFT => ['mine' => true, 'text' => 'Ваш хід: допишіть і опублікуйте бриф'],
@@ -54,8 +54,21 @@ final class OrderStatus
             self::REWORK => $layouts > 0
                 ? ['mine' => true, 'text' => 'Ваш хід: перевірте макети і натисніть «Купую»']
                 : ['mine' => false, 'text' => 'Дизайнер працює над змінами'],
+            self::CANCELLED => ['mine' => false, 'text' => self::cancelled($cancelReason)],
             default => ['mine' => false, 'text' => 'Скасовано'],
         };
+    }
+
+    /**
+     * «Скасовано: {причина}» — причина одним рядком (переноси й повтори пропусків — один пробіл); $max > 0 — не довше
+     * $max символів із «…» (список замовлень). Без причини — «Скасовано»
+     */
+    public static function cancelled(string $reason, int $max = 0): string
+    {
+        $reason = trim(preg_replace('/\s+/u', ' ', $reason) ?? '');
+        if ($reason === '') return self::LABELS[self::CANCELLED];
+        if ($max > 0 && mb_strlen($reason) > $max) $reason = rtrim(mb_substr($reason, 0, $max - 1)) . '…';
+        return self::LABELS[self::CANCELLED] . ': ' . $reason;
     }
 
     /**

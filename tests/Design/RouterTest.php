@@ -89,6 +89,12 @@ final class RouterTest extends TestCase
         $this->assertSame(['page' => 'order-rework', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/rework'));
         $this->assertNull(Router::match('GET', '/orders/345/rework'));
         $this->assertNull(Router::match('POST', '/orders/abc/rework'));
+        // Етап 5, Task 7: скасування замовлення і скарга — лише POST
+        $this->assertSame(['page' => 'order-cancel', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/cancel'));
+        $this->assertSame(['page' => 'order-complaint', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/complaint'));
+        $this->assertNull(Router::match('GET', '/orders/345/cancel'));
+        $this->assertNull(Router::match('GET', '/orders/345/complaint'));
+        $this->assertNull(Router::match('POST', '/orders/345/cancel/'));
     }
 
     public function test_chat_routes(): void

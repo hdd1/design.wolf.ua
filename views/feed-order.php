@@ -13,6 +13,7 @@ use Design\Messages;
 use Design\OfferStatus;
 use Design\OrderStatus;
 use Design\View;
+use Design\Workspace;
 
 if ($workspace !== null) {
     View::render('partials/workspace', $workspace);
@@ -77,6 +78,15 @@ $terms = $offer !== null && $offer['price_designer'] > 0
             <div class="sheet-actions">
               <a class="btn btn-outline-blue" href="<?= $url ?>?form=decline#offer">Відмовитися</a>
               <a class="btn btn-primary" href="<?= $url ?>?form=take#offer">Беру</a>
+            </div>
+          </div>
+
+        <?php elseif ($order['status'] === OrderStatus::CANCELLED): ?>
+          <div class="card-d sheet closed">
+            <i class="fal fa-ban"></i>
+            <div>
+              <div class="fw-bold"><?= View::e(Workspace::CANCELLED_DESIGNER) ?></div>
+              <?php if ($terms !== '' && $status !== OfferStatus::INVITED): ?><div class="text-2 small"><?= $status === OfferStatus::CHOSEN ? 'Клієнт обрав вас: ' : 'Ви пропонували ' ?><?= View::e($terms) ?></div><?php endif ?>
             </div>
           </div>
 

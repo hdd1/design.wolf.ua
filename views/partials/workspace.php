@@ -24,6 +24,10 @@
  *                           null — без доопрацювання. Дизайнер: «Ще не закінчили» → форма (нова повна сума на руки й дата, жива
  *                           підказка доплати — assets/js/workspace.js). Клієнт: «Прийняти» / «Відмовитися» на пропозицію,
  *                           «Скасувати доопрацювання» під «Купую». Усе — звичайні форми POST /orders/{id}/rework
+ * @var ?array{form:bool, reason:string} $orderCancel  клієнт може скасувати замовлення («В роботі»): посилання «Скасувати
+ *                           замовлення» під «Купую», form — відкрита форма (partials/order-cancel), reason — введене; null — ні
+ * @var ?array{form:bool, text:string, last:?string} $complaint  клієнт може поскаржитися («Куплено», «Доопрацювання»): «Скарга»,
+ *                           form — відкрита форма (partials/complaint-form), last — коли надіслано останню («Скаргу надіслано …»)
  */
 use Design\Chat;
 use Design\OrderStatus;
@@ -36,10 +40,12 @@ $filled = count(array_filter($order['answers'], static fn($p) => $p['a'] !== '')
 $error ??= null;
 $quote = $designer ? null : ($quote ?? null);
 $rework ??= null;
+$orderCancel = $designer ? null : ($orderCancel ?? null);
+$complaint = $designer ? null : ($complaint ?? null);
 $propose = $designer && !$edit && ($rework['propose'] ?? false);
 $answer = !$designer && ($rework['answer'] ?? false);
 $cancel = !$designer && $quote !== null && ($rework['cancel'] ?? false);
-$cta = $designer ? $edit || $propose : $quote !== null || $answer;
+$cta = $designer ? $edit || $propose : $quote !== null || $answer || $orderCancel !== null || $complaint !== null;
 $newLayouts = $quote['new_layouts'] ?? 0;
 $deadline = $offer['deadline'] ? 'до ' . View::date($offer['deadline']) : '—';
 $reworkUrl = '/orders/' . $id . '/rework';
@@ -102,7 +108,7 @@ if ($reworkForm) {
             <button type="submit" class="btn btn-link link-red">Скасувати доопрацювання</button>
           </form>
           <?php endif ?>
-        <?php else: ?>
+        <?php elseif ($answer): ?>
           <form method="post" action="<?= $reworkUrl ?>" data-lock>
             <?= $hidden ?><input type="hidden" name="action" value="accept"><input type="hidden" name="proposal" value="<?= View::e($rework['token'] ?? '') ?>">
             <button type="submit" class="btn btn-primary btn-lg w-100"><i class="fal fa-check"></i> Прийняти</button>
@@ -112,6 +118,17 @@ if ($reworkForm) {
             <?= $hidden ?><input type="hidden" name="action" value="decline"><input type="hidden" name="proposal" value="<?= View::e($rework['token'] ?? '') ?>">
             <button type="submit" class="btn btn-outline-blue btn-lg w-100">Відмовитися</button>
           </form>
+        <?php endif ?>
+        <?php if ($orderCancel !== null && !$orderCancel['form']): ?>
+          <a class="btn btn-link link-red ws-link" href="/orders/<?= $id ?>/?form=cancel#order-cancel">Скасувати замовлення</a>
+        <?php endif ?>
+        <?php if ($complaint !== null): ?>
+          <?php if (!$complaint['form']): ?>
+          <a class="btn btn-link ws-link ws-complaint-link" href="/orders/<?= $id ?>/?form=complaint#ws-complaint"><i class="fal fa-flag"></i> Скарга</a>
+          <?php endif ?>
+          <?php if ($complaint['last'] !== null): ?>
+          <div class="ws-soon"><i class="fal fa-check"></i> Скаргу надіслано <?= View::e(View::date($complaint['last'])) ?></div>
+          <?php endif ?>
         <?php endif ?>
       </div>
       <?php endif ?>
@@ -123,6 +140,12 @@ if ($reworkForm) {
       <span class="ic"><i class="fal <?= View::e($turn['icon']) ?>" data-ws-turn-icon></i></span>
       <div><div class="t" data-ws-turn-text><?= View::e($turn['text']) ?></div><div class="text-2 small" data-ws-turn-sub<?= $turn['sub'] === '' ? ' hidden' : '' ?>><?= View::e($turn['sub']) ?></div></div>
     </div>
+    <?php if ($orderCancel['form'] ?? false): ?>
+    <?php View::render('partials/order-cancel', ['orderId' => $id, 'csrf' => $csrf, 'reason' => $orderCancel['reason']]) ?>
+    <?php endif ?>
+    <?php if ($complaint['form'] ?? false): ?>
+    <?php View::render('partials/complaint-form', ['orderId' => $id, 'csrf' => $csrf, 'text' => $complaint['text']]) ?>
+    <?php endif ?>
     <?php if ($reworkForm): ?>
     <form id="ws-rework" class="card-d sheet ws-rework" method="post" action="<?= $reworkUrl ?>" data-lock data-ws-rework
       data-k="<?= View::e((string)$rework['k']) ?>" data-round="<?= (int)$rework['round'] ?>"

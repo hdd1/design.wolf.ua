@@ -88,4 +88,14 @@ final class OrderStatusTest extends TestCase
         $this->assertSame(['mine' => false, 'text' => 'Макети завантажено · чекаємо, поки клієнт натисне «Купую»'], S::designerTurn(10, 12, 2, 1, S::REWORK));
         $this->assertSame(['mine' => true, 'text' => 'Ваш хід: клієнт написав · відповідайте'], S::designerTurn(13, 12, 2, 1, S::REWORK));
     }
+
+    /** «Скасовано: {причина}» (етап 5, Task 7): причина одним рядком; у списку — коротко з «…» */
+    public function test_cancelled_turn(): void
+    {
+        $this->assertSame(['mine' => false, 'text' => 'Скасовано: Знайшов іншого'], S::turn(S::CANCELLED, 3, 2, true, "  Знайшов\n\n іншого "));
+        $this->assertSame(['mine' => false, 'text' => 'Скасовано'], S::turn(S::CANCELLED, 0, 0, false, " \n"));
+        $this->assertSame('Скасовано: абвгд', S::cancelled('абвгд', 5));
+        $this->assertSame('Скасовано: абвг…', S::cancelled('абвгде', 5));
+        $this->assertSame('Скасовано: аб…', S::cancelled('аб   вгде', 4), 'пропуск перед «…» прибрано');
+    }
 }

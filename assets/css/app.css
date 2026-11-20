@@ -734,6 +734,21 @@ body.pvv-open{overflow:hidden}
 .ws-cta form{margin:0}
 .ws-rework-cancel .btn{padding:.3rem .5rem;font-size:.9rem}
 .ws-rework{margin-top:var(--s-4);border:2px solid var(--blue);scroll-margin-top:140px}
+/* Скасування замовлення і скарга (етап 5): форми-аркуші, посилання під головною кнопкою, плашка «Скасовано: …» */
+.order-cancel{border:2px solid var(--red);scroll-margin-top:140px}
+.ws-top .order-cancel,.ws-complaint{margin-top:var(--s-4)}
+.ws-complaint{border:2px solid var(--orange);scroll-margin-top:140px}
+.order-cancel textarea,.ws-complaint textarea{max-width:640px}
+.order-cancel-link{margin-top:var(--s-5);font-size:.92rem}
+.order-cancel-link .link-red{font-weight:600}
+.ws-cta .ws-link{padding:.3rem .5rem;font-size:.9rem;font-weight:600}
+.ws-complaint-link{color:var(--text-2);text-decoration:none}
+.ws-complaint-link:hover{color:var(--text);text-decoration:underline}
+.btn-red{background:var(--red);border-color:var(--red);color:#fff}
+.btn-red:hover,.btn-red:focus-visible{background:#8A0019;border-color:#8A0019;color:#fff}
+.alert-d.cancelled{background:var(--red-soft);border-left:4px solid var(--red)}
+.alert-d.cancelled .ic{color:var(--red)}
+.alert-d.cancelled .t{color:var(--text)}
 .ws-rework-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s-4);margin-top:var(--s-4);max-width:640px}
 .ws-turn{margin-top:var(--s-4)}
 .ws-turn [hidden]{display:none}
@@ -850,6 +865,8 @@ body.pvv-open{overflow:hidden}
   .ws-rework-fields{grid-template-columns:minmax(0,1fr)}
   .ws-rework .sheet-actions{flex-direction:column-reverse;align-items:stretch}
   .ws-rework .sheet-actions .btn{width:100%}
+  .order-cancel .sheet-actions,.ws-complaint .sheet-actions{flex-direction:column-reverse;align-items:stretch}
+  .order-cancel .sheet-actions .btn,.ws-complaint .sheet-actions .btn{width:100%}
   .ws-turn{margin-top:var(--s-3)}
   .ws-turn .ic{width:40px;height:40px}
   .ws-tabs{display:flex;background:#fff;border-bottom:1px solid var(--border)}

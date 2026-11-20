@@ -26,6 +26,8 @@ final class Router
         ['GET', '#^/orders/(?<id>' . self::ID . ')/buy$#', 'order-buy-quote'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')/buy$#', 'order-buy'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')/rework$#', 'order-rework'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/cancel$#', 'order-cancel'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/complaint$#', 'order-complaint'],
         ['GET', '#^/designer/$#', 'designer'],
         ['POST', '#^/designer$#', 'designer-save'],
         ['POST', '#^/designer/works$#', 'designer-work-add'],

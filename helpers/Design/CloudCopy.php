@@ -10,12 +10,15 @@ namespace Design;
  * Стан у design_files.cloud_status: 0 немає, 1 у черзі, 2 у хмарі (cloud_id), 3 помилка (cloud_error).
  * Кнопка лише ставить у чергу (request — тільки БД). Копіює фонове завдання run() (крон wolf.ua/cron/design_cloud_copy.php
  * раз на хвилину): /mnt/cloud на проді — Storage Box через sshfs, повільний, і його зависання вішає PHP-процеси, тож:
- * - до /mnt/cloud звертається лише run(), і кожна операція (mkdir, stat, cp, mv, rm) — окремий процес із тайм-аутом
+ * - до /mnt/cloud звертається лише run(), і кожна операція (test, mkdir, stat, cp, mv, rm) — окремий процес із тайм-аутом
  *   (set_time_limit не рахує час у системних викликах — завислий stat чекав би вічно); дерево хмари не обходиться;
+ * - на початку прогону — маркер {root}/is_mount.txt (той самий, що RfGlobal::mount() cdn.wolf.ua, але через op() з тайм-аутом): sshfs відпав — /mnt/cloud порожня локальна
+ *   папка, копія лягла б на диск сервера і сховалась би під точкою монтування; без маркера прогін нічого не бере;
+ * - перший тайм-аут зупиняє прогін (хмара, певно, зависла): решта лишається в черзі до наступного;
  * - один прогін за раз (flock на локальному файлі): завислий прогін не множиться кроном;
  * - не більше limit макетів і не більше RUN_BUDGET секунд на нові копії за прогін;
  * - копія — у тимчасове ім'я поруч ({name}.part) і mv після звірки розміру: напівфайла під справжнім іменем не буває;
- *   збій — тимчасовий файл видаляється.
+ *   збій — тимчасовий файл видаляється; старий {name}.part (прогін убили посеред копії) видаляється перед копією.
  * Превʼю: рядок пишеться з is_preview = 10 («готово або не треба», preview NULL) — крон api2 cloud/update-preview бере лише
  * is_preview = 0 і везе весь файл у Київ на рендер; макет у сотні МБ туди не йде, а хмара wolf.ua (customer-cloud.php) для
  * is_preview = 10 без preview показує значок за розширенням, як для файлів без превʼю.
@@ -38,11 +41,21 @@ final class CloudCopy
     private const MIN_SPEED = 1048576;
     /** customers_cloud.file_size — int */
     private const INT_MAX = 2147483647;
+    /** Код винятку op(): не дочекались */
+    private const TIMEOUT = 408;
+    /** Маркер змонтованої хмари — той самий, що перевіряє RfGlobal::mount() cdn.wolf.ua (/mnt/cloud/is_mount.txt) */
+    private const MOUNT_MARKER = 'is_mount.txt';
 
     /** Тайм-аут дрібної операції з хмарою (mkdir, stat, mv, rm), с. Тести зменшують */
     public static int $timeout = 20;
     /** Тайм-аут копіювання: copyBase + розмір / MIN_SPEED, с. Тести зменшують */
     public static int $copyBase = 60;
+    /**
+     * Тести: підміна команди перед запуском (імітація зависання)
+     * @internal
+     * @var (\Closure(list<string>): list<string>)|null
+     */
+    public static ?\Closure $command = null;
 
     public static function cloudRoot(): string
     {
@@ -122,6 +135,20 @@ final class CloudCopy
         }
         @chmod(self::lockFile(), 0666);   // крон і тести можуть бути різними користувачами
         try {
+            // Хмара не змонтована (чи маркер не відповів за тайм-аут) — нічого не беремо, черга чекає наступного прогону.
+            // Той самий маркер /mnt/cloud/is_mount.txt, що перевіряє RfGlobal::mount() (cdn.wolf.ua). Сам mount() не
+            // викликаємо: він вимагає ще й київські /mnt/work2, робить die() і is_file без тайм-ауту (висить на завислому sshfs).
+            // Без «--»: coreutils test його не розуміє (шлях і так абсолютний)
+            try {
+                $mounted = self::op(['test', '-f', self::cloudRoot() . self::MOUNT_MARKER], self::$timeout, 'перевірити хмару', true) !== null;
+            } catch (\Throwable $e) {
+                $mounted = false;
+                error_log('design: копія макетів у хмару: ' . $e->getMessage());
+            }
+            if (!$mounted) {
+                error_log('design: копія макетів у хмару: немає ' . self::cloudRoot() . self::MOUNT_MARKER . ' — хмара не змонтована, черга чекає');
+                return 0;
+            }
             // Замок наш — отже, позначки «копіюється» лишились від прогону, що помер посеред роботи: рядки знову вільні
             Sql::exec('UPDATE design_files SET cloud_error = NULL WHERE cloud_status = ? AND cloud_error = ?', [self::QUEUED, self::MARK]);
             $rows = Sql::all('SELECT f.id, f.order_id, f.label, f.file, o.customer_id FROM design_files f JOIN design_orders o ON o.id = f.order_id
@@ -136,7 +163,9 @@ final class CloudCopy
                         [self::MARK, $row['id'], self::QUEUED]) !== 1) {
                     continue;
                 }
-                if (self::copyOne($row)) $done++;
+                $result = self::copyOne($row);
+                if ($result === self::DONE) $done++;
+                if ($result === self::TIMEOUT) break;   // хмара зависла — решта чекає наступного прогону
             }
             return $done;
         } finally {
@@ -145,8 +174,11 @@ final class CloudCopy
         }
     }
 
-    /** Один макет: файл у хмару, рядок customers_cloud, стан 2; збій — стан 3, текст у cloud_error, тимчасовий файл видалено */
-    private static function copyOne(array $row): bool
+    /**
+     * Один макет: файл у хмару, рядок customers_cloud, стан 2; збій — стан 3, текст у cloud_error, тимчасовий файл видалено
+     * @return int DONE | FAILED | TIMEOUT (збій через тайм-аут операції з хмарою — прогін зупиняється)
+     */
+    private static function copyOne(array $row): int
     {
         $id = (int)$row['id'];
         $part = null;
@@ -166,6 +198,8 @@ final class CloudCopy
             // Той самий файл уже в хмарі (інший макет із тим самим вмістом, чи клієнт сам завантажував) — не копіюємо вдруге
             if (self::regularSize($dest) !== $size) {
                 $part = $dest . '.part';
+                // Старий тимчасовий файл (прогін убили посеред копії) — геть: cp у FIFO чи чуже повисло б
+                self::op(['rm', '-f', '--', $part], self::$timeout, 'видалити старий тимчасовий файл у хмарі');
                 self::op(['cp', '--', $src, $part], self::$copyBase + intdiv($size, self::MIN_SPEED), 'скопіювати в хмару');
                 $got = self::regularSize($part);
                 if ($got !== $size) throw new \RuntimeException("У хмарі $got байт замість $size");
@@ -174,11 +208,11 @@ final class CloudCopy
             }
 
             Sql::exec('INSERT INTO customers_cloud (type_id, customer_id, original_name, file, file_size, is_preview)
-                       VALUES (1, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)',
+                       VALUES (1, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), created = CURRENT_TIMESTAMP',
                 [$customerId, self::originalName((int)$row['order_id'], (string)$row['label'], $ext), $name, min($size, self::INT_MAX), self::PREVIEW_SKIP]);
             $cloudId = (int)Sql::pdo()->lastInsertId();
             Sql::exec('UPDATE design_files SET cloud_status = ?, cloud_id = ?, cloud_error = NULL WHERE id = ?', [self::DONE, $cloudId, $id]);
-            return true;
+            return self::DONE;
         } catch (\Throwable $e) {
             if ($part !== null) {
                 try {
@@ -190,7 +224,7 @@ final class CloudCopy
             error_log("design: копія макета $id у хмару: " . $e->getMessage());
             Sql::exec('UPDATE design_files SET cloud_status = ?, cloud_error = ? WHERE id = ?',
                 [self::FAILED, mb_substr($e->getMessage(), 0, 255), $id]);
-            return false;
+            return $e->getCode() === self::TIMEOUT ? self::TIMEOUT : self::FAILED;
         }
     }
 
@@ -221,6 +255,7 @@ final class CloudCopy
      */
     private static function op(array $cmd, int $timeout, string $what, bool $soft = false): ?string
     {
+        if (self::$command !== null) $cmd = (self::$command)($cmd);
         $proc = proc_open($cmd, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (!is_resource($proc)) throw new \RuntimeException("Не вдалося $what: процес не запустився");
         stream_set_blocking($pipes[1], false);
@@ -237,7 +272,7 @@ final class CloudCopy
                 fclose($pipes[1]);
                 fclose($pipes[2]);
                 // proc_close не викликаємо: процес у завислій ФС може не вийти одразу, а proc_close чекав би на нього
-                throw new \RuntimeException("Не вдалося $what: тайм-аут {$timeout} с");
+                throw new \RuntimeException("Не вдалося $what: тайм-аут {$timeout} с", self::TIMEOUT);
             }
             usleep(20000);
         }

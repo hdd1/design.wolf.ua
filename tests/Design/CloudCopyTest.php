@@ -34,6 +34,8 @@ final class CloudCopyTest extends TestCase
     private array $names = [];
     /** @var array<int, string> */
     private static array $csrf = [];
+    /** @var array<int, string> вміст макетів HTTP-тесту */
+    private array $bytes = [];
 
     protected function setUp(): void
     {
@@ -46,6 +48,7 @@ final class CloudCopyTest extends TestCase
         $this->cloud = "$base/cloud";
         mkdir($this->work, 0777, true);
         mkdir($this->cloud, 0777, true);
+        file_put_contents($this->cloud . '/is_mount.txt', 'This file verify mount');   // хмару «змонтовано»
         $this->oldWork = getenv('DESIGN_WORK_ROOT');
         $this->oldCloud = getenv('DESIGN_CLOUD_ROOT');
         putenv('DESIGN_WORK_ROOT=' . $this->work);
@@ -77,6 +80,7 @@ final class CloudCopyTest extends TestCase
             static function (): void {
                 CloudCopy::$timeout = 20;
                 CloudCopy::$copyBase = 60;
+                CloudCopy::$command = null;
             },
         ];
         $error = null;
@@ -144,12 +148,12 @@ final class CloudCopyTest extends TestCase
         return Sql::one('SELECT cloud_status, cloud_id, cloud_error FROM design_files WHERE id = ?', [$fileId]);
     }
 
-    /** @return list<string> усі файли під коренем хмари (відносні шляхи) */
+    /** @return list<string> усі файли під коренем хмари (відносні шляхи), крім маркера is_mount.txt */
     private function cloudTree(): array
     {
         $out = [];
         exec('cd ' . escapeshellarg($this->cloud) . ' && find . -mindepth 1 \( -type f -o -type p \) | sort', $out);
-        return $out;
+        return array_values(array_diff($out, ['./is_mount.txt']));
     }
 
     public function test_cloud_root_and_path(): void
@@ -270,13 +274,15 @@ final class CloudCopyTest extends TestCase
         $name = $this->name($bytes, 'pdf');
         // Клієнт сам колись завантажив цей файл у хмару wolf.ua
         $own = Sql::insert('customers_cloud', ['type_id' => 1, 'customer_id' => $this->client, 'original_name' => 'моя.pdf',
-            'file' => $name, 'file_size' => strlen($bytes), 'is_preview' => 3]);
+            'file' => $name, 'file_size' => strlen($bytes), 'is_preview' => 3, 'created' => '2025-01-01 10:00:00']);
         CloudCopy::request($fileId, $this->client);
         $this->assertSame(1, CloudCopy::run());
         $this->assertSame($own, (int)self::row($fileId)['cloud_id']);
         $row = Sql::one('SELECT original_name, is_preview FROM customers_cloud WHERE id = ?', [$own]);
         $this->assertSame(['original_name' => 'моя.pdf', 'is_preview' => 3], ['original_name' => $row['original_name'], 'is_preview' => (int)$row['is_preview']]);
         $this->assertSame(1, (int)Sql::value('SELECT COUNT(*) FROM customers_cloud WHERE customer_id = ? AND file = ?', [$this->client, $name]));
+        // Як повторне завантаження в uploadStorage.php: рядок піднімається нагору хмари (сортування created DESC)
+        $this->assertGreaterThan('2026-01-01', (string)Sql::value('SELECT created FROM customers_cloud WHERE id = ?', [$own]));
     }
 
     public function test_missing_source_marks_error_then_retry(): void
@@ -341,20 +347,61 @@ final class CloudCopyTest extends TestCase
     public function test_hung_cloud_times_out(): void
     {
         [$orderId, $purchaseId] = $this->order();
+        [$fileId] = $this->layout($orderId, $purchaseId);
+        [$next] = $this->layout($orderId, $purchaseId, 'Наступний');
+        // «Зависла» хмара: cp не повертається (замість нього — sleep 30)
+        CloudCopy::$command = static fn(array $cmd): array => $cmd[0] === 'cp' ? ['sleep', '30'] : $cmd;
+        CloudCopy::$copyBase = 1;
+        CloudCopy::request($fileId, $this->client);
+        CloudCopy::request($next, $this->client);
+        $t = microtime(true);
+        $this->assertSame(0, CloudCopy::run());
+        $this->assertLessThan(10, microtime(true) - $t, 'операцію перервано за тайм-аутом, решту не чекали');
+        $r = self::row($fileId);
+        $this->assertSame(CloudCopy::FAILED, (int)$r['cloud_status']);
+        $this->assertStringContainsString('тайм-аут', $r['cloud_error']);
+        $n = self::row($next);
+        $this->assertSame([CloudCopy::QUEUED, null], [(int)$n['cloud_status'], $n['cloud_error']], 'після тайм-ауту прогін зупинився — наступний чекає');
+        $this->assertSame([], $this->cloudTree(), 'тимчасове ім\'я прибрано');
+
+        // Хмара «ожила» — наступний прогін бере те, що чекало
+        CloudCopy::$command = null;
+        $this->assertSame(1, CloudCopy::run());
+        $this->assertSame(CloudCopy::DONE, (int)self::row($next)['cloud_status']);
+    }
+
+    public function test_no_mount_marker_nothing_copied(): void
+    {
+        [$orderId, $purchaseId] = $this->order();
+        [$fileId] = $this->layout($orderId, $purchaseId);
+        CloudCopy::request($fileId, $this->client);
+        // sshfs відпав: /mnt/cloud — порожня локальна папка без маркера
+        unlink($this->cloud . '/is_mount.txt');
+        $this->assertSame(0, CloudCopy::run());
+        $r = self::row($fileId);
+        $this->assertSame([CloudCopy::QUEUED, null, null], [(int)$r['cloud_status'], $r['cloud_error'], $r['cloud_id']], 'лишається в черзі');
+        $this->assertSame([], $this->cloudTree(), 'на локальний диск нічого не лягло');
+        $this->assertSame([], glob($this->cloud . '/*'), 'навіть папок немає');
+
+        file_put_contents($this->cloud . '/is_mount.txt', 'x');
+        $this->assertSame(1, CloudCopy::run());
+        $this->assertSame(CloudCopy::DONE, (int)self::row($fileId)['cloud_status']);
+    }
+
+    public function test_stale_part_removed_before_copy(): void
+    {
+        [$orderId, $purchaseId] = $this->order();
         [$fileId, $bytes] = $this->layout($orderId, $purchaseId);
-        // «Зависла» хмара: на місці тимчасового файла — FIFO без читача, cp у нього блокується назавжди
+        // Попередній прогін убили посеред копії: лишився {name}.part — тут FIFO, у яку cp повис би
         $dest = $this->cloudFile($this->name($bytes, 'pdf'));
         mkdir(dirname($dest), 0755, true);
         $this->assertTrue(posix_mkfifo($dest . '.part', 0644));
         CloudCopy::$copyBase = 1;
         CloudCopy::request($fileId, $this->client);
-        $t = microtime(true);
-        $this->assertSame(0, CloudCopy::run());
-        $this->assertLessThan(10, microtime(true) - $t, 'операцію перервано за тайм-аутом');
-        $r = self::row($fileId);
-        $this->assertSame(CloudCopy::FAILED, (int)$r['cloud_status']);
-        $this->assertStringContainsString('тайм-аут', $r['cloud_error']);
-        $this->assertSame([], $this->cloudTree(), 'тимчасове ім\'я прибрано');
+        $this->assertSame(1, CloudCopy::run());
+        $this->assertSame($bytes, file_get_contents($dest));
+        $this->assertFileDoesNotExist($dest . '.part');
+        $this->assertSame(CloudCopy::DONE, (int)self::row($fileId)['cloud_status']);
     }
 
     public function test_file_size_and_name(): void
@@ -463,7 +510,8 @@ final class CloudCopyTest extends TestCase
     public function test_http_request_queues_for_client_only(): void
     {
         [$orderId, $purchaseId] = $this->order();
-        [$bought] = $this->layout($orderId, $purchaseId);
+        [$bought, $boughtBytes] = $this->layout($orderId, $purchaseId);
+        $this->bytes[$bought] = $boughtBytes;
         [$closed] = $this->layout($orderId, null, 'Чернетка');
         $url = "/orders/$orderId/layouts/$bought/cloud";
 
@@ -492,7 +540,8 @@ final class CloudCopyTest extends TestCase
         $byId = array_column($json['layouts'], null, 'id');
         $this->assertSame(CloudCopy::QUEUED, $byId[$bought]['cloud_status']);
         $this->assertSame(0, $byId[$closed]['cloud_status']);
-        $this->assertSame([], $this->cloudTree(), 'HTTP-запит хмари не торкається');
+        // php-fpm працює зі справжньою /mnt/cloud dev (не з тимчасовою папкою тесту): файла з цим іменем там немає
+        $this->assertFileDoesNotExist('/mnt/cloud/' . CloudCopy::cloudPath($this->name($this->bytes[$bought], 'pdf')), 'HTTP-запит не копіює');
 
         // Опитування панелі (GET) несе стан
         [$code, $json] = self::fetch("/orders/$orderId/layouts", $this->client);

@@ -55,7 +55,8 @@ final class Purchases
         $c = Sql::one('SELECT inv_sum, credit, parent_id, overdraft_start, overdraft_days FROM customers WHERE id = ?', [$customerId]);
         if ($c === null) return null;
         $newLayouts = self::newLayouts($orderId, false);
-        $balance = (int)round((float)$c['inv_sum']);
+        // Вниз до гривні: показаний залишок не суперечить can (799,50 при P = 800 → 799, «Не вистачає 1 грн»)
+        $balance = (int)floor(self::cents($c['inv_sum']) / 100);
         $reason = self::refusal($newLayouts, $c, $p);
 
         return [
@@ -114,7 +115,9 @@ final class Purchases
             $reason = self::refusal($newLayouts, $payer, $p);
             if ($reason !== '') throw new DesignerException($reason);
 
+            // Один годинник для created_ts, paid_at і purchased_at
             $created = time();
+            $now = date('Y-m-d H:i:s', $created);
             $trClient = $trDesigner = null;
             if ($p > 0) {
                 if (Sql::exec('UPDATE customers SET inv_sum = inv_sum - ? WHERE id = ? AND inv_sum + credit >= ?', [$p, $customerId, $p]) !== 1) {
@@ -148,13 +151,13 @@ final class Purchases
                 'status' => self::STATUS_DONE,
                 'transaction_client_id' => $trClient,
                 'transaction_designer_id' => $trDesigner,
-                'paid_at' => date('Y-m-d H:i:s', $created),
+                'paid_at' => $now,
             ]);
             Sql::exec('UPDATE design_files SET purchase_id = ? WHERE order_id = ? AND status = ? AND purchase_id IS NULL',
                 [$purchaseId, $orderId, Layouts::ACTIVE]);
-            Sql::exec('UPDATE design_orders SET paid_client = paid_client + ?, paid_designer = paid_designer + ?, purchased_at = NOW(), status = ?,
+            Sql::exec('UPDATE design_orders SET paid_client = paid_client + ?, paid_designer = paid_designer + ?, purchased_at = ?, status = ?,
                        rework_price_designer = NULL, rework_price_client = NULL, rework_deadline = NULL, rework_proposed_at = NULL
-                       WHERE id = ?', [$p, $d, OrderStatus::PURCHASED, $orderId]);
+                       WHERE id = ?', [$p, $d, $now, OrderStatus::PURCHASED, $orderId]);
 
             // 7. Слід у листуванні
             Messages::system($offerId, $p > 0 ? 'Клієнт купив макети за ' . self::money($p) . ' грн' : 'Клієнт купив макети',
@@ -182,23 +185,26 @@ final class Purchases
     }
 
     /**
-     * «Заробіток»: проведені купівлі замовлень, де дизайнер — обраний, з гонораром > 0; нові зверху
+     * «Заробіток»: проведені купівлі замовлень, де дизайнер — обраний, з гонораром > 0 (і коли клієнт нічого не доплатив,
+     * а гонорар виріс через округлення ціни клієнта вгору); нові зверху
      * @return list<array{paid_at:string, order_id:int, title:string, amount_designer:int}>
      */
     public static function forDesigner(int $designerId): array
     {
         $rows = Sql::all(
-            'SELECT p.paid_at, p.order_id, o.title, pr.name AS product_name, p.amount_designer
+            'SELECT p.paid_at, p.order_id, o.title, COALESCE(pr.name, \'\') AS product_name, p.amount_designer
              FROM design_purchases p
              JOIN design_offers f ON f.id = p.offer_id
              JOIN design_orders o ON o.id = p.order_id
-             JOIN design_products pr ON pr.id = o.product_id
+             LEFT JOIN design_products pr ON pr.id = o.product_id
              WHERE f.designer_id = ? AND p.status = ? AND p.amount_designer > 0
              ORDER BY p.paid_at DESC, p.id DESC', [$designerId, self::STATUS_DONE]);
         return array_map(static fn(array $r): array => [
             'paid_at' => (string)$r['paid_at'],
             'order_id' => (int)$r['order_id'],
-            'title' => (string)$r['title'] !== '' ? (string)$r['title'] : (string)$r['product_name'],
+            // Заробіток не зникає й без продукту: назва → продукт → «Замовлення №N»
+            'title' => (string)$r['title'] !== '' ? (string)$r['title']
+                : ((string)$r['product_name'] !== '' ? (string)$r['product_name'] : 'Замовлення №' . (int)$r['order_id']),
             'amount_designer' => (int)$r['amount_designer'],
         ], $rows);
     }

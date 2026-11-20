@@ -45,12 +45,27 @@ final class PurchasesTest extends TestCase
             if ($row === null) self::markTestSkipped("Клієнта $id немає в customers");
             $this->saved[$id] = $row;
         }
+        // Фатальна помилка PHP не дійде до tearDown — гроші 29/25 повертає ще й завершення процесу (після tearDown — нічого не робить)
+        register_shutdown_function(function (): void {
+            if (!$this->saved) return;
+            foreach ($this->moneySteps() as $step) {
+                try {
+                    $step();
+                } catch (\Throwable) {
+                }
+            }
+            $this->saved = [];
+        });
     }
 
-    /** Кожен крок прибирання — окремо: збій одного (напр. класу ще немає) не лишає гроші 29/25 зміненими */
-    protected function tearDown(): void
+    /**
+     * Повернення грошей: зупинити паралельний процес (інакше він купить, щойно звільниться замок), відкотити відкриту транзакцію,
+     * повернути колонки customers, видалити свої рядки transaction. Для tearDown і для завершення процесу
+     * @return list<\Closure(): void>
+     */
+    private function moneySteps(): array
     {
-        $steps = [
+        return [
             function (): void {
                 if (is_resource($this->child)) {
                     proc_terminate($this->child);
@@ -73,6 +88,14 @@ final class PurchasesTest extends TestCase
                         [$this->maxTransaction, $this->client, $this->designer]);
                 }
             },
+        ];
+    }
+
+    /** Кожен крок прибирання — окремо: збій одного (напр. класу ще немає) не лишає гроші 29/25 зміненими */
+    protected function tearDown(): void
+    {
+        $steps = [
+            ...$this->moneySteps(),
             function (): void {
                 if (!$this->orders) return;
                 $in = implode(',', array_map('intval', $this->orders));
@@ -103,7 +126,7 @@ final class PurchasesTest extends TestCase
     // ---------- підготовка ----------
 
     /** Гроші клієнта/дизайнера на час тесту */
-    private function money(int $id, int $invSum, int $credit = 0, array $extra = []): void
+    private function money(int $id, int|float $invSum, int $credit = 0, array $extra = []): void
     {
         $set = ['inv_sum' => $invSum, 'credit' => $credit, 'credit_ra' => 0, 'temp_credit_ra' => 0, 'parent_id' => 0,
                 'overdraft_start' => null, 'overdraft_days' => null];
@@ -252,7 +275,9 @@ final class PurchasesTest extends TestCase
 
         $o = Sql::one('SELECT * FROM design_orders WHERE id = ?', [$orderId]);
         $this->assertSame([OrderStatus::PURCHASED, 800, 640], [(int)$o['status'], (int)$o['paid_client'], (int)$o['paid_designer']]);
-        $this->assertNotNull($o['purchased_at']);
+        $this->assertSame(date('Y-m-d H:i:s', (int)$c['created_ts']), $o['purchased_at'], 'один годинник: created_ts, paid_at, purchased_at');
+        $this->assertSame($o['purchased_at'], $p['paid_at']);
+        $this->assertSame($c['created_ts'], $d['created_ts']);
         $this->assertSame([null, null, null, null], [$o['rework_price_designer'], $o['rework_price_client'], $o['rework_deadline'], $o['rework_proposed_at']]);
 
         $msgs = Messages::list($offerId);
@@ -273,6 +298,11 @@ final class PurchasesTest extends TestCase
         $this->assertSame(['paid_at', 'order_id', 'title', 'amount_designer'], array_keys($earned[0]));
         $this->assertSame(['Тест купівлі', 640], [$earned[0]['title'], $earned[0]['amount_designer']]);
         $this->assertSame([], array_filter(Purchases::forDesigner($this->client), static fn($e) => $e['order_id'] === $orderId));
+
+        // Без назви й без продукту (прихований/видалений) — заробіток не зникає
+        Sql::exec("UPDATE design_orders SET title = '', product_id = 0 WHERE id = ?", [$orderId]);
+        $earned = array_values(array_filter(Purchases::forDesigner($this->designer), static fn($e) => $e['order_id'] === $orderId));
+        $this->assertSame(["Замовлення №$orderId", 640], [$earned[0]['title'] ?? null, $earned[0]['amount_designer'] ?? null]);
     }
 
     public function test_credit_allows_negative_and_starts_overdraft(): void
@@ -293,6 +323,14 @@ final class PurchasesTest extends TestCase
         $this->money($this->client, -50, 1000, ['overdraft_start' => $start, 'overdraft_days' => 45]);
         Purchases::buy($second, $this->client, 100);
         $this->assertSame(['inv_sum' => -150, 'credit' => 1000, 'overdraft_start' => $start, 'overdraft_days' => 45],
+            $this->balance($this->client));
+
+        // Був у плюсі, але в рядку лишилась стара дата овердрафту — не блокує, а при уході в мінус дата стає сьогоднішньою
+        [$third] = $this->order(800, 640);
+        $this->money($this->client, 100, 1000, ['overdraft_start' => date('Y-m-d', strtotime('-100 days')), 'overdraft_days' => 30]);
+        $this->assertTrue(Purchases::quote($third, $this->client)['can']);
+        Purchases::buy($third, $this->client, 800);
+        $this->assertSame(['inv_sum' => -700, 'credit' => 1000, 'overdraft_start' => date('Y-m-d'), 'overdraft_days' => 30],
             $this->balance($this->client));
     }
 
@@ -348,6 +386,13 @@ final class PurchasesTest extends TestCase
         $this->money($this->client, 799);
         $this->assertRefused(fn() => Purchases::buy($second, $this->client, 800), 'Не вистачає 1 грн');
         $this->assertSame(799, $this->balance($this->client)['inv_sum']);
+
+        // Копійки: 799,50 при P = 800 — показаний залишок не суперечить can (вниз до гривні)
+        $this->money($this->client, 799.5);
+        $q = Purchases::quote($second, $this->client);
+        $this->assertSame([799, -1, false, 'Не вистачає 1 грн'], [$q['balance'], $q['after'], $q['can'], $q['reason']]);
+        $this->assertRefused(fn() => Purchases::buy($second, $this->client, 800), 'Не вистачає 1 грн');
+        $this->assertSame('799.50', Sql::value('SELECT inv_sum FROM customers WHERE id = ?', [$this->client]));
     }
 
     public function test_price_changed_rejected_nothing_moved(): void
@@ -411,6 +456,40 @@ final class PurchasesTest extends TestCase
             'у «Заробіток» — лише з гонораром');
     }
 
+    /**
+     * Доопрацювання, де ціна клієнта (округлена вгору) не зросла, а гонорар зріс: P = 0, D > 0 — клієнт не платить і рядка
+     * transaction не має, дизайнеру +D з рядком; купівля проведена, у «Заробіток» потрапляє
+     */
+    public function test_client_zero_designer_positive(): void
+    {
+        [$orderId] = $this->order(800, 660, 0, OrderStatus::REWORK, ['paid_client' => 800, 'paid_designer' => 640]);
+        $this->layout($orderId, 'Новий');
+        $this->money($this->client, 0);
+        $this->money($this->designer, 100);
+        $c = $this->balance($this->client);
+
+        $q = Purchases::quote($orderId, $this->client);
+        $this->assertSame([0, 20, true, '', 0], [$q['amount_client'], $q['amount_designer'], $q['can'], $q['reason'], $q['after']]);
+        $r = Purchases::buy($orderId, $this->client, 0);
+        $this->assertSame([0, 20], [$r['amount_client'], $r['amount_designer']]);
+
+        $this->assertSame($c, $this->balance($this->client));
+        $this->assertSame(120, $this->balance($this->designer)['inv_sum']);
+        $tr = $this->transactions();
+        $this->assertCount(1, $tr);
+        $this->assertSame([$this->designer, 20, "[design] Гонорар за замовлення №$orderId"],
+            [(int)$tr[0]['customer_id'], (int)$tr[0]['payment_done'], $tr[0]['paymethod']]);
+        $p = $this->purchases($orderId)[0];
+        $this->assertSame([null, (int)$tr[0]['id']], [$p['transaction_client_id'], (int)$p['transaction_designer_id']]);
+        $o = Sql::one('SELECT status, paid_client, paid_designer FROM design_orders WHERE id = ?', [$orderId]);
+        $this->assertSame([OrderStatus::PURCHASED, 800, 660], [(int)$o['status'], (int)$o['paid_client'], (int)$o['paid_designer']]);
+        $earned = array_values(array_filter(Purchases::forDesigner($this->designer), static fn($e) => $e['order_id'] === $orderId));
+        $this->assertSame(20, $earned[0]['amount_designer'] ?? null);
+
+        Purchases::notifyDesigner($r, $orderId);
+        $this->assertStringContainsString("Клієнт купив макети №$orderId, +20 грн", Notify::$sent[0]['msg']);
+    }
+
     /** Доопрацювання з доплатою: до сплати — різниця з уже сплаченим */
     public function test_rework_pays_difference(): void
     {
@@ -439,12 +518,24 @@ final class PurchasesTest extends TestCase
      */
     public function test_concurrent_buy_debits_once(): void
     {
+        if (!function_exists('proc_open')) self::markTestSkipped('proc_open недоступна — паралельну купівлю не запустити');
+        // База — та сама, до якої підключений Sql (DATABASE() його зʼєднання), а не вписана в тест
+        $db = (string)Sql::value('SELECT DATABASE()');
+        $watch = new \PDO(
+            'mysql:host=' . \CdnConfig::get('db_host') . ';port=' . \CdnConfig::get('db_port') . ';dbname=' . $db . ';charset=utf8mb4',
+            \CdnConfig::get('db_username'), \CdnConfig::get('db_password'), [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+        try {
+            $psOn = (int)$watch->query('SELECT @@performance_schema')->fetchColumn() === 1;
+            $watch->query('SELECT COUNT(*) FROM performance_schema.data_lock_waits w
+                JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID')->fetchColumn();
+        } catch (\PDOException $e) {
+            self::markTestSkipped('performance_schema.data_lock_waits недоступна (' . $e->getMessage() . ') — очікування на замку не перевірити');
+        }
+        if (!$psOn) self::markTestSkipped('performance_schema вимкнено — очікування на замку не перевірити');
+
         [$orderId] = $this->order(800, 640, 2);
         $this->money($this->client, 5000);
         $this->money($this->designer, 0);
-        $watch = new \PDO(
-            'mysql:host=' . \CdnConfig::get('db_host') . ';port=' . \CdnConfig::get('db_port') . ';dbname=w2p;charset=utf8mb4',
-            \CdnConfig::get('db_username'), \CdnConfig::get('db_password'), [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
 
         $code = 'require ' . var_export(dirname(__DIR__) . '/bootstrap.php', true) . ';'
             . 'Design\Sql::exec("SET SESSION innodb_lock_wait_timeout = 15");'
@@ -452,7 +543,7 @@ final class PurchasesTest extends TestCase
             . 'catch (Design\DesignerException $e) { echo json_encode(["error" => $e->getMessage()], JSON_UNESCAPED_UNICODE); }';
         $pipes = [];
         $waited = false;
-        Purchases::$afterLock = function (int $order) use ($orderId, $code, $watch, &$pipes, &$waited): void {
+        Purchases::$afterLock = function (int $order) use ($orderId, $code, $watch, $db, &$pipes, &$waited): void {
             if ($waited) return;
             $this->assertSame($orderId, $order);
             $this->assertTrue(Sql::pdo()->inTransaction());
@@ -462,7 +553,7 @@ final class PurchasesTest extends TestCase
             while (microtime(true) < $deadline) {
                 $n = (int)$watch->query("SELECT COUNT(*) FROM performance_schema.data_lock_waits w
                     JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
-                    WHERE l.OBJECT_SCHEMA = 'w2p' AND l.OBJECT_NAME = 'design_orders' AND l.LOCK_DATA = '$orderId'")->fetchColumn();
+                    WHERE l.OBJECT_SCHEMA = " . $watch->quote($db) . " AND l.OBJECT_NAME = 'design_orders' AND l.LOCK_DATA = '$orderId'")->fetchColumn();
                 if ($n > 0) { $waited = true; return; }
                 // Читати вивід — лише коли процес уже завершився: stream_get_contents чекає кінця потоку
                 if (!proc_get_status($this->child)['running']) {

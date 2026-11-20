@@ -91,24 +91,32 @@ final class Orders
         }
         // Файли — після коммиту (як Previews::hide): не вдався коммит — замовлення живе з усіма файлами. Збій прибирання —
         // лише журнал: замовлення вже скасоване, клієнт має отримати перенаправлення, а дизайнери — сповіщення
-        try {
-            if (self::$afterCommit !== null) (self::$afterCommit)($orderId);
-            Previews::removeOrderFiles($orderId);
-            Layouts::removeUnpurchasedFiles($orderId);
-        } catch (\Throwable $e) {
-            error_log("design: прибирання файлів скасованого замовлення $orderId: " . $e);
+        // — кожне прибирання у своєму try, щоб збій одного не пропустив інше
+        foreach ([
+            static function () use ($orderId): void {
+                if (self::$afterCommit !== null) (self::$afterCommit)($orderId);
+            },
+            static fn() => Previews::removeOrderFiles($orderId),
+            static fn() => Layouts::removeUnpurchasedFiles($orderId),
+        ] as $cleanup) {
+            try {
+                $cleanup();
+            } catch (\Throwable $e) {
+                error_log("design: прибирання файлів скасованого замовлення $orderId: " . $e);
+            }
         }
     }
 
     /**
      * Сповіщення про скасування (після відповіді браузеру): обраному дизайнеру, запрошеному (режим 2) і всім, хто надіслав
      * пропозицію, — «Замовлення №N скасовано клієнтом» (без причини); куратору клієнта — з причиною.
-     * Стан читається заново: замовлення не скасоване — нічого
+     * Стан читається заново: замовлення не скасоване або це скасована чернетка (published_at NULL) — нічого
      */
     public static function notifyCancel(int $orderId): void
     {
-        $o = Sql::one('SELECT customer_id, status, cancel_reason, chosen_offer_id FROM design_orders WHERE id = ?', [$orderId]);
+        $o = Sql::one('SELECT customer_id, status, cancel_reason, chosen_offer_id, published_at FROM design_orders WHERE id = ?', [$orderId]);
         if ($o === null || (int)$o['status'] !== OrderStatus::CANCELLED) return;
+        if ($o['published_at'] === null) return;   // чернетку ніхто не бачив: ні дизайнерам, ні куратору сповіщати нічого
         $time = ' (' . date('d.m H:i') . ')';
         $what = 'Майстерня дизайну: замовлення №' . $orderId . ' скасовано клієнтом.';
         $designers = Sql::all('SELECT DISTINCT designer_id FROM design_offers WHERE order_id = ? AND (id = ? OR status IN (?, ?)) ORDER BY designer_id',

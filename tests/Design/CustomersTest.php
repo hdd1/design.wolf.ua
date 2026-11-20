@@ -18,6 +18,20 @@ final class CustomersTest extends TestCase
         $this->assertStringStartsWith(mb_substr($h['name'], 0, 1), $h['short']);
     }
 
+    /** Баланс у шапці — вниз до гривні, як вікно оплати (Purchases::quote): 799,50 → 799 */
+    public function test_header_balance_floors(): void
+    {
+        $orig = Sql::value('SELECT inv_sum FROM customers WHERE id = 29');
+        try {
+            foreach (['799.50' => 799, '799.99' => 799, '800.00' => 800, '0.40' => 0] as $sum => $expected) {
+                Sql::exec('UPDATE customers SET inv_sum = ? WHERE id = 29', [$sum]);
+                $this->assertSame($expected, Customers::header(29)['balance'], $sum);
+            }
+        } finally {
+            Sql::exec('UPDATE customers SET inv_sum = ? WHERE id = 29', [$orig]);
+        }
+    }
+
     public function test_header_of_unknown_is_null(): void
     {
         $this->assertNull(Customers::header(999999999));
@@ -53,10 +67,12 @@ final class CustomersTest extends TestCase
         try {
             $this->assertSame(['orders' => 0, 'bought' => 0, 'cancelled' => 0], Customers::facts($nobody));
 
+            // Опубліковане замовлення має published_at; чернетка (і скасована чернетка) — NULL
             $mk = static function (int $status) use ($nobody, &$created): int {
                 return $created[] = Sql::insert('design_orders', [
                     'customer_id' => $nobody, 'product_id' => Products::visible()[0]['id'], 'mode' => 1, 'status' => $status,
                     'answers' => json_encode([['q' => 'Розмір', 'a' => '90×50']], JSON_UNESCAPED_UNICODE),
+                    'published_at' => $status === OrderStatus::DRAFT ? null : date('Y-m-d H:i:s'),
                 ]);
             };
             $mk(OrderStatus::DRAFT);                       // чернетка — не рахується
@@ -76,6 +92,12 @@ final class CustomersTest extends TestCase
             $mk(OrderStatus::CANCELLED);
 
             $this->assertSame(['orders' => 5, 'bought' => 1, 'cancelled' => 2], Customers::facts($nobody));
+
+            // Скасована чернетка (CANCELLABLE містить чернетку: статус 8, published_at NULL) — не опублікована, не рахується ні в N, ні в K
+            $draft = $mk(OrderStatus::DRAFT);
+            Sql::exec('UPDATE design_orders SET status = ?, cancel_reason = ?, cancelled_at = NOW() WHERE id = ?', [OrderStatus::CANCELLED, 'Не треба', $draft]);
+            $this->assertNull(Sql::value('SELECT published_at FROM design_orders WHERE id = ?', [$draft]));
+            $this->assertSame(['orders' => 5, 'bought' => 1, 'cancelled' => 2], Customers::facts($nobody), 'скасована чернетка не рахується');
             $this->assertSame(['orders' => 0, 'bought' => 0, 'cancelled' => 0], Customers::facts(999999752), 'чужі замовлення не рахуються');
         } finally {
             if ($created) {
@@ -83,6 +105,26 @@ final class CustomersTest extends TestCase
                 Sql::exec("DELETE FROM design_purchases WHERE order_id IN ($in)");
                 Sql::exec("DELETE FROM design_orders WHERE id IN ($in)");
             }
+        }
+    }
+
+    /** Одне опубліковане замовлення і скасована чернетка — N = 1: «Новий клієнт» (чернетка не робить клієнта «постійним») */
+    public function test_cancelled_draft_keeps_client_new(): void
+    {
+        $nobody = 999999753;
+        $created = [];
+        try {
+            foreach ([[OrderStatus::COLLECTING, date('Y-m-d H:i:s')], [OrderStatus::CANCELLED, null]] as [$status, $published]) {
+                $created[] = Sql::insert('design_orders', [
+                    'customer_id' => $nobody, 'product_id' => Products::visible()[0]['id'], 'mode' => 1, 'status' => $status,
+                    'answers' => json_encode([['q' => 'Розмір', 'a' => '90×50']], JSON_UNESCAPED_UNICODE), 'published_at' => $published,
+                ]);
+            }
+            $facts = Customers::facts($nobody);
+            $this->assertSame(['orders' => 1, 'bought' => 0, 'cancelled' => 0], $facts);
+            $this->assertSame('Новий клієнт', Customers::factsLine($facts));
+        } finally {
+            if ($created) Sql::exec('DELETE FROM design_orders WHERE id IN (' . implode(',', $created) . ')');
         }
     }
 }

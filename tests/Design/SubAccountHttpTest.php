@@ -18,15 +18,22 @@ final class SubAccountHttpTest extends TestCase
     private const BANNER = 'з субакаунта замовити дизайн не можна';
 
     private ?int $origParent = null;
+    /** Був ли у клієнта профіль дизайнера до тесту: якщо ні — все, що з'явилось у design_designers, тест прибирає */
+    private ?bool $hadProfile = null;
 
     protected function setUp(): void
     {
         $me = self::me();
         $this->origParent = (int)Sql::value('SELECT parent_id FROM customers WHERE id = ?', [$me]);
+        $this->hadProfile = Sql::value('SELECT customer_id FROM design_designers WHERE customer_id = ?', [$me]) !== null;
     }
 
     protected function tearDown(): void
     {
+        if ($this->hadProfile === false) {
+            Sql::exec('DELETE FROM design_designers WHERE customer_id = ?', [self::me()]);
+        }
+        $this->hadProfile = null;
         if ($this->origParent !== null) {
             Sql::exec('UPDATE customers SET parent_id = ? WHERE id = ?', [$this->origParent, self::me()]);
             $this->origParent = null;

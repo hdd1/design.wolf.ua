@@ -206,7 +206,7 @@ final class CancelComplaintTest extends TestCase
 
     private function row(int $orderId): array
     {
-        return Sql::one('SELECT status, cancel_reason, cancelled_at FROM design_orders WHERE id = ?', [$orderId]);
+        return Sql::one('SELECT status, cancel_reason, cancelled_at, published_at FROM design_orders WHERE id = ?', [$orderId]);
     }
 
     private function assertRefused(callable $fn, string $msg = '', string $class = DesignerException::class): void
@@ -385,13 +385,13 @@ final class CancelComplaintTest extends TestCase
         Orders::notifyCancel($id);
         $this->assertSame([$this->designer], array_column(array_filter(Notify::$sent, static fn($n) => isset($n['customer_id'])), 'customer_id'));
 
-        // Чернетка без пропозицій — лише куратор; нескасоване замовлення — нічого
+        // Чернетка (published_at NULL — її ніхто не бачив): нікому, ні куратору; нескасоване замовлення — нічого
         Notify::$sent = [];
         $id = $this->order(OrderStatus::DRAFT);
         Orders::cancel($id, $this->client, 'Не треба');
+        $this->assertNull($this->row($id)['published_at']);
         Orders::notifyCancel($id);
-        $this->assertSame([$this->curator], array_column(Notify::$sent, 'user_id'));
-        $this->assertSame([], array_column(Notify::$sent, 'customer_id'));
+        $this->assertSame([], Notify::$sent, 'скасована чернетка — без сповіщень');
         Notify::$sent = [];
         Orders::notifyCancel($this->order(OrderStatus::COLLECTING));
         $this->assertSame([], Notify::$sent);
@@ -509,6 +509,7 @@ final class CancelComplaintTest extends TestCase
     public function test_cleanup_failure_does_not_break_cancel(): void
     {
         [$orderId] = $this->chosen();
+        [, $freshPath] = $this->layout($orderId);
         Orders::$afterCommit = static function (): void {
             throw new \RuntimeException('диск недоступний');
         };
@@ -520,6 +521,8 @@ final class CancelComplaintTest extends TestCase
             ini_set('error_log', $log === false ? '' : $log);
         }
         $this->assertSame(OrderStatus::CANCELLED, (int)$this->row($orderId)['status']);
+        clearstatcache();
+        $this->assertFalse(is_file($freshPath), 'збій першого прибирання не пропускає видалення макетів');
         $this->assertStringContainsString("design: прибирання файлів скасованого замовлення $orderId", (string)@file_get_contents($this->root . '/php.log'));
     }
 

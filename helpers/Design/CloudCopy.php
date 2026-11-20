@@ -142,8 +142,9 @@ final class CloudCopy
             try {
                 $mounted = self::op(['test', '-f', self::cloudRoot() . self::MOUNT_MARKER], self::$timeout, 'перевірити хмару', true) !== null;
             } catch (\Throwable $e) {
-                $mounted = false;
+                // Тайм-аут (чи збій запуску) — один запис у журналі: не дублюємо її повідомленням «немає маркера» нижче
                 error_log('design: копія макетів у хмару: ' . $e->getMessage());
+                return 0;
             }
             if (!$mounted) {
                 error_log('design: копія макетів у хмару: немає ' . self::cloudRoot() . self::MOUNT_MARKER . ' — хмара не змонтована, черга чекає');
@@ -208,7 +209,7 @@ final class CloudCopy
             }
 
             Sql::exec('INSERT INTO customers_cloud (type_id, customer_id, original_name, file, file_size, is_preview)
-                       VALUES (1, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), created = CURRENT_TIMESTAMP',
+                       VALUES (1, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), created = CURRENT_TIMESTAMP, delete_after = NULL',
                 [$customerId, self::originalName((int)$row['order_id'], (string)$row['label'], $ext), $name, min($size, self::INT_MAX), self::PREVIEW_SKIP]);
             $cloudId = (int)Sql::pdo()->lastInsertId();
             Sql::exec('UPDATE design_files SET cloud_status = ?, cloud_id = ?, cloud_error = NULL WHERE id = ?', [self::DONE, $cloudId, $id]);

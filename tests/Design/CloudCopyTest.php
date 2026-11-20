@@ -290,6 +290,21 @@ final class CloudCopyTest extends TestCase
         $this->assertGreaterThan('2026-01-01', (string)Sql::value('SELECT created FROM customers_cloud WHERE id = ?', [$own]));
     }
 
+    /** Рядок клієнта мав delete_after (wolf.ua видалить файл із хмари за датою) — повторне використання знімає дату: design показує «У хмарі ✓» */
+    public function test_reused_cloud_row_delete_after_cleared(): void
+    {
+        [$orderId, $purchaseId] = $this->order();
+        [$fileId, $bytes] = $this->layout($orderId, $purchaseId);
+        $name = $this->name($bytes, 'pdf');
+        $own = Sql::insert('customers_cloud', ['type_id' => 1, 'customer_id' => $this->client, 'original_name' => 'моя.pdf',
+            'file' => $name, 'file_size' => strlen($bytes), 'is_preview' => 3, 'delete_after' => '2030-01-01']);
+        $this->assertSame('2030-01-01', Sql::value('SELECT delete_after FROM customers_cloud WHERE id = ?', [$own]));
+        CloudCopy::request($fileId, $this->client);
+        $this->assertSame(1, CloudCopy::run());
+        $this->assertSame($own, (int)self::row($fileId)['cloud_id']);
+        $this->assertNull(Sql::value('SELECT delete_after FROM customers_cloud WHERE id = ?', [$own]), 'delete_after знято');
+    }
+
     public function test_missing_source_marks_error_then_retry(): void
     {
         [$orderId, $purchaseId] = $this->order();
@@ -391,6 +406,30 @@ final class CloudCopyTest extends TestCase
         file_put_contents($this->cloud . '/is_mount.txt', 'x');
         $this->assertSame(1, CloudCopy::run());
         $this->assertSame(CloudCopy::DONE, (int)self::row($fileId)['cloud_status']);
+    }
+
+    /** Маркер хмари не відповів за тайм-аут: нічого не копіюємо, у журнал — один запис (а не два) */
+    public function test_marker_timeout_logged_once(): void
+    {
+        [$orderId, $purchaseId] = $this->order();
+        [$fileId] = $this->layout($orderId, $purchaseId);
+        CloudCopy::request($fileId, $this->client);
+        CloudCopy::$timeout = 1;
+        CloudCopy::$command = static fn(array $cmd): array => $cmd[0] === 'test' ? ['sleep', '30'] : $cmd;
+        $logFile = tempnam(sys_get_temp_dir(), 'design-cc-log');
+        $log = ini_set('error_log', $logFile);
+        try {
+            $t = microtime(true);
+            $this->assertSame(0, CloudCopy::run());
+        } finally {
+            ini_set('error_log', $log === false ? '' : $log);
+            $text = (string)file_get_contents($logFile);
+            unlink($logFile);
+        }
+        $this->assertLessThan(10, microtime(true) - $t);
+        $this->assertSame(1, substr_count($text, 'design: копія макетів у хмару'), "один запис у журналі, а не два:\n$text");
+        $this->assertStringContainsString('тайм-аут', $text);
+        $this->assertSame(CloudCopy::QUEUED, (int)self::row($fileId)['cloud_status'], 'лишається в черзі');
     }
 
     public function test_stale_part_removed_before_copy(): void

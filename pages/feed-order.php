@@ -119,6 +119,7 @@ $scripts = ['/assets/js/offer-form.js'];
 if ($chat !== null) $scripts[] = '/assets/js/chat.js';
 if ($chat['workspace'] ?? null) {
     if ($chat['workspace']['upload']) $scripts[] = '/assets/js/chunk-upload.js';
+    $scripts[] = '/assets/js/workspace-layouts.js';
     $scripts[] = '/assets/js/workspace.js';
 }
 View::render('layout', [

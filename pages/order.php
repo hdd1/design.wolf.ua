@@ -153,7 +153,7 @@ if ($ws && $chat !== null && $chat['workspace'] !== null) {
 View::render('layout', [
     'title' => $order['title'],
     'active' => 'orders',
-    'scripts' => $chat === null ? [] : ($chat['workspace'] !== null ? ['/assets/js/chat.js', '/assets/js/workspace.js'] : ['/assets/js/chat.js']),
+    'scripts' => $chat === null ? [] : ($chat['workspace'] !== null ? ['/assets/js/chat.js', '/assets/js/workspace-layouts.js', '/assets/js/workspace.js'] : ['/assets/js/chat.js']),
     'toast' => $posted === null ? ($toasts[Http::str($_GET, 'done')] ?? null) : null,
     'body' => View::fetch('order', [
         'order' => $order,

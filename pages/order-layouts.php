@@ -2,7 +2,7 @@
 /**
  * Панель «Макети» без перезавантаження: GET /orders/{id}/layouts → {layouts, count, rev, turn} (Workspace::layouts, Workspace::turn).
  * Клієнт замовлення або дизайнер обраної пропозиції; інакше 404. Лише підпис, ім'я файла й розмір — без адрес: до купівлі
- * макети не віддаються. assets/js/workspace.js перечитує панель, коли змінюється layouts_rev в опитуванні листування
+ * макети не віддаються. assets/js/workspace-layouts.js перечитує панель, коли змінюється layouts_rev в опитуванні листування
  * @var array $params
  */
 use Design\Guard;

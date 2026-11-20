@@ -1,7 +1,7 @@
 """
 JS робочого простору без сервера: справжні partials/chat (з робочим простором) і partials/layouts-panel, відрендерені PHP,
-і справжні assets/js/chat.js, chunk-upload.js, workspace.js у Chromium; запити сторінки перехоплює page.route (адреса
-https://ws.test/ вигадана — у мережу нічого не йде, БД лише читає Settings).
+і справжні assets/js/chat.js, chunk-upload.js, workspace-layouts.js, workspace.js у Chromium; запити сторінки перехоплює
+page.route (адреса https://ws.test/ вигадана — у мережу нічого не йде, БД лише читає Settings).
 Перевіряє: (1) остаточну помилку останньої частини ({final:true}) chunk-upload.js не повторює, звичайну 5xx — повторює;
 (2) поки завантажується заміна макета, «Замінити», «Видалити» й олівець цього макета вимкнені (і після перемальовування панелі);
 (3) системне повідомлення з адресою в тексті chat.js показує текстом, без посилання.
@@ -28,7 +28,7 @@ echo View::fetch("partials/layouts-panel", ["orderId" => 1, "panel" => $panel, "
 
 def page_html() -> str:
     body = subprocess.check_output(['php', '-r', RENDER], cwd=ROOT, text=True)
-    scripts = ''.join('<script src="/assets/js/%s"></script>' % s for s in ('chat.js', 'chunk-upload.js', 'workspace.js'))
+    scripts = ''.join('<script src="/assets/js/%s"></script>' % s for s in ('chat.js', 'chunk-upload.js', 'workspace-layouts.js', 'workspace.js'))
     return '<!doctype html><html><head><meta charset="utf-8"></head><body>%s%s</body></html>' % (body, scripts)
 
 

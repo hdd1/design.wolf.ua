@@ -64,18 +64,24 @@ main{flex:1 0 auto}
 .brand{display:flex;align-items:center;gap:var(--s-3);text-decoration:none;color:var(--text)}
 .brand img{height:56px;width:auto}
 @media (max-width:575px){.brand img{height:44px}}
+@media (min-width:992px){.brand .brand-title{white-space:nowrap}}
 .brand .brand-text{border-left:1px solid var(--border);padding-left:var(--s-3);line-height:1.15}
 .brand .brand-title{font-family:var(--font-head);font-weight:600;font-size:1.2rem;color:var(--text)}
 .brand .brand-sub{font-size:.8rem;color:var(--text-2)}
-.main-nav{display:flex;gap:var(--s-2);align-self:stretch}
-.main-nav a,.main-nav span{display:flex;align-items:center;padding:0 var(--s-3);color:var(--text-2);text-decoration:none;font-weight:500;border-bottom:3px solid transparent}
+.main-nav{display:flex;gap:0;align-self:stretch}
+.main-nav a,.main-nav span{display:flex;align-items:center;white-space:nowrap;padding:0 .7rem;color:var(--text-2);text-decoration:none;font-weight:500;border-bottom:3px solid transparent}
 .main-nav a:hover{color:var(--text)}
 .main-nav a.active{color:var(--text);font-weight:700;border-bottom-color:var(--orange)}
 .balance{display:inline-flex;align-items:center;gap:var(--s-2);background:var(--bg);border-radius:var(--r-pill);padding:.45rem .9rem;font-weight:700;font-size:.92rem}
 .avatar{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;background:var(--orange-soft);color:#9A5B00;font-weight:700;font-size:.85rem;flex:none}
-.user{display:flex;align-items:center;gap:var(--s-2);font-weight:600}
+.user{display:flex;align-items:center;gap:var(--s-2);font-weight:600;white-space:nowrap}
 @media (max-width:991px){.main-nav,.balance .label{display:none}.brand .brand-sub{display:none}.user .short{display:none}}
 .mobile-nav{display:none}
+/* Меню дизайнера (5 пунктів) у шапку на десктопі не вміщається вужче 1400px — до того те саме, що й на мобільному: другий рядок */
+@media (min-width:992px) and (max-width:1399px){.nav-wide .main-nav,.nav-wide .balance .label{display:none}.nav-wide .brand .brand-sub{display:none}.nav-wide .user .short{display:none}
+  .nav-wide .mobile-nav{display:flex;gap:var(--s-2);overflow-x:auto;padding:var(--s-2) 0;border-top:1px solid var(--border)}
+  .nav-wide .mobile-nav a{white-space:nowrap;padding:.35rem .8rem;border-radius:var(--r-pill);color:var(--text-2);text-decoration:none;font-weight:500}
+  .nav-wide .mobile-nav a.active{background:var(--orange-soft);color:var(--text);font-weight:700}}
 @media (max-width:991px){.mobile-nav{display:flex;gap:var(--s-2);overflow-x:auto;padding:var(--s-2) 0;border-top:1px solid var(--border)}
   .mobile-nav a{white-space:nowrap;padding:.35rem .8rem;border-radius:var(--r-pill);color:var(--text-2);text-decoration:none;font-weight:500}
   .mobile-nav a.active{background:var(--orange-soft);color:var(--text);font-weight:700}}
@@ -883,3 +889,26 @@ body.pvv-open{overflow:hidden}
   .lp-drop-ic{font-size:1.5rem}
   .lp-drop-hint{flex:1 1 100%}
 }
+
+/* «Заробіток» дизайнера */
+.earn-total{display:flex;align-items:center;gap:var(--s-4);padding:var(--s-4) var(--s-5);margin-bottom:var(--s-3)}
+.earn-total .ic{width:56px;height:56px;border-radius:50%;background:var(--blue-soft);color:var(--blue);display:inline-flex;align-items:center;justify-content:center;font-size:1.4rem;flex:none}
+.earn-sum{font-size:1.5rem}
+.earn-sum strong{font-weight:800}
+.earn-note{margin-bottom:var(--s-4)}
+.earn-list{overflow:hidden}
+.earn-row{display:grid;grid-template-columns:110px 80px minmax(0,1fr) auto;gap:var(--s-4);align-items:center;padding:var(--s-3) var(--s-5);border-bottom:1px solid var(--border);text-decoration:none;color:var(--text)}
+.earn-row:last-child{border-bottom:0}
+.earn-row:hover{background:var(--blue-soft)}
+.earn-row .when,.earn-row .num{color:var(--text-3);font-size:.9rem}
+.earn-row .title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.earn-row .sum{font-weight:700;white-space:nowrap}
+@media (max-width:575px){
+  .earn-row{grid-template-columns:auto minmax(0,1fr) auto;gap:var(--s-1) var(--s-3);padding:var(--s-3) var(--s-4)}
+  .earn-row .when{grid-column:1;grid-row:1}
+  .earn-row .num{grid-column:2;grid-row:1}
+  .earn-row .title{grid-column:1 / span 2;grid-row:2;white-space:normal}
+  .earn-row .sum{grid-column:3;grid-row:1 / span 2}
+}
+.brief-card .bc-facts{color:var(--text-2);font-size:.88rem}
+.fo-meta .client-facts{color:var(--text-2)}

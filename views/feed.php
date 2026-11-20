@@ -1,8 +1,8 @@
 <?php
 /**
  * Стрічка брифів (макет 6.9 «Стрічка брифів», «… · порожньо»)
- * @var int $page @var int $pages @var int $total @var string $csrf
- * @var list<array{order_id:int, product_name:string, title:string, published_at:?string, preview:list<array{q:string,a:string}>, offers:int, mine:?array, chosen_other:bool, is_new:bool}> $items  Offers::feed
+ * @var int $page @var int $pages @var int $total @var string $csrf @var array<int,string> $facts customer_id → Customers::factsLine
+ * @var list<array{order_id:int, customer_id:int, product_name:string, title:string, published_at:?string, preview:list<array{q:string,a:string}>, offers:int, mine:?array, chosen_other:bool, is_new:bool}> $items  Offers::feed
  */
 use Design\OfferStatus;
 use Design\View;
@@ -36,6 +36,7 @@ $href = static fn(int $p): string => '/feed/' . ($p > 1 ? '?page=' . $p : '');
               </div>
             </div>
             <?php if ($b['title'] !== $b['product_name']): ?><div class="bc-name"><?= View::e($b['title']) ?></div><?php endif ?>
+            <div class="bc-facts"><i class="fal fa-user"></i> <?= View::e($facts[$b['customer_id']] ?? '') ?></div>
             <?php if ($b['preview']): ?>
               <dl class="bc-qa">
                 <?php foreach ($b['preview'] as $p): ?><dt><?= View::e($p['q']) ?></dt><dd><?= View::e($p['a']) ?></dd><?php endforeach ?>

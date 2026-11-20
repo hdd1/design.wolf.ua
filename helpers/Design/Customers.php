@@ -29,4 +29,27 @@ final class Customers
     {
         return (int)Sql::value('SELECT parent_id FROM customers WHERE id = ?', [$id]) !== 0;
     }
+
+    /**
+     * Факти про клієнта для брифу дизайнерів: orders — опубліковані замовлення (без чернеток), bought — з проведеною купівлею
+     * (design_purchases.status 2; одне замовлення — раз), cancelled — скасовані
+     * @return array{orders:int, bought:int, cancelled:int}
+     */
+    public static function facts(int $customerId): array
+    {
+        $r = Sql::one(
+            'SELECT COUNT(*) AS orders,
+                    COALESCE(SUM(EXISTS (SELECT 1 FROM design_purchases p WHERE p.order_id = o.id AND p.status = ?)), 0) AS bought,
+                    COALESCE(SUM(o.status = ?), 0) AS cancelled
+             FROM design_orders o WHERE o.customer_id = ? AND o.status <> ?',
+            [Purchases::STATUS_DONE, OrderStatus::CANCELLED, $customerId, OrderStatus::DRAFT]);
+        return ['orders' => (int)$r['orders'], 'bought' => (int)$r['bought'], 'cancelled' => (int)$r['cancelled']];
+    }
+
+    /** Рядок фактів для брифу: «Замовлень: 5 · куплено: 3 · скасовано: 1»; клієнт лише з цим замовленням (N ≤ 1) — «Новий клієнт» */
+    public static function factsLine(array $facts): string
+    {
+        if ($facts['orders'] <= 1) return 'Новий клієнт';
+        return 'Замовлень: ' . $facts['orders'] . ' · куплено: ' . $facts['bought'] . ' · скасовано: ' . $facts['cancelled'];
+    }
 }

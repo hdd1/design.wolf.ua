@@ -1,7 +1,7 @@
 <?php
 /**
  * @var string $title @var string $body
- * @var string $active  'brief' | 'orders' | 'designers' | 'designer' | 'feed' | 'my-offers' | ''
+ * @var string $active  'brief' | 'orders' | 'designers' | 'designer' | 'feed' | 'my-offers' | 'earnings' | ''
  * @var list<string> $scripts  додаткові скрипти сторінки (шляхи від кореня сайту)
  */
 use Design\Auth;
@@ -18,7 +18,7 @@ $active = $active ?? '';
 $approved = $h !== null && Designers::status($me) === DesignerStatus::APPROVED;
 // Схвалений дизайнер: меню дизайнера (кружечок — нові брифи в стрічці); «Мої замовлення» — його замовлення як клієнта
 $nav = $approved
-    ? [['feed', '/feed/', 'Стрічка брифів'], ['my-offers', '/my-offers/', 'Мої пропозиції'], ['orders', '/orders/', 'Мої замовлення'], ['designer', '/designer/', 'Мій профіль']]
+    ? [['feed', '/feed/', 'Стрічка брифів'], ['my-offers', '/my-offers/', 'Мої пропозиції'], ['earnings', '/earnings/', 'Заробіток'], ['orders', '/orders/', 'Мої замовлення'], ['designer', '/designer/', 'Мій профіль']]
     : [['brief', '/brief/', 'Новий бриф'], ['orders', '/orders/', 'Мої замовлення'], ['designers', '/designers/', 'Дизайнери']];
 if ($h !== null && !$approved) $nav[] = ['designer', '/designer/', 'Стати дизайнером'];
 $feedNew = $approved ? Offers::feedNewCount($me) : 0;
@@ -37,7 +37,7 @@ $badge = static fn(string $key): string => $key === 'feed' && $feedNew > 0
 <link rel="stylesheet" href="<?= View::asset('/assets/css/app.css') ?>">
 </head>
 <body>
-<header class="site-header">
+<header class="site-header<?= $approved ? ' nav-wide' : '' ?>">
   <div class="container">
     <div class="bar">
       <a class="brand" href="/">

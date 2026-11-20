@@ -42,6 +42,7 @@ final class Router
         ['GET', '#^/feed/(?<id>' . self::ID . ')/$#', 'feed-order'],
         ['POST', '#^/feed/(?<id>' . self::ID . ')$#', 'feed-offer'],
         ['GET', '#^/my-offers/$#', 'my-offers'],
+        ['GET', '#^/earnings/$#', 'earnings'],
     ];
 
     /** @return array{page:string,params:array<string,string>}|null */

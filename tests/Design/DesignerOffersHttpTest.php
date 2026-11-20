@@ -161,6 +161,32 @@ final class DesignerOffersHttpTest extends TestCase
         return substr($html, $a, strpos($html, '</main>') - $a);
     }
 
+    /** Факти про клієнта в брифі: у стрічці і на сторінці брифу, «Новий клієнт» при одному замовленні */
+    public function test_client_facts_in_feed_and_brief(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        $orderId = $this->order($client);
+        $facts = Customers::facts($client);
+        $line = Customers::factsLine($facts);
+        $this->assertGreaterThanOrEqual(1, $facts['orders']);
+
+        $this->assertStringContainsString('<div class="bc-facts"><i class="fal fa-user"></i> ' . $line . '</div>', $this->page('/feed/', $designer));
+        $this->assertStringContainsString('<span class="client-facts">' . $line . '</span>', $this->page("/feed/$orderId/", $designer));
+
+        // другий опублікований і один скасований — рядок із цифрами
+        $this->order($client);
+        $cancelled = $this->order($client, OrderStatus::CANCELLED);
+        $after = Customers::facts($client);
+        $this->assertSame($facts['orders'] + 2, $after['orders']);
+        $this->assertSame($facts['cancelled'] + 1, $after['cancelled']);
+        $expected = 'Замовлень: ' . $after['orders'] . ' · куплено: ' . $after['bought'] . ' · скасовано: ' . $after['cancelled'];
+        $this->assertSame($expected, Customers::factsLine($after));
+        $this->assertStringContainsString('<span class="client-facts">' . $expected . '</span>', $this->page("/feed/$orderId/", $designer));
+        $this->assertStringContainsString($expected, $this->page('/feed/', $designer));
+        $this->assertGreaterThan(0, $cancelled);
+    }
+
     public function test_feed_requires_approved(): void
     {
         $client = self::clientId();

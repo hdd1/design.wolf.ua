@@ -550,7 +550,9 @@ final class LayoutsHttpTest extends TestCase
         $this->assertStringContainsString('Термін до ' . View::date(date('Y-m-d', strtotime('+3 day'))), $text);
         $this->assertStringContainsString('Завантажити макети', $text);
         $this->assertStringContainsString('Клієнт ', $text);
-        foreach (['Змінити', 'Заробіток', '★'] as $s) $this->assertStringNotContainsString($s, $text);
+        // «Заробіток» — пункт меню дизайнера (етап 5), у самій шапці замовлення його немає
+        $main = self::text(substr($html, (int)strpos($html, '<main')));
+        foreach (['Змінити', 'Заробіток', '★'] as $s) $this->assertStringNotContainsString($s, $main);
 
         $this->assertSame("Ваш хід: покажіть перше прев'ю", $designerTurn());
         $this->assertSame('Дизайнер працює над макетами', $clientTurn());

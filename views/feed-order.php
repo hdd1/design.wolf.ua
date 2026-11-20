@@ -2,7 +2,7 @@
 /**
  * Бриф для дизайнера (макети 6.7 «Пропозиція дизайнера», «Запрошення», «Вікна · десктоп»): стан своєї пропозиції або
  * запрошення, форма, повний бриф і листування
- * @var array $order Orders::find @var ?array $offer Offers::forDesigner @var string $client «Тарас Г.»
+ * @var array $order Orders::find @var ?array $offer Offers::forDesigner @var string $client «Тарас Г.» @var string $facts Customers::factsLine — «Замовлень: 5 · куплено: 3 · скасовано: 1» / «Новий клієнт»
  * @var array<string,bool> $forms доступні форми @var string $form відкрита форма ('' — жодної)
  * @var array{text:string,price:string,deadline:string,reason:string} $values @var ?string $error
  * @var string $csrf @var ?array $chat параметри partials/chat @var float $k @var int $round
@@ -37,6 +37,7 @@ $terms = $offer !== null && $offer['price_designer'] > 0
         <h1 class="fo-title"><?= View::e($order['title']) ?></h1>
         <div class="fo-meta">
           <span class="who"><span class="avatar avatar-xs"><?= View::e(Chat::initials($client)) ?></span><?= View::e($client) ?></span>
+          <span class="client-facts"><?= View::e($facts) ?></span>
           <?php if ($order['published_at'] !== null): ?><span>Опубліковано <?= View::e(View::when($order['published_at'])) ?></span><?php endif ?>
         </div>
       </div>

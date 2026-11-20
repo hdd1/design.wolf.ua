@@ -119,6 +119,9 @@ final class RouterTest extends TestCase
         $this->assertNull(Router::match('GET', '/feed/abc/'));
         $this->assertNull(Router::match('GET', '/feed/1234567890/'));
         $this->assertNull(Router::match('POST', '/my-offers/'));
+        $this->assertSame(['page' => 'earnings', 'params' => []], Router::match('GET', '/earnings/'));
+        $this->assertNull(Router::match('POST', '/earnings/'));
+        $this->assertSame('/earnings/', Router::withSlash('/earnings'));
         $this->assertSame('/feed/', Router::withSlash('/feed'));
         $this->assertSame('/feed/345/', Router::withSlash('/feed/345'));
         $this->assertSame('/my-offers/', Router::withSlash('/my-offers'));

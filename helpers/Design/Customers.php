@@ -23,4 +23,10 @@ final class Customers
             'balance' => (int)round((float)$r['inv_sum']),
         ];
     }
+
+    /** Субакаунт wolf.ua (customers.parent_id ≠ 0): на design нічого не може. Немає такого клієнта — не субакаунт */
+    public static function isSub(int $id): bool
+    {
+        return (int)Sql::value('SELECT parent_id FROM customers WHERE id = ?', [$id]) !== 0;
+    }
 }

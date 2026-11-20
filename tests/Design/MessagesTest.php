@@ -4,6 +4,7 @@ use Design\DesignerException;
 use Design\DesignerStatus;
 use Design\Messages;
 use Design\Notify;
+use Design\OfferStatus;
 use Design\Sql;
 use PHPUnit\Framework\TestCase;
 
@@ -214,5 +215,35 @@ final class MessagesTest extends TestCase
         }
         $this->assertTrue(Messages::notifyNew($this->offerId, Messages::ROLE_CLIENT, self::FAKE_CLIENT, 'Дизайнер', self::FAKE_ORDER));
         $this->assertCount(1, Notify::$sent);
+    }
+
+    /** Відповідь (коментар) — лише на наявне повідомлення того самого листування; list віддає reply_to_id і preview_id */
+    public function test_reply_to_same_offer_only(): void
+    {
+        $other = Sql::insert('design_offers', ['order_id' => self::FAKE_ORDER, 'designer_id' => self::FAKE_DESIGNER + 10, 'status' => OfferStatus::SENT]);
+        $foreign = Messages::add($other, self::FAKE_CLIENT, Messages::ROLE_CLIENT, 'В іншому листуванні');
+        $base = Messages::add($this->offerId, self::FAKE_DESIGNER, Messages::ROLE_DESIGNER, 'Варіант із темним фоном');
+
+        foreach (['інше листування' => $foreign, 'немає' => $base + 1000000] as $why => $replyTo) {
+            try {
+                Messages::add($this->offerId, self::FAKE_CLIENT, Messages::ROLE_CLIENT, 'Коментар', [], $replyTo);
+                $this->fail("Відповідь ($why) має відхилятись");
+            } catch (DesignerException $e) {
+                $this->assertSame('Повідомлення, на яке ви відповідаєте, не знайдено', $e->getMessage(), $why);
+            }
+        }
+        $this->assertSame([$base], array_column(Messages::list($this->offerId), 'id'), 'відхилені відповіді не записано');
+
+        $reply = Messages::add($this->offerId, self::FAKE_CLIENT, Messages::ROLE_CLIENT, 'Темний подобається', [], $base);
+        $plain = Messages::add($this->offerId, self::FAKE_CLIENT, Messages::ROLE_CLIENT, 'Без відповіді');
+        $byId = array_column(Messages::list($this->offerId), null, 'id');
+        $this->assertSame($base, $byId[$reply]['reply_to_id']);
+        $this->assertNull($byId[$reply]['data']);
+        $this->assertNull($byId[$plain]['reply_to_id']);
+        $this->assertNull($byId[$base]['preview_id']);
+
+        // byIds — лише цього листування
+        $this->assertSame([$base, $reply], array_keys(Messages::byIds($this->offerId, [$reply, $base, $foreign, $base])));
+        $this->assertSame([], Messages::byIds($this->offerId, []));
     }
 }

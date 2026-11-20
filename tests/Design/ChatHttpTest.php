@@ -182,7 +182,9 @@ final class ChatHttpTest extends TestCase
         [$code, $json] = self::send($offerId, $client, '  Добрий день! Мапа є?  ');
         $this->assertSame(200, $code, json_encode($json, JSON_UNESCAPED_UNICODE));
         $m = $json['message'];
-        $this->assertSame(['id', 'mine', 'system', 'author', 'text', 'time'], array_keys($m));
+        $this->assertSame(['id', 'mine', 'system', 'author', 'text', 'time', 'preview', 'reply'], array_keys($m));
+        $this->assertNull($m['preview'], 'звичайне повідомлення — без прев\'ю');
+        $this->assertNull($m['reply'], 'і без цитати');
         $this->assertTrue($m['mine']);
         $this->assertFalse($m['system']);
         $this->assertSame('Добрий день! Мапа є?', $m['text']);

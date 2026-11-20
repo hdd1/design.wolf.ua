@@ -4,12 +4,15 @@
  * і вибором (макет 6.4), стани режиму 2 «чекаємо відповіді дизайнера» / «дизайнер відмовився» / «дизайнер назвав ціну»
  * (крім «Обрати» — другорядні «Запросити іншого дизайнера» і «Збирати пропозиції», рішення власника 2026-11-19).
  * ?chat={id пропозиції} — відкрите листування (на телефоні — окремий екран), ?chat=0 — без бокової панелі; ?done=… — тост.
+ * Замовлення «В роботі» з обраним дизайнером — робочий простір (макет 6.5, views/partials/workspace.php): шапка з ціною,
+ * «Купую» (неактивна, «Незабаром»), «чий хід» з фактичною кількістю макетів, стрічка обраного листування і панель «Макети»
  * Після помилки POST сторінку рендерить pages/order-update.php з $posted
  * @var array $params
  * @var ?array{error:string} $posted
  */
 use Design\BriefPage;
 use Design\Chat;
+use Design\ChunkUpload;
 use Design\Csrf;
 use Design\Guard;
 use Design\Http;
@@ -20,6 +23,7 @@ use Design\Orders;
 use Design\OrderStatus;
 use Design\Products;
 use Design\View;
+use Design\Workspace;
 
 $me = Guard::customer();
 $order = Orders::get((int)$params['id'], $me);
@@ -58,12 +62,14 @@ $choosable = static fn(array $c): bool => $c['status'] === OfferStatus::SENT && 
 $open = count(array_filter($cards, $choosable));
 // Список пропозицій — скрізь, крім «чекаємо відповіді» і «дизайнер відмовився» режиму 2
 $list = $state !== 'waiting' && $state !== 'declined';
+// Робочий простір: замовлення в роботі — листування обраного дизайнера; закрите листування з іншим (?chat={id}) — як на етапі 3
+$asked = Http::str($_GET, 'chat');
+$ws = $chosen !== null && $order['status'] === OrderStatus::IN_WORK && ($asked === '' || $asked === (string)$chosen['id']);
 
 // Відкрите листування: ?chat= (лише пропозиція зі списку цього замовлення; 0 — закрите), інакше обраний дизайнер
 // або перша пропозиція, яку можна обрати
 $byId = array_column($cards, null, 'id');
-$asked = Http::str($_GET, 'chat');
-$explicit = $list && preg_match('/^\d{1,9}$/', $asked) === 1;
+$explicit = !$ws && $list && preg_match('/^\d{1,9}$/', $asked) === 1;
 $sel = $explicit ? (int)$asked : 0;
 if ($list && !isset($byId[$sel]) && !($explicit && $sel === 0)) {
     $explicit = false;
@@ -93,6 +99,9 @@ if (isset($byId[$sel])) {
         'messages' => $messages,
         'write' => $access['write'],
         'footer' => $footer,
+        // Робочий простір — листування обраного дизайнера: прев'ю, цитати, перегляд (клієнт лише дивиться й коментує)
+        'workspace' => $card['status'] === OfferStatus::CHOSEN
+            ? ['orderId' => $id, 'upload' => false, 'hide' => false, 'chunk' => ChunkUpload::partSize()] : null,
     ];
 }
 
@@ -122,10 +131,29 @@ $toasts = [
     'collect' => 'Бриф опубліковано — дизайнери вже бачать його',
 ];
 
+$workspace = null;
+if ($ws && $chat !== null && $chat['workspace'] !== null) {
+    $workspace = [
+        'role' => 'client',
+        'order' => $order,
+        'offer' => $access['offer'],
+        'back' => ['href' => '/orders/', 'label' => 'Мої замовлення'],
+        'who' => trim('Дизайнер ' . $chosen['designer_name']),
+        'whoName' => $chosen['designer_name'] !== '' ? $chosen['designer_name'] : 'Дизайнер',
+        'turn' => Workspace::turn($access['offer'], Messages::ROLE_CLIENT),
+        'chat' => $chat,
+        'panel' => Workspace::layouts($id),
+        'edit' => false,
+        'csrf' => $csrf,
+        'chunk' => $chat['workspace']['chunk'],
+        'error' => $posted['error'] ?? null,
+    ];
+}
+
 View::render('layout', [
     'title' => $order['title'],
     'active' => 'orders',
-    'scripts' => $chat !== null ? ['/assets/js/chat.js'] : [],
+    'scripts' => $chat === null ? [] : ($chat['workspace'] !== null ? ['/assets/js/chat.js', '/assets/js/workspace.js'] : ['/assets/js/chat.js']),
     'toast' => $posted === null ? ($toasts[Http::str($_GET, 'done')] ?? null) : null,
     'body' => View::fetch('order', [
         'order' => $order,
@@ -144,5 +172,6 @@ View::render('layout', [
         'chat' => $chat,
         'chatOpen' => $explicit && $chat !== null,
         'csrf' => $csrf,
+        'workspace' => $workspace,
     ]),
 ]);

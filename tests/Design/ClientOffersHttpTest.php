@@ -256,17 +256,18 @@ final class ClientOffersHttpTest extends TestCase
         $this->assertSame($mine, (int)$row['chosen_offer_id']);
         $this->assertSame(OfferStatus::OTHER_CHOSEN, (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$other]));
 
-        // Після вибору: «В роботі», обраний дизайнер і листування з ним; «Обрати» більше немає
+        // Після вибору: робочий простір (етап 4, макет 6.5) — «В роботі», шапка з ціною, листування з обраним; «Обрати» більше немає
         [$code, , $html] = self::fetch("/orders/$orderId/?done=chosen", $client);
         $this->assertSame(200, $code);
         $this->assertStringContainsString('Дизайнера обрано', $html);
         $body = self::main($html);
         $this->assertStringContainsString('В роботі', $body);
-        $this->assertStringContainsString('Обраний дизайнер', $body);
+        $this->assertStringContainsString('Дизайнер працює над макетами', $body);
+        $this->assertStringContainsString('data-layouts', $body);
         $this->assertStringContainsString('data-chat="' . $mine . '"', $body);
         $this->assertStringContainsString('data-write="1"', $body);
         $this->assertStringNotContainsString('name="offer_id"', $body);
-        $this->assertStringContainsString('Вже обрано іншого дизайнера', $body);
+        $this->assertStringNotContainsString('data-chat="' . $other . '"', $body);
 
         // Листування з іншим — лише читання
         $body = $this->page("/orders/$orderId/?chat=$other", $client);
@@ -377,7 +378,8 @@ final class ClientOffersHttpTest extends TestCase
 
         $body = $this->page("/orders/$orderId/", $client);
         $this->assertStringContainsString('В роботі', $body);
-        $this->assertStringContainsString('Обраний дизайнер', $body);
+        $this->assertStringContainsString('data-chat="' . $offerId . '"', $body);
+        $this->assertStringContainsString('data-layouts', $body);
         $this->assertStringContainsString('data-write="1"', $body);
     }
 

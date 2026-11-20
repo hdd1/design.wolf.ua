@@ -1,6 +1,7 @@
 <?php
 /**
- * Нове повідомлення: POST /offers/{id}/messages (text, csrf) → {message} у тому ж вигляді, що й опитування.
+ * Нове повідомлення: POST /offers/{id}/messages (text, csrf, reply_to — id повідомлення чи прев'ю цього листування, якщо це
+ * відповідь / коментар) → {message} у тому ж вигляді, що й опитування.
  * Після запису — seen своєї ролі і сповіщення співрозмовнику (лише про перше непрочитане, див. Messages::notifyNew)
  * @var array $params
  */
@@ -22,7 +23,11 @@ if (!$access['write']) Http::json(['error' => 'Листування закрит
 
 $offer = $access['offer'];
 try {
-    $msgId = Messages::add($id, $me, $access['role'], Http::str($_POST, 'text'));
+    $replyTo = trim(Http::str($_POST, 'reply_to'));
+    if ($replyTo !== '' && !preg_match('/^[1-9]\d{0,9}$/D', $replyTo)) {
+        throw new DesignerException('Повідомлення, на яке ви відповідаєте, не знайдено');
+    }
+    $msgId = Messages::add($id, $me, $access['role'], Http::str($_POST, 'text'), [], $replyTo === '' ? null : (int)$replyTo);
     Messages::seen($id, $access['role']);
 } catch (DesignerException $e) {
     Http::json(['error' => $e->getMessage()], 422);

@@ -3,7 +3,7 @@
  * «Мої пропозиції і замовлення» (макет 6.9, вкладки «Пропозиції» і «В роботі»; «Завершені» і «Заробіток» — етап 5)
  * @var string $tab offers | work @var string $csrf
  * @var list<array{id:int, order_id:int, status:int, order_status:int, mode:int, product_name:string, title:string, client:string, text:string, price_designer:int, price_client:int, deadline:?string, messages:int, updated:string}> $offers
- * @var list<array> $work  Offers::mine
+ * @var list<array> $work  Offers::mine + turn — «чий хід» дизайнера (Workspace::turn) для замовлень «В роботі», інакше null
  */
 use Design\OfferStatus;
 use Design\OrderStatus;
@@ -84,9 +84,9 @@ $chat = static fn(array $o): string => $o['messages'] > 0
       </div>
     <?php endif ?>
     <?php foreach ($work as $o): ?>
-      <a class="order-row mine" href="/feed/<?= $o['order_id'] ?>/">
-        <div><div class="num">№<?= $o['order_id'] ?> · клієнт <?= View::e($o['client']) ?></div><div class="title"><?= View::e($o['title']) ?></div></div>
-        <div><?php View::render('partials/status', ['status' => $o['order_status']]) ?><div class="turn"><i class="fal fa-hand-paper me-1"></i>Клієнт обрав вас<?= $o['deadline'] ? ' · готово до ' . View::e(View::date($o['deadline'])) : '' ?></div></div>
+      <a class="order-row<?= ($o['turn']['mine'] ?? true) ? ' mine' : '' ?>" href="/feed/<?= $o['order_id'] ?>/">
+        <div><div class="num">№<?= $o['order_id'] ?> · клієнт <?= View::e($o['client']) ?><?= $o['deadline'] ? ' · до ' . View::e(View::date($o['deadline'])) : '' ?></div><div class="title"><?= View::e($o['title']) ?></div></div>
+        <div><?php View::render('partials/status', ['status' => $o['order_status']]) ?><?php if ($o['turn'] !== null): ?><div class="turn"><i class="fal <?= $o['turn']['mine'] ? 'fa-hand-paper' : 'fa-hourglass-half' ?> me-1"></i><?= View::e($o['turn']['text']) ?></div><?php else: ?><div class="turn"><i class="fal fa-hand-paper me-1"></i>Клієнт обрав вас<?= $o['deadline'] ? ' · готово до ' . View::e(View::date($o['deadline'])) : '' ?></div><?php endif ?></div>
         <div class="who"><?= $o['messages'] > 0 ? 'Листування · ' . $o['messages'] : '' ?></div>
         <div class="sum"><?= View::e(View::price($o['price_designer'])) ?></div>
         <i class="fal fa-chevron-right chev"></i>

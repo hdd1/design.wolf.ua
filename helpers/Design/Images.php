@@ -4,6 +4,7 @@ namespace Design;
 
 /**
  * Картинки портфоліо й аватари: перевірка завантаження, оригінал як є, зменшені копії WebP через Imagick.
+ * Публічні кроки (check, load, toSrgb, fitInto, writeWebp, ensureDir…) використовує й PreviewImages.
  * Без БД і без знання про дизайнерів — лише файли в переданій папці.
  */
 final class Images
@@ -26,8 +27,15 @@ final class Images
         IMAGETYPE_JPEG => ['jpg', 'JPEG'],
         IMAGETYPE_PNG => ['png', 'PNG'],
     ];
+    /** TIFF — лише для прев'ю ($allowTiff); читається тільки перша сторінка */
+    private const TIFF_TYPES = [
+        IMAGETYPE_TIFF_II => ['tif', 'TIFF'],
+        IMAGETYPE_TIFF_MM => ['tif', 'TIFF'],
+    ];
+    /** Шлях, який можна віддати Imagick як ім'я файлу з індексом сторінки «[0]» */
+    private const SAFE_PATH = '~^/[A-Za-z0-9._/-]+$~D';
 
-    private const ERR_BROKEN = 'Файл пошкоджений або це не картинка';
+    public const ERR_BROKEN = 'Файл пошкоджений або це не картинка';
 
     /**
      * Перевіряє картинку, кладе оригінал як є в $dir/$base.jpg|png, робить $base-card.webp (обрізка по центру 600×480)
@@ -91,37 +99,43 @@ final class Images
         }
     }
 
-    /** «Файл завеликий: 48 МБ. Максимум — 20 МБ»; розмір невідомий (відкинув сервер) — без числа */
-    public static function tooBig(?int $bytes): string
+    /** «Файл завеликий: 48 МБ. Максимум — 20 МБ»; розмір невідомий (відкинув сервер) — без числа; $maxBytes — інший ліміт (прев'ю, макети) */
+    public static function tooBig(?int $bytes, int $maxBytes = self::MAX_BYTES): string
     {
-        $max = self::MAX_BYTES / 1048576;
+        $max = intdiv($maxBytes, 1048576);
         return $bytes !== null && $bytes > 0
             ? sprintf('Файл завеликий: %d МБ. Максимум — %d МБ', (int)ceil($bytes / 1048576), $max)
             : sprintf('Файл завеликий. Максимум — %d МБ', $max);
     }
 
     /**
-     * Розмір, тип, сторони й пропорції — до повного декодування.
-     * @return array{ext:string, jpeg:bool, w:int, h:int, width:int, height:int}
+     * Розмір, тип, сторони й пропорції — до повного декодування. $maxBytes — інший ліміт, $checkRatio = false —
+     * без межі пропорцій (прев'ю: довгий банер — нормальна картинка), $allowTiff — ще й TIFF (прев'ю; перша сторінка)
+     * @return array{ext:string, jpeg:bool, tiff:bool, w:int, h:int, width:int, height:int}
      *         w/h — як у файлі, width/height — після повороту за EXIF
      */
-    private static function check(string $src): array
+    public static function check(string $src, int $maxBytes = self::MAX_BYTES, bool $checkRatio = true, bool $allowTiff = false): array
     {
         $bytes = is_file($src) && is_readable($src) ? filesize($src) : false;
         if ($bytes === false || $bytes === 0) throw new DesignerException(self::ERR_BROKEN);
-        if ($bytes > self::MAX_BYTES) throw new DesignerException(self::tooBig($bytes));
+        if ($bytes > $maxBytes) throw new DesignerException(self::tooBig($bytes, $maxBytes));
 
         // Тип — за сигнатурою силами PHP, щоб Imagick не підбирав кодек (SVG, MVG, PS…) до чужого файлу
         $info = @getimagesize($src);
         if ($info === false) throw new DesignerException(self::ERR_BROKEN);
-        if (!isset(self::TYPES[$info[2]])) throw new DesignerException('Підходять лише JPG або PNG');
-        [$ext, $format] = self::TYPES[$info[2]];
+        $types = $allowTiff ? self::TYPES + self::TIFF_TYPES : self::TYPES;
+        if (!isset($types[$info[2]])) throw new DesignerException('Підходять лише JPG або PNG');
+        [$ext, $format] = $types[$info[2]];
 
         self::limitResources();
         $ping = new \Imagick();
         $fh = fopen($src, 'rb');
         try {
-            $ping->pingImageFile($fh);
+            if ($format === 'TIFF') {
+                $ping->pingImage(self::firstTiffPage($src));
+            } else {
+                $ping->pingImageFile($fh);
+            }
             $actual = strtoupper($ping->getImageFormat());
             $w = $ping->getImageWidth();
             $h = $ping->getImageHeight();
@@ -134,13 +148,13 @@ final class Images
         }
         if ($actual !== $format || $w < 1 || $h < 1) throw new DesignerException(self::ERR_BROKEN);
         if (max($w, $h) > self::MAX_SIDE) throw new DesignerException('Зображення завелике: до 12 000 px по стороні');
-        if (max($w, $h) > self::MAX_RATIO * min($w, $h)) {
+        if ($checkRatio && max($w, $h) > self::MAX_RATIO * min($w, $h)) {
             throw new DesignerException('Незвичні пропорції: сторони відрізняються більш ніж у 20 разів');
         }
         // LEFTTOP…LEFTBOTTOM (5–8) повертають на 90°
         $turned = $orientation >= \Imagick::ORIENTATION_LEFTTOP && $orientation <= \Imagick::ORIENTATION_LEFTBOTTOM;
         return [
-            'ext' => $ext, 'jpeg' => $format === 'JPEG', 'w' => $w, 'h' => $h,
+            'ext' => $ext, 'jpeg' => $format === 'JPEG', 'tiff' => $format === 'TIFF', 'w' => $w, 'h' => $h,
             'width' => $turned ? $h : $w, 'height' => $turned ? $w : $h,
         ];
     }
@@ -150,7 +164,7 @@ final class Images
      * JPEG декодується одразу зменшеним (DCT-масштаб libjpeg), але не менше ніж $needLong по довшій стороні
      * і $needShort по коротшій (або оригінал, якщо він менший) — щоб копії не довелося збільшувати.
      */
-    private static function load(string $src, array $info, int $needLong, int $needShort): \Imagick
+    public static function load(string $src, array $info, int $needLong, int $needShort): \Imagick
     {
         $im = new \Imagick();
         if ($info['jpeg']) {
@@ -161,7 +175,12 @@ final class Images
         }
         $fh = fopen($src, 'rb');
         try {
-            $im->readImageFile($fh);
+            if (!empty($info['tiff'])) {
+                $im->readImage(self::firstTiffPage($src));
+                $im->setImageFilename('');   // інакше префікс «TIFF:» з імені переважить формат при записі WebP
+            } else {
+                $im->readImageFile($fh);
+            }
             self::orient($im);
             self::toSrgb($im);
             $im->stripImage();
@@ -175,10 +194,20 @@ final class Images
     }
 
     /**
+     * «TIFF:/шлях[0]» — явний кодек і лише перша сторінка (багатосторінковий TIFF не декодується весь).
+     * Ім'я файлу Imagick розбирає сам, тож шлях — лише з безпечних символів
+     */
+    private static function firstTiffPage(string $src): string
+    {
+        if (!preg_match(self::SAFE_PATH, $src)) throw new \RuntimeException("Небезпечний шлях до TIFF: $src");
+        return "TIFF:{$src}[0]";
+    }
+
+    /**
      * Ліміти, щоб 20-мегабайтний JPEG не роздув php-fpm: надлишок піксельного кешу йде на диск.
      * Один потік: max_execution_time рахує CPU всіх потоків процесу, а паралельні завантаження й так дає клієнт
      */
-    private static function limitResources(): void
+    public static function limitResources(): void
     {
         \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_MEMORY, 256 * 1024 * 1024);
         \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_MAP, 512 * 1024 * 1024);
@@ -214,7 +243,7 @@ final class Images
      * До sRGB: вбудований не-sRGB профіль (CMYK, Adobe RGB, Display P3…) — конвертація через ICC, бо stripImage
      * його далі викине і кольори зблякнуть; CMYK без профілю (або з битим) — формулою.
      */
-    private static function toSrgb(\Imagick $im): void
+    public static function toSrgb(\Imagick $im): void
     {
         if ($im->getImageProfiles('icc', false) && stripos((string)$im->getImageProperty('icc:description'), 'sRGB') === false) {
             try {
@@ -229,7 +258,7 @@ final class Images
     }
 
     /** Вписати в квадрат $side, не збільшуючи */
-    private static function fitInto(\Imagick $im, int $side): void
+    public static function fitInto(\Imagick $im, int $side): void
     {
         $w = $im->getImageWidth();
         $h = $im->getImageHeight();
@@ -238,11 +267,12 @@ final class Images
         $im->resizeImage(max(1, (int)round($w * $scale)), max(1, (int)round($h * $scale)), \Imagick::FILTER_LANCZOS, 1);
     }
 
-    private static function writeWebp(\Imagick $im, string $path): void
+    /** WebP з правами 0644; $quality — інша якість (прев'ю) */
+    public static function writeWebp(\Imagick $im, string $path, int $quality = self::WEBP_QUALITY): void
     {
         $im->setImagePage(0, 0, 0, 0);
         $im->setImageFormat('webp');
-        $im->setImageCompressionQuality(self::WEBP_QUALITY);
+        $im->setImageCompressionQuality($quality);
         $fh = @fopen($path, 'wb');
         if ($fh === false) throw new \RuntimeException("Не вдалося записати $path");
         try {
@@ -257,20 +287,22 @@ final class Images
     /**
      * Створює папку (і відсутні батьківські) з правами 0755: на prod nginx читає як «other», а mkdir віддає права
      * за umask процесу. Наявні папки не чіпаємо.
+     * @return string[] створені папки, від найглибшої — щоб прибрати їх після невдачі
      */
-    public static function ensureDir(string $dir): void
+    public static function ensureDir(string $dir): array
     {
         $missing = [];
         for ($d = $dir; !is_dir($d); $d = dirname($d)) $missing[] = $d;
-        if ($missing === []) return;
+        if ($missing === []) return [];
         if (!@mkdir($dir, 0755, true) && !is_dir($dir)) {
             throw new \RuntimeException("Не вдалося створити папку $dir");
         }
         foreach ($missing as $d) @chmod($d, 0755);
+        return $missing;
     }
 
     /** @param string[] $paths */
-    private static function remove(array $paths): void
+    public static function remove(array $paths): void
     {
         foreach ($paths as $p) {
             if (is_file($p)) unlink($p);

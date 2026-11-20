@@ -17,6 +17,13 @@ final class Http
         header('Cache-Control: private, no-store');
     }
 
+    /**
+     * Тести: замість виводу відповіді respond() віддає (дані, код) сюди — без заголовків і без закриття запиту
+     * @internal
+     * @var (\Closure(array, int): void)|null
+     */
+    public static ?\Closure $output = null;
+
     public static function json(array $data, int $code = 200): never
     {
         self::noStore();
@@ -24,6 +31,37 @@ final class Http
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;
+    }
+
+    /**
+     * JSON-відповідь, після якої лишається робота, якої браузер не має чекати (сповіщення: api2 через спільний CalcApiGlobal
+     * без тайм-ауту). Відповідь віддається, і запит закривається (fastcgi_finish_request; поза php-fpm — flush); лише тоді
+     * виконується $after. Її збій — лише в журнал: відповідь уже віддано. Без exit — сторінка завершується сама
+     */
+    public static function respond(array $data, int $code, ?\Closure $after = null): void
+    {
+        if (self::$output !== null) {
+            (self::$output)($data, $code);
+        } else {
+            self::noStore();
+            http_response_code($code);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($after !== null) {
+                if (function_exists('fastcgi_finish_request')) {
+                    fastcgi_finish_request();
+                } else {
+                    while (ob_get_level() > 0) ob_end_flush();
+                    flush();
+                }
+            }
+        }
+        if ($after === null) return;
+        try {
+            $after();
+        } catch (\Throwable $e) {
+            error_log('design: робота після відповіді ' . ($_SERVER['REQUEST_URI'] ?? '') . ': ' . $e);
+        }
     }
 
     public static function redirect(string $url, int $code = 302): never

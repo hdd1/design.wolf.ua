@@ -3,11 +3,14 @@
  * Бриф для дизайнера: GET /feed/{id}/ — повний бриф, своя пропозиція або запрошення, листування.
  * Бачить схвалений дизайнер: бриф у зборі пропозицій режиму 1 або замовлення, де в нього є пропозиція / запрошення.
  * ?form=propose|edit|take|decline — відкрита форма; ?done=… — тост після дії.
+ * Обраний дизайнер замовлення «В роботі» — робочий простір (макет 6.5, views/partials/workspace.php): шапка «Ви отримаєте ·
+ * клієнт побачить», «Термін до …», «Завантажити макети», «чий хід» дизайнера, стрічка і панель «Макети для друку».
  * Після помилки POST сторінку рендерить pages/feed-offer.php з $posted (form, values, error)
  * @var array $params
  * @var ?array{form:string, values:array{text:string,price:string,deadline:string,reason:string}, error:string} $posted
  */
 use Design\Chat;
+use Design\ChunkUpload;
 use Design\Csrf;
 use Design\Customers;
 use Design\Designers;
@@ -19,8 +22,10 @@ use Design\Offers;
 use Design\OfferStatus;
 use Design\Orders;
 use Design\OrderStatus;
+use Design\Previews;
 use Design\Settings;
 use Design\View;
+use Design\Workspace;
 
 $me = Guard::customer();
 if (Designers::status($me) !== DesignerStatus::APPROVED) Http::notFound();
@@ -74,6 +79,11 @@ if ($offer !== null && $status !== OfferStatus::INVITED) {
             'messages' => $messages,
             'write' => $access['write'],
             'footer' => null,
+            // Робочий простір: обраний дизайнер; додавати й приховувати прев'ю — поки замовлення в роботі
+            'workspace' => $status === OfferStatus::CHOSEN ? (static function () use ($id, $me): array {
+                $can = Previews::canWork($id, $me) !== null;
+                return ['orderId' => $id, 'upload' => $can, 'hide' => $can, 'chunk' => ChunkUpload::partSize()];
+            })() : null,
         ];
     }
 }
@@ -86,8 +96,31 @@ $toasts = [
     'declined' => 'Ви відмовилися від замовлення',
 ];
 
+$workspace = null;
+if ($chat !== null && $chat['workspace'] !== null && $order['status'] === OrderStatus::IN_WORK) {
+    $workspace = [
+        'role' => 'designer',
+        'order' => $order,
+        'offer' => $access['offer'],
+        'back' => ['href' => '/my-offers/?tab=work', 'label' => 'Мої пропозиції'],
+        'who' => 'Клієнт ' . $client,
+        'whoName' => $client,
+        'turn' => Workspace::turn($access['offer'], Messages::ROLE_DESIGNER),
+        'chat' => $chat,
+        'panel' => Workspace::layouts($id),
+        'edit' => $chat['workspace']['upload'],
+        'csrf' => $csrf,
+        'chunk' => $chat['workspace']['chunk'],
+        'error' => $posted['error'] ?? null,
+    ];
+}
+
 $scripts = ['/assets/js/offer-form.js'];
 if ($chat !== null) $scripts[] = '/assets/js/chat.js';
+if ($chat['workspace'] ?? null) {
+    if ($chat['workspace']['upload']) $scripts[] = '/assets/js/chunk-upload.js';
+    $scripts[] = '/assets/js/workspace.js';
+}
 View::render('layout', [
     'title' => $order['title'],
     'active' => 'feed',
@@ -105,5 +138,6 @@ View::render('layout', [
         'chat' => $chat,
         'k' => Settings::markupPercent(),
         'round' => Settings::priceRound(),
+        'workspace' => $workspace,
     ]),
 ]);

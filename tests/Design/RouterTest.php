@@ -61,6 +61,26 @@ final class RouterTest extends TestCase
         $this->assertNull(Router::withSlash('/designers/abc'));
     }
 
+    public function test_workspace_routes(): void
+    {
+        $this->assertSame(['page' => 'order-upload', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/upload'));
+        $this->assertSame(['page' => 'order-preview', 'params' => ['id' => '345', 'preview' => '17']], Router::match('POST', '/orders/345/previews/17'));
+        $this->assertNull(Router::match('GET', '/orders/345/upload'));
+        $this->assertNull(Router::match('POST', '/orders/345/upload/'));
+        $this->assertNull(Router::match('POST', '/orders/abc/upload'));
+        $this->assertNull(Router::match('GET', '/orders/345/previews/17'));
+        $this->assertNull(Router::match('POST', '/orders/345/previews/abc'));
+        $this->assertNull(Router::match('POST', '/orders/345/previews/1234567890'));
+        $this->assertNull(Router::withSlash('/orders/345/upload'));
+        // Макети: список (GET) і дія з одним (POST)
+        $this->assertSame(['page' => 'order-layouts', 'params' => ['id' => '345']], Router::match('GET', '/orders/345/layouts'));
+        $this->assertSame(['page' => 'order-layout', 'params' => ['id' => '345', 'file' => '9']], Router::match('POST', '/orders/345/layouts/9'));
+        $this->assertNull(Router::match('POST', '/orders/345/layouts'));
+        $this->assertNull(Router::match('GET', '/orders/345/layouts/9'));
+        $this->assertNull(Router::match('POST', '/orders/345/layouts/abc'));
+        $this->assertNull(Router::withSlash('/orders/345/layouts'));
+    }
+
     public function test_chat_routes(): void
     {
         $this->assertSame(['page' => 'offer-messages', 'params' => ['id' => '345']], Router::match('GET', '/offers/345/messages'));

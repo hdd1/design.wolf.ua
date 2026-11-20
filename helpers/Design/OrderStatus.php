@@ -52,6 +52,23 @@ final class OrderStatus
         };
     }
 
+    /**
+     * «Чий хід» для обраного дизайнера замовлення «В роботі» — перше правило, що підходить:
+     * 1) останнє повідомлення клієнта новіше за останнє повідомлення / прев'ю дизайнера; 2) прев'ю ще немає;
+     * 3) є прев'ю, макетів немає; 4) є макети. mine — чекаємо дії дизайнера.
+     * lastClientMsgId / lastDesignerMsgId — id останніх повідомлень сторін (без системних; 0 — немає), previews — неприховані прев'ю
+     * @return array{mine:bool, text:string}
+     */
+    public static function designerTurn(int $lastClientMsgId, int $lastDesignerMsgId, int $previews, int $layouts): array
+    {
+        return match (true) {
+            $lastClientMsgId > $lastDesignerMsgId => ['mine' => true, 'text' => 'Ваш хід: клієнт написав · відповідайте'],
+            $previews <= 0 => ['mine' => true, 'text' => "Ваш хід: покажіть перше прев'ю"],
+            $layouts <= 0 => ['mine' => false, 'text' => "Коли клієнт погодить прев'ю — завантажте макети"],
+            default => ['mine' => false, 'text' => 'Макети завантажено · чекаємо, поки клієнт натисне «Купую»'],
+        };
+    }
+
     /** 1 пропозиція, 2–4 пропозиції, 5–20 пропозицій, 21 пропозиція… */
     public static function plural(int $n, string $one, string $few, string $many): string
     {

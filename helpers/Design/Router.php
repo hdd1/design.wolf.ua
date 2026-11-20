@@ -20,6 +20,8 @@ final class Router
         ['POST', '#^/orders/(?<id>' . self::ID . ')$#', 'order-update'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')/upload$#', 'order-upload'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')/previews/(?<preview>' . self::ID . ')$#', 'order-preview'],
+        ['GET', '#^/orders/(?<id>' . self::ID . ')/layouts$#', 'order-layouts'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/layouts/(?<file>' . self::ID . ')$#', 'order-layout'],
         ['GET', '#^/designer/$#', 'designer'],
         ['POST', '#^/designer$#', 'designer-save'],
         ['POST', '#^/designer/works$#', 'designer-work-add'],

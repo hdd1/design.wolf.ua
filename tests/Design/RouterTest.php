@@ -72,6 +72,13 @@ final class RouterTest extends TestCase
         $this->assertNull(Router::match('POST', '/orders/345/previews/abc'));
         $this->assertNull(Router::match('POST', '/orders/345/previews/1234567890'));
         $this->assertNull(Router::withSlash('/orders/345/upload'));
+        // Макети: список (GET) і дія з одним (POST)
+        $this->assertSame(['page' => 'order-layouts', 'params' => ['id' => '345']], Router::match('GET', '/orders/345/layouts'));
+        $this->assertSame(['page' => 'order-layout', 'params' => ['id' => '345', 'file' => '9']], Router::match('POST', '/orders/345/layouts/9'));
+        $this->assertNull(Router::match('POST', '/orders/345/layouts'));
+        $this->assertNull(Router::match('GET', '/orders/345/layouts/9'));
+        $this->assertNull(Router::match('POST', '/orders/345/layouts/abc'));
+        $this->assertNull(Router::withSlash('/orders/345/layouts'));
     }
 
     public function test_chat_routes(): void

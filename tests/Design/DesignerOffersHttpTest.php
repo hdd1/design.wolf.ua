@@ -450,7 +450,8 @@ final class DesignerOffersHttpTest extends TestCase
         $main = self::main($this->page('/my-offers/?tab=work', $designer));
         $this->assertStringContainsString("href=\"/feed/$work/\"", $main);
         $this->assertStringContainsString('2' . "\u{00A0}" . '000' . "\u{00A0}" . 'грн', $main);
-        $this->assertStringContainsString('Клієнт обрав вас', $main);
+        // «Чий хід» дизайнера (етап 4): листування порожнє, прев'ю ще немає
+        $this->assertStringContainsString('Ваш хід: покажіть перше прев&#039;ю', $main);
         $this->assertStringNotContainsString("/feed/$sent/", $main);
 
         // Відкликати з «Мої пропозиції» — назад туди ж

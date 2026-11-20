@@ -122,6 +122,18 @@ final class Layouts
         self::checkLimits($orderId, $declaredSize, $replaceFileId);
     }
 
+    /**
+     * Версія списку активних макетів: змінюється з додаванням, заміною, видаленням і перейменуванням
+     * (опитування листування порівнює її, щоб оновити панель «Макети» у співрозмовника)
+     * @param list<array{id:int, label:string}>|null $layouts уже прочитаний forOrder (без повторного запиту)
+     */
+    public static function rev(int $orderId, ?array $layouts = null): string
+    {
+        $layouts ??= self::forOrder($orderId);
+        return substr(sha1(json_encode(array_map(static fn(array $l): array => [$l['id'], $l['label']], $layouts),
+            JSON_UNESCAPED_UNICODE)), 0, 16);
+    }
+
     /** Кількість активних макетів замовлення (для «чий хід») */
     public static function count(int $orderId): int
     {

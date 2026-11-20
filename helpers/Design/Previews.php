@@ -170,6 +170,22 @@ final class Previews
         return $ids === [] ? [] : self::load($orderId, $ids);
     }
 
+    /** Кількість неприхованих прев'ю замовлення (для «чий хід» дизайнера) */
+    public static function visibleCount(int $orderId): int
+    {
+        return (int)Sql::value('SELECT COUNT(*) FROM design_previews WHERE order_id = ? AND hidden_at IS NULL', [$orderId]);
+    }
+
+    /**
+     * id прихованих прев'ю замовлення: опитування листування несе їх, щоб у співрозмовника картки ховались без перезавантаження
+     * @return list<int>
+     */
+    public static function hiddenIds(int $orderId): array
+    {
+        return array_map('intval', array_column(
+            Sql::all('SELECT id FROM design_previews WHERE order_id = ? AND hidden_at IS NOT NULL ORDER BY id', [$orderId]), 'id'));
+    }
+
     /** @param list<int>|null $ids null — усі прев'ю замовлення */
     private static function load(int $orderId, ?array $ids): array
     {

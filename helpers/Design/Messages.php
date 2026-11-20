@@ -122,6 +122,17 @@ final class Messages
         ];
     }
 
+    /**
+     * id останніх повідомлень сторін листування (прев'ю — повідомлення дизайнера), без системних; немає — 0
+     * @return array{0:int, 1:int} [клієнт, дизайнер]
+     */
+    public static function lastIds(int $offerId): array
+    {
+        $r = Sql::one('SELECT MAX(CASE WHEN author_role = ? THEN id END) AS c, MAX(CASE WHEN author_role = ? THEN id END) AS d
+                       FROM design_messages WHERE offer_id = ?', [self::ROLE_CLIENT, self::ROLE_DESIGNER, $offerId]);
+        return [(int)($r['c'] ?? 0), (int)($r['d'] ?? 0)];
+    }
+
     /** Кількість повідомлень без системних */
     public static function count(int $offerId): int
     {

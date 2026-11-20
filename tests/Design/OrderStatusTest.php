@@ -27,4 +27,30 @@ final class OrderStatusTest extends TestCase
             $this->assertSame(['mine' => $mine, 'text' => $text], S::turn(...$args), json_encode($args));
         }
     }
+
+    /** «Чий хід» для дизайнера: перше правило, що підходить (спека, розділ «Чий хід» для дизайнера) */
+    public function test_designer_turn_rules(): void
+    {
+        $wrote = ['mine' => true, 'text' => 'Ваш хід: клієнт написав · відповідайте'];
+        $first = ['mine' => true, 'text' => "Ваш хід: покажіть перше прев'ю"];
+        $wait = ['mine' => false, 'text' => "Коли клієнт погодить прев'ю — завантажте макети"];
+        $done = ['mine' => false, 'text' => 'Макети завантажено · чекаємо, поки клієнт натисне «Купую»'];
+        $cases = [
+            // lastClient, lastDesigner, previews, layouts
+            [[12, 10, 0, 0], $wrote],
+            [[12, 10, 3, 2], $wrote],          // 1-ше правило важливіше за макети
+            [[12, 0, 0, 0], $wrote],           // дизайнер ще нічого не писав
+            [[0, 0, 0, 0], $first],
+            [[10, 12, 0, 0], $first],
+            [[10, 10, 0, 0], $first],          // той самий id не «новіший»
+            [[10, 12, 0, 2], $first],          // макети без прев'ю — однаково спершу прев'ю
+            [[10, 12, 1, 0], $wait],
+            [[0, 12, 4, 0], $wait],
+            [[10, 12, 1, 1], $done],
+            [[0, 5, 2, 20], $done],
+        ];
+        foreach ($cases as [$args, $want]) {
+            $this->assertSame($want, S::designerTurn(...$args), json_encode($args));
+        }
+    }
 }

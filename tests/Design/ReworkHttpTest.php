@@ -27,6 +27,8 @@ final class ReworkHttpTest extends TestCase
 
     /** @var list<int> */
     private array $orders = [];
+    /** @var array<int, int> замовлення → скільки успішних дій (302) мали надіслати сповіщення */
+    private array $expected = [];
     private bool $ownsDesigner = false;
     /** @var array<int, string> */
     private static array $csrf = [];
@@ -35,12 +37,16 @@ final class ReworkHttpTest extends TestCase
     {
         $steps = [
             function (): void {
-                // Сповіщення йде після відповіді (fastcgi_finish_request) — може з'явитися за мить
-                usleep(300000);
+                // Сповіщення йде після перенаправлення (fastcgi_finish_request) — чекаємо всі очікувані рядки (до 5 с), тоді прибираємо
+                $where = 'customer_id IN (?, ?) AND messenger_text LIKE ?';
                 foreach ($this->orders as $id) {
-                    Sql::exec('DELETE FROM n_smser WHERE customer_id IN (?, ?) AND messenger_text LIKE ?',
-                        [self::clientId(), self::designerId(), '%доопрацювання №' . $id . '%']);
+                    $args = [self::clientId(), self::designerId(), '%доопрацювання №' . $id . '%'];
+                    for ($i = 0; $i < 50 && (int)Sql::value("SELECT COUNT(*) FROM n_smser WHERE $where", $args) < ($this->expected[$id] ?? 0); $i++) {
+                        usleep(100000);
+                    }
+                    Sql::exec("DELETE FROM n_smser WHERE $where", $args);
                 }
+                $this->expected = [];
             },
             function (): void {
                 if (!$this->orders) return;
@@ -165,11 +171,21 @@ final class ReworkHttpTest extends TestCase
         return self::$csrf[$as];
     }
 
-    /** POST /orders/{id}/rework → [код, Location, тіло] */
-    private static function rework(int $orderId, int $as, array $post): array
+    /**
+     * POST /orders/{id}/rework → [код, Location, тіло]. accept / decline — з відбитком поточної пропозиції (як форма сторінки),
+     * якщо тест не передав свій proposal
+     */
+    private function rework(int $orderId, int $as, array $post): array
     {
+        if (in_array($post['action'] ?? '', ['accept', 'decline'], true)) $post += ['proposal' => self::token($orderId)];
         [$code, $h, $body] = self::fetch("/orders/$orderId/rework", $as, $post + ['csrf' => self::csrf($as)]);
+        if ($code === 302) $this->expected[$orderId] = ($this->expected[$orderId] ?? 0) + 1;
         return [$code, preg_match('/^location:\s*(\S+)/mi', $h, $m) ? $m[1] : '', $body];
+    }
+
+    private static function token(int $orderId): string
+    {
+        return Rework::token(Rework::order($orderId));
     }
 
     /** Текст сторінки без тегів, з одинарними пробілами (НБСП — пробіл) */
@@ -246,19 +262,19 @@ final class ReworkHttpTest extends TestCase
         }
 
         // Помилка — та сама сторінка з формою, введеним і текстом; нічого не записано
-        [$code, , $html] = self::rework($orderId, $designer, ['action' => 'propose', 'price' => '1 300', 'deadline' => date('Y-m-d', strtotime('-1 day'))]);
+        [$code, , $html] = $this->rework($orderId, $designer, ['action' => 'propose', 'price' => '1 300', 'deadline' => date('Y-m-d', strtotime('-1 day'))]);
         $this->assertSame(422, $code);
         $this->assertStringContainsString('Дата — не раніше сьогодні', self::text($html));
         $this->assertMatchesRegularExpression('~name="price"[^>]*value="1 300"~', $html);
         $this->assertNull(self::row($orderId)['rework_price_client']);
 
         // Клієнт не може пропонувати
-        [$code] = self::rework($orderId, $client, ['action' => 'propose', 'price' => '1300', 'deadline' => $tomorrow]);
+        [$code] = $this->rework($orderId, $client, ['action' => 'propose', 'price' => '1300', 'deadline' => $tomorrow]);
         $this->assertSame(422, $code);
         $this->assertNull(self::row($orderId)['rework_price_client']);
 
         // Пропозиція: 1 300 на руки → 1 560 для клієнта (k 20 %, округлення 10), доплата 360
-        [$code, $loc] = self::rework($orderId, $designer, ['action' => 'propose', 'price' => '1 300', 'deadline' => $tomorrow]);
+        [$code, $loc] = $this->rework($orderId, $designer, ['action' => 'propose', 'price' => '1 300', 'deadline' => $tomorrow]);
         $this->assertSame(302, $code);
         $this->assertSame("/feed/$orderId/?done=rework-sent", $loc);
         $r = self::row($orderId);
@@ -273,6 +289,7 @@ final class ReworkHttpTest extends TestCase
         $this->assertStringContainsString('Дизайнер пропонує доопрацювання: +360 грн, до ' . date('d.m.Y', strtotime('+1 day')), $ct);
         $this->assertTrue(self::hasAction($c, $orderId, 'accept'));
         $this->assertTrue(self::hasAction($c, $orderId, 'decline'));
+        $this->assertSame(2, substr_count($c, 'name="proposal" value="' . self::token($orderId) . '"'), 'відбиток пропозиції в обох формах');
         $this->assertStringContainsString('Прийняти', $ct);
         $this->assertStringContainsString('Відмовитися', $ct);
         $this->assertSame('6p', self::stage($offerId, $client));
@@ -285,14 +302,14 @@ final class ReworkHttpTest extends TestCase
         $this->assertSame('6p', self::stage($offerId, $designer));
 
         // Дизайнер не може прийняти за клієнта; застарілий CSRF — 403; нічого не змінилось
-        [$code] = self::rework($orderId, $designer, ['action' => 'accept']);
+        [$code] = $this->rework($orderId, $designer, ['action' => 'accept']);
         $this->assertSame(422, $code);
-        [$code] = self::rework($orderId, $client, ['action' => 'decline', 'csrf' => str_repeat('0', 64)]);
+        [$code] = $this->rework($orderId, $client, ['action' => 'decline', 'csrf' => str_repeat('0', 64)]);
         $this->assertSame(403, $code);
         $this->assertSame(1560, (int)self::row($orderId)['rework_price_client']);
 
         // «Відмовитися»: пропозицію скинуто, «Куплено», дизайнер знову бачить «Ще не закінчили»
-        [$code, $loc] = self::rework($orderId, $client, ['action' => 'decline']);
+        [$code, $loc] = $this->rework($orderId, $client, ['action' => 'decline']);
         $this->assertSame(302, $code);
         $this->assertSame("/orders/$orderId/?done=rework-declined", $loc);
         $this->assertTrue(self::sms($designer, "Майстерня дизайну: клієнт відмовився від доопрацювання №$orderId.%"), 'сповіщення дизайнеру');
@@ -313,7 +330,7 @@ final class ReworkHttpTest extends TestCase
         $tomorrow = date('Y-m-d', strtotime('+1 day'));
         Rework::propose($orderId, $designer, 1300, $tomorrow);
 
-        [$code, $loc] = self::rework($orderId, $client, ['action' => 'accept']);
+        [$code, $loc] = $this->rework($orderId, $client, ['action' => 'accept']);
         $this->assertSame(302, $code);
         $this->assertSame("/orders/$orderId/?done=rework-accepted", $loc);
         $this->assertTrue(self::sms($designer, "Майстерня дизайну: клієнт прийняв доопрацювання №$orderId, до %"), 'сповіщення дизайнеру');
@@ -341,12 +358,12 @@ final class ReworkHttpTest extends TestCase
         $this->assertFalse(self::hasAction($d, $orderId, 'cancel'));
 
         // Дизайнер скасувати не може
-        [$code] = self::rework($orderId, $designer, ['action' => 'cancel']);
+        [$code] = $this->rework($orderId, $designer, ['action' => 'cancel']);
         $this->assertSame(422, $code);
         $this->assertSame(OrderStatus::REWORK, (int)self::row($orderId)['status']);
 
         // «Скасувати доопрацювання»: «Куплено», ціни — сплачені, дата та сама
-        [$code, $loc] = self::rework($orderId, $client, ['action' => 'cancel']);
+        [$code, $loc] = $this->rework($orderId, $client, ['action' => 'cancel']);
         $this->assertSame(302, $code);
         $this->assertSame("/orders/$orderId/?done=rework-cancelled", $loc);
         $this->assertTrue(self::sms($designer, "Майстерня дизайну: клієнт скасував доопрацювання №$orderId.%"), 'сповіщення дизайнеру');
@@ -359,6 +376,31 @@ final class ReworkHttpTest extends TestCase
         $this->assertSame([], self::links($orderId));
     }
 
+    /** Стара вкладка: форма з відбитком попередньої пропозиції не приймає нову — 422 «Пропозиція змінилася», нічого не змінилось */
+    public function test_stale_tab_cannot_accept_newer_proposal(): void
+    {
+        $client = self::clientId();
+        $designer = $this->designer();
+        [$orderId] = $this->purchased($client, $designer);
+        Rework::propose($orderId, $designer, 1300, date('Y-m-d', strtotime('+1 day')));
+        $c = self::page("/orders/$orderId/", $client);
+        $this->assertSame(1, preg_match('~name="action" value="accept"><input type="hidden" name="proposal" value="([0-9a-f]{16})"~', $c, $m));
+        $old = $m[1];
+        // Тим часом: відмова в іншій вкладці й нова, дорожча пропозиція
+        Rework::decline($orderId, $client);
+        Rework::propose($orderId, $designer, 2000, date('Y-m-d', strtotime('+3 day')));
+
+        [$code, , $html] = $this->rework($orderId, $client, ['action' => 'accept', 'proposal' => $old]);
+        $this->assertSame(422, $code);
+        $this->assertStringContainsString('Пропозиція змінилася — оновіть сторінку', self::text($html));
+        $r = self::row($orderId);
+        $this->assertSame([OrderStatus::PURCHASED, 2000, 1200], [(int)$r['status'], (int)$r['rework_price_designer'], (int)$r['price_client']]);
+        // Перечитана сторінка несе новий відбиток — тепер можна
+        [$code] = $this->rework($orderId, $client, ['action' => 'accept']);
+        $this->assertSame(302, $code);
+        $this->assertSame(OrderStatus::REWORK, (int)self::row($orderId)['status']);
+    }
+
     /** Гість і чужий клієнт: дії немає */
     public function test_stranger_gets_404(): void
     {
@@ -368,7 +410,7 @@ final class ReworkHttpTest extends TestCase
         Rework::propose($orderId, $designer, 1300, date('Y-m-d', strtotime('+1 day')));
         // 25 — не клієнт і не обраний дизайнер чужого замовлення: робимо обраним іншого (неіснуючого) дизайнера
         Sql::exec('UPDATE design_offers SET designer_id = 1 WHERE order_id = ?', [$orderId]);
-        [$code] = self::rework($orderId, $designer, ['action' => 'decline']);
+        [$code] = $this->rework($orderId, $designer, ['action' => 'decline']);
         $this->assertSame(404, $code);
         $this->assertSame(1560, (int)self::row($orderId)['rework_price_client']);
     }

@@ -544,6 +544,39 @@ final class LayoutsTest extends TestCase
     }
 
     /**
+     * «Доопрацювання»: дизайнер працює як «В роботі» (новий макет, перейменування, заміна й видалення некупленого), а куплений
+     * раніше макет — так само незмінний (заміна, видалення, перейменування, precheck — відмова, нічого не змінилось)
+     */
+    public function test_purchased_is_immutable_in_rework(): void
+    {
+        [$orderId, $offerId] = $this->inWork(OrderStatus::REWORK);
+        $a = Layouts::add($orderId, self::A, $this->upload(100), 'Візитка.pdf');
+        Sql::exec('UPDATE design_files SET purchase_id = ? WHERE id = ?', [self::PURCHASE, $a['id']]);
+        $b = Layouts::add($orderId, self::A, $this->upload(100), 'Зворот з QR.pdf');
+        $messages = count(Messages::list($offerId));
+        $row = static fn(int $id): array => Sql::one('SELECT status, label, purchase_id, file FROM design_files WHERE id = ?', [$id]);
+        $was = $row($a['id']);
+
+        $bought = 'Куплений макет змінити не можна';
+        $tmp = $this->upload();
+        $this->assertDenied(fn() => Layouts::replace($a['id'], self::A, $tmp, 'x.pdf'), $bought);
+        $this->assertFileDoesNotExist($tmp, 'файл заміни прибрано');
+        $this->assertDenied(fn() => Layouts::remove($a['id'], self::A), $bought);
+        $this->assertDenied(fn() => Layouts::rename($a['id'], self::A, 'Нове'), $bought);
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 100, $a['id']), $bought);
+        $this->assertSame($was, $row($a['id']));
+        $this->assertCount($messages, Messages::list($offerId), 'без системних повідомлень');
+        $this->assertSame([], $this->tmpFiles());
+
+        // Новий (некуплений) — дизайнер змінює вільно
+        Layouts::rename($b['id'], self::A, 'Зворот');
+        $c = Layouts::replace($b['id'], self::A, $this->upload(100), 'Зворот v2.pdf');
+        Layouts::remove($c['id'], self::A);
+        $this->assertSame([true], array_column(Layouts::forOrder($orderId), 'purchased'));
+        $this->assertEqualsCanonicalizing([$a['id'] . '.pdf'], $this->files($orderId));
+    }
+
+    /**
      * «Завантажити» (FileGlobal::encode, cloud-links/cf) — лише купленим макетам і лише клієнту: у дизайнера й у некупленого
      * посилання немає, симлінк для некупленого не створюється. Версія списку змінюється з купівлею (панелі перечитуються)
      */

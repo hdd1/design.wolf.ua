@@ -18,6 +18,7 @@ final class Rework
     private const ERR_NOT_PURCHASED = 'Доопрацювання можна запропонувати лише для купленого замовлення';
     private const ERR_PENDING = 'Пропозицію вже надіслано — чекаємо відповіді клієнта';
     private const ERR_NONE = 'Пропозиції доопрацювання немає — оновіть сторінку';
+    private const ERR_CHANGED = 'Пропозиція змінилася — оновіть сторінку';
     private const ERR_NOT_REWORK = 'Скасувати можна лише доопрацювання, яке триває';
     private const ERR_NOT_FOUND = 'Замовлення не знайдено';
 
@@ -46,21 +47,23 @@ final class Rework
             Sql::exec('UPDATE design_orders SET rework_price_designer = ?, rework_price_client = ?, rework_deadline = ?, rework_proposed_at = NOW()
                        WHERE id = ?', [$priceDesigner, $p, $deadline, $orderId]);
             $extra = $p - $o['paid_client'];
-            Messages::system($f['id'], 'Дизайнер пропонує доопрацювання: +' . self::money($extra) . ' грн, до ' . date('d.m.Y', strtotime($deadline)),
+            Messages::system($f['id'], 'Дизайнер пропонує доопрацювання: ' . self::extra($extra) . ', до ' . date('d.m.Y', strtotime($deadline)),
                 ['event' => 'rework_propose', 'price_designer' => $priceDesigner, 'price_client' => $p, 'extra' => $extra, 'deadline' => $deadline]);
         });
     }
 
     /**
      * Клієнт приймає пропозицію: статус «Доопрацювання», ціни й дата обраної пропозиції — з пропозиції, rework_* і
-     * notified_deadline_at (крон «термін минув») скидаються
+     * notified_deadline_at (крон «термін минув») скидаються. $token — token() пропозиції, яку клієнт бачив (форма сторінки):
+     * інша (стара вкладка, а дизайнер уже запропонував інше) — «Пропозиція змінилася»; null — без перевірки
      * @throws DesignerException
      */
-    public static function accept(int $orderId, int $customerId): void
+    public static function accept(int $orderId, int $customerId, ?string $token = null): void
     {
-        self::locked($orderId, $customerId, static function (array $o, array $f) use ($orderId): void {
+        self::locked($orderId, $customerId, static function (array $o, array $f) use ($orderId, $token): void {
             $r = self::pending($o);
             if ($r === null) throw new DesignerException(self::ERR_NONE);
+            if ($token !== null && !hash_equals(self::token($o), $token)) throw new DesignerException(self::ERR_CHANGED);
             Sql::exec('UPDATE design_offers SET price_designer = ?, price_client = ?, deadline = ? WHERE id = ?',
                 [$r['price_designer'], $r['price_client'], $r['deadline'], $f['id']]);
             Sql::exec('UPDATE design_orders SET status = ?, rework_price_designer = NULL, rework_price_client = NULL, rework_deadline = NULL,
@@ -76,13 +79,15 @@ final class Rework
     }
 
     /**
-     * Клієнт відмовляється: пропозиція скидається, статус «Куплено» лишається; дизайнер може запропонувати знову
+     * Клієнт відмовляється: пропозиція скидається, статус «Куплено» лишається; дизайнер може запропонувати знову.
+     * $token — як в accept()
      * @throws DesignerException
      */
-    public static function decline(int $orderId, int $customerId): void
+    public static function decline(int $orderId, int $customerId, ?string $token = null): void
     {
-        self::locked($orderId, $customerId, static function (array $o, array $f) use ($orderId): void {
+        self::locked($orderId, $customerId, static function (array $o, array $f) use ($orderId, $token): void {
             if (self::pending($o) === null) throw new DesignerException(self::ERR_NONE);
+            if ($token !== null && !hash_equals(self::token($o), $token)) throw new DesignerException(self::ERR_CHANGED);
             Sql::exec('UPDATE design_orders SET rework_price_designer = NULL, rework_price_client = NULL, rework_deadline = NULL,
                        rework_proposed_at = NULL WHERE id = ?', [$orderId]);
             Messages::system($f['id'], 'Клієнт відмовився від доопрацювання', ['event' => 'rework_decline']);
@@ -124,12 +129,24 @@ final class Rework
     }
 
     /**
+     * Відбиток пропозиції без відповіді (час, ціни, дата) для форм «Прийняти» / «Відмовитися»: accept / decline порівнюють його
+     * під замком, щоб стара вкладка не прийняла пізнішу пропозицію. Немає пропозиції — ''
+     */
+    public static function token(array $order): string
+    {
+        $p = self::pending($order);
+        if ($p === null) return '';
+        return substr(sha1(implode('|', [(string)($order['rework_proposed_at'] ?? ''), $p['price_client'], $p['price_designer'], $p['deadline']])), 0, 16);
+    }
+
+    /**
      * Рядок замовлення для pending() і стану сторінки (без замка); немає — null
-     * @return array{status:int, paid_client:int, paid_designer:int, rework_price_designer:?int, rework_price_client:?int, rework_deadline:?string}|null
+     * @return array{status:int, paid_client:int, paid_designer:int, rework_price_designer:?int, rework_price_client:?int, rework_deadline:?string, rework_proposed_at:?string}|null
      */
     public static function order(int $orderId): ?array
     {
-        $o = Sql::one('SELECT status, paid_client, paid_designer, rework_price_designer, rework_price_client, rework_deadline
+        $o = Sql::one('SELECT status, paid_client, paid_designer, rework_price_designer, rework_price_client, rework_deadline,
+                              rework_proposed_at
                        FROM design_orders WHERE id = ?', [$orderId]);
         return $o === null ? null : self::orderRow($o);
     }
@@ -141,7 +158,7 @@ final class Rework
     public static function notify(int $orderId, string $action): void
     {
         $r = Sql::one('SELECT o.customer_id, o.status, o.paid_client, o.paid_designer, o.rework_price_designer, o.rework_price_client, o.rework_deadline,
-                              f.designer_id, f.deadline
+                              o.rework_proposed_at, f.designer_id, f.deadline
                        FROM design_orders o JOIN design_offers f ON f.id = o.chosen_offer_id WHERE o.id = ?', [$orderId]);
         if ($r === null) return;
         $site = Config::siteUrl();
@@ -151,7 +168,7 @@ final class Rework
             if ($p === null) return;
             Notify::send([
                 'customer_id' => (int)$r['customer_id'],
-                'msg' => 'Майстерня дизайну: дизайнер пропонує доопрацювання №' . $orderId . ': +' . self::money($p['extra']) . ' грн, до '
+                'msg' => 'Майстерня дизайну: дизайнер пропонує доопрацювання №' . $orderId . ': ' . self::extra($p['extra']) . ', до '
                     . date('d.m', strtotime($p['deadline'])) . '. Прийміть або відмовтеся: ' . $site . '/orders/' . $orderId . '/' . $time,
                 'msgSMS' => 'Майстерня дизайну: пропозиція доопрацювання №' . $orderId . '. design.wolf.ua',
             ]);
@@ -181,7 +198,8 @@ final class Rework
         $pdo = Sql::pdo();
         $pdo->beginTransaction();
         try {
-            $o = Sql::one('SELECT status, chosen_offer_id, paid_client, paid_designer, rework_price_designer, rework_price_client, rework_deadline
+            $o = Sql::one('SELECT status, chosen_offer_id, paid_client, paid_designer, rework_price_designer, rework_price_client, rework_deadline,
+                                  rework_proposed_at
                            FROM design_orders WHERE id = ?' . ($customerId !== null ? ' AND customer_id = ?' : '') . ' FOR UPDATE',
                 $customerId !== null ? [$orderId, $customerId] : [$orderId]);
             if ($o === null || $o['chosen_offer_id'] === null) {
@@ -215,7 +233,14 @@ final class Rework
             'rework_price_designer' => $o['rework_price_designer'] === null ? null : (int)$o['rework_price_designer'],
             'rework_price_client' => $o['rework_price_client'] === null ? null : (int)$o['rework_price_client'],
             'rework_deadline' => $o['rework_deadline'] === null ? null : (string)$o['rework_deadline'],
+            'rework_proposed_at' => $o['rework_proposed_at'] === null ? null : (string)$o['rework_proposed_at'],
         ];
+    }
+
+    /** Доплата клієнта для текстів: «+360 грн» або «без доплати» (як «чий хід» і форма) */
+    private static function extra(int $extra): string
+    {
+        return $extra > 0 ? '+' . self::money($extra) . ' грн' : 'без доплати';
     }
 
     /** 1020 → «1 020» (нерозривний пробіл; для тексту помилок — звичайний) */

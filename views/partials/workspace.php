@@ -104,12 +104,12 @@ if ($reworkForm) {
           <?php endif ?>
         <?php else: ?>
           <form method="post" action="<?= $reworkUrl ?>" data-lock>
-            <?= $hidden ?><input type="hidden" name="action" value="accept">
+            <?= $hidden ?><input type="hidden" name="action" value="accept"><input type="hidden" name="proposal" value="<?= View::e($rework['token'] ?? '') ?>">
             <button type="submit" class="btn btn-primary btn-lg w-100"><i class="fal fa-check"></i> Прийняти</button>
           </form>
           <form method="post" action="<?= $reworkUrl ?>" data-lock
             data-ws-confirm="Відмовитися від доопрацювання? Куплені макети лишаються у вас, дизайнер може запропонувати знову.">
-            <?= $hidden ?><input type="hidden" name="action" value="decline">
+            <?= $hidden ?><input type="hidden" name="action" value="decline"><input type="hidden" name="proposal" value="<?= View::e($rework['token'] ?? '') ?>">
             <button type="submit" class="btn btn-outline-blue btn-lg w-100">Відмовитися</button>
           </form>
         <?php endif ?>

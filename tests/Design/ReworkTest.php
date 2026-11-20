@@ -285,6 +285,42 @@ final class ReworkTest extends TestCase
         $this->assertSame('Клієнт прийняв доопрацювання без доплати, термін — до ' . date('d.m.Y', strtotime('+1 day')), end($sys)['text']);
     }
 
+    /** Стара вкладка: «Прийняти» / «Відмовитися» з відбитком попередньої пропозиції не діє на нову */
+    public function test_stale_proposal_token_refused(): void
+    {
+        [$orderId, $offerId] = $this->purchased();
+        Rework::propose($orderId, $this->designer, 1000, self::tomorrow());
+        $old = Rework::token($this->order($orderId));
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{16}$/', $old);
+        Rework::decline($orderId, $this->client, $old);
+        $this->assertSame('', Rework::token($this->order($orderId)), 'немає пропозиції — порожній відбиток');
+
+        Rework::propose($orderId, $this->designer, 1600, date('Y-m-d', strtotime('+5 day')));
+        $new = Rework::token($this->order($orderId));
+        $this->assertNotSame($old, $new);
+        $this->assertRefused(fn() => Rework::accept($orderId, $this->client, $old), 'Пропозиція змінилася — оновіть сторінку');
+        $this->assertRefused(fn() => Rework::accept($orderId, $this->client, ''), 'Пропозиція змінилася — оновіть сторінку');
+        $this->assertRefused(fn() => Rework::decline($orderId, $this->client, $old), 'Пропозиція змінилася — оновіть сторінку');
+        $o = $this->order($orderId);
+        $this->assertSame([OrderStatus::PURCHASED, 1600], [(int)$o['status'], (int)$o['rework_price_designer']], 'нічого не змінилось');
+        $this->assertSame([1000, 800, '2026-11-10'], $this->offer($offerId));
+
+        Rework::accept($orderId, $this->client, $new);
+        $this->assertSame(OrderStatus::REWORK, (int)$this->order($orderId)['status']);
+    }
+
+    /** Без доплати — «без доплати» в листуванні й сповіщенні (як «чий хід» і форма), а не «+0 грн» */
+    public function test_free_rework_wording(): void
+    {
+        [$orderId, $offerId] = $this->purchased();
+        Rework::propose($orderId, $this->designer, 800, self::tomorrow());
+        $sys = $this->system($offerId);
+        $this->assertSame('Дизайнер пропонує доопрацювання: без доплати, до ' . date('d.m.Y', strtotime('+1 day')), end($sys)['text']);
+        Rework::notify($orderId, 'propose');
+        $this->assertStringStartsWith("Майстерня дизайну: дизайнер пропонує доопрацювання №$orderId: без доплати, до ", Notify::$sent[0]['msg']);
+        $this->assertStringNotContainsString('+0', Notify::$sent[0]['msg']);
+    }
+
     public function test_decline_resets(): void
     {
         [$orderId, $offerId] = $this->purchased();

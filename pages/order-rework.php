@@ -2,7 +2,8 @@
 /**
  * Доопрацювання (спека «Ще не закінчили»): POST /orders/{id}/rework, csrf, action =
  *   propose — обраний дизайнер, «Куплено»: price (нова повна сума на руки, «1 300» теж), deadline (Y-m-d);
- *   accept | decline — клієнт відповідає на пропозицію; cancel — клієнт скасовує доопрацювання, яке триває.
+ *   accept | decline — клієнт відповідає на пропозицію (proposal — Rework::token пропозиції, яку він бачив: інша —
+ *   «Пропозиція змінилася»); cancel — клієнт скасовує доопрацювання, яке триває.
  * Звичайні форми робочого простору (views/partials/workspace.php). Успіх — назад на сторінку з тостом (дизайнер —
  * /feed/{id}/?done=rework-sent, клієнт — /orders/{id}/?done=rework-…); сповіщення (Rework::notify) — уже після перенаправлення.
  * Помилка — та сама сторінка з текстом (застарілий CSRF — 403, інше — 422), у дизайнера — з відкритою формою і введеним.
@@ -38,8 +39,8 @@ try {
     if (!$fresh) throw new DesignerException(Guard::STALE);
     match ($action) {
         'propose' => Rework::propose($orderId, $me, $price, $values['deadline']),
-        'accept' => Rework::accept($orderId, $me),
-        'decline' => Rework::decline($orderId, $me),
+        'accept' => Rework::accept($orderId, $me, Http::str($_POST, 'proposal')),
+        'decline' => Rework::decline($orderId, $me, Http::str($_POST, 'proposal')),
         'cancel' => Rework::cancel($orderId, $me),
     };
 } catch (DesignerException $e) {

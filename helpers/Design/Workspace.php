@@ -109,10 +109,11 @@ final class Workspace
     /**
      * Доопрацювання для шапки робочого простору (views/partials/workspace.php): pending — пропозиція без відповіді (Rework::pending);
      * propose — дизайнер може натиснути «Ще не закінчили» (обраний схвалений дизайнер, «Куплено», пропозиції немає);
-     * answer — клієнт може «Прийняти» / «Відмовитися»; cancel — клієнт може «Скасувати доопрацювання»;
+     * answer — клієнт може «Прийняти» / «Відмовитися» (token — Rework::token пропозиції для цих форм); cancel — клієнт може
+     * «Скасувати доопрацювання»;
      * paid_* — уже сплачене / нараховане, k — націнка обраної пропозиції, round — крок округлення (форма і її жива підказка);
      * stage — стан для опитування (змінився — сторінка перечитується)
-     * @return array{pending:?array, propose:bool, answer:bool, cancel:bool, paid_client:int, paid_designer:int, k:float, round:int, stage:string}
+     * @return array{pending:?array, token:string, propose:bool, answer:bool, cancel:bool, paid_client:int, paid_designer:int, k:float, round:int, stage:string}
      */
     public static function rework(array $offer, int $role, ?array $order = null): array
     {
@@ -122,6 +123,7 @@ final class Workspace
         $designer = $role === Messages::ROLE_DESIGNER;
         return [
             'pending' => $pending,
+            'token' => $order !== null ? Rework::token($order) : '',
             'propose' => $designer && $status === OrderStatus::PURCHASED && $pending === null
                 && Designers::status($offer['designer_id']) === DesignerStatus::APPROVED,
             'answer' => !$designer && $pending !== null,

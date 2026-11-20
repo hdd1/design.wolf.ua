@@ -4,7 +4,9 @@
 // - «Оплатити» / «Відкрити макети» → POST /orders/{id}/buy (amount — сума, яку клієнт бачить, csrf). Поки запит іде, кнопка
 //   вимкнена і другий натиск нічого не шле (подвійне списання сервер однаково не допустить). Успіх — вікно закривається,
 //   панель «Макети» перемальовується з відповіді («Завантажити»), «чий хід» і статус у шапці оновлюються, «Купую» зникає,
-//   на телефоні відкривається вкладка «Макети». Відмова (400) — текст і свіжий вміст вкладки з відповіді.
+//   баланс у шапці, на телефоні відкривається вкладка «Макети». Відмова (400) — текст і свіжий вміст вкладки з відповіді;
+//   відмова без вмісту (купити вже не можна: куплено в іншій вкладці, застаріла сесія) — текст, «Оплатити» лишається вимкненою,
+//   панель перечитується, а закриття вікна перезавантажує сторінку. Збій мережі / 5xx — «Оплатити» знову доступна.
 // - «Купую» вимкнена, поки немає некуплених макетів: стежить за подією 'ws:layouts' панелі (workspace-layouts.js).
 // HTML вкладки — лише з сервера (partials/pay-balance.php, екранований); текст помилок — через textContent.
 (function () {
@@ -16,7 +18,7 @@
   var body = modalEl.querySelector('[data-pay-body]');
   var errorBox = modalEl.querySelector('[data-pay-error]');
   var hint = document.querySelector('[data-ws-buy-hint]');
-  var loading = false, paying = false, bought = false;
+  var loading = false, paying = false, bought = false, stale = false;
 
   function modal() { return window.bootstrap.Modal.getOrCreateInstance(modalEl); }
 
@@ -58,6 +60,8 @@
     panel.render(json);
     var status = document.querySelector('[data-ws-status]');
     if (status && json.status_html) status.innerHTML = json.status_html;
+    var balance = document.querySelector('[data-balance]');
+    if (balance && json.balance_text) balance.textContent = json.balance_text;
     var cta = buyBtn.closest('.ws-cta');
     if (cta) cta.remove(); else buyBtn.remove();
     var tabIcon = document.querySelector('[data-ws-tab-icon]');
@@ -83,11 +87,21 @@
         apply(json);
         return;
       }
-      if (json && json.html) body.innerHTML = json.html;   // свіжа сума / причина
-      else { btn.innerHTML = label; btn.disabled = false; }
       error(ws.failText(status, json, 'Не вдалося оплатити — спробуйте ще раз'));
+      btn.innerHTML = label;
+      if (json && json.html) { body.innerHTML = json.html; return; }   // свіжа сума / причина
+      if (status >= 400 && status < 500) {
+        // Купити вже не можна — повтор безглуздий: панель перечитуємо, сторінку — після закриття вікна
+        stale = true;
+        var panel = ws.panel(orderId);
+        if (panel) panel.refresh();
+        return;
+      }
+      btn.disabled = false;
     });
   });
+
+  modalEl.addEventListener('hidden.bs.modal', function () { if (stale) window.location.reload(); });
 
   // «Купую» — лише коли є некуплені макети (дизайнер завантажив новий, макет видалено — панель перемальовується опитуванням)
   document.addEventListener('ws:layouts', function (e) {

@@ -37,6 +37,7 @@ $panel = ["layouts" => [["id" => 7, "label" => "Візитка", "original_name"
     "size_text" => "1000 Б", "ext" => "pdf", "purchased" => false, "download" => ""]], "count" => 1, "rev" => "r1"];
 $chat = ["offerId" => 1, "title" => "Дизайнер", "subtitle" => "", "note" => null, "csrf" => "x", "messages" => [], "write" => true,
     "footer" => null, "workspace" => ["orderId" => 1, "upload" => false, "hide" => false, "chunk" => 1048576]];
+echo '<span class="balance"><span data-balance>5 000 грн</span></span>';
 echo View::fetch("partials/workspace", ["role" => "client", "order" => ["id" => 1, "title" => "Візитка", "product_name" => "Візитка",
     "status" => 4, "answers" => []], "offer" => ["price_designer" => 1000, "price_client" => 1200, "deadline" => null],
     "back" => ["href" => "/orders/", "label" => "Мої замовлення"], "who" => "Дизайнер Петро", "whoName" => "Петро",
@@ -224,12 +225,14 @@ def test_buy_double_click_one_request_then_panel():
             {'id': 7, 'label': 'Візитка', 'original_name': 'Візитка.pdf', 'size': 1000, 'size_text': '1000 Б', 'ext': 'pdf',
              'purchased': True, 'download': 'https://dev.i.fastcdn.kiev.ua/cf/aa/bb/cc/dd.pdf?name=x&download=1'}],
             'turn': {'mine': False, 'text': 'Макети ваші', 'sub': '', 'icon': 'fa-check-circle'},
-            'status_html': '<span class="status s6"><i class="fal fa-check-circle"></i>Куплено</span>'})
+            'status_html': '<span class="status s6"><i class="fal fa-check-circle"></i>Куплено</span>',
+            'balance_text': '3 800 грн'})
         pg.wait_for_selector('[data-pay]', state='hidden')
         assert pg.get_attribute('.lp-item[data-lp-id="7"] .lp-download', 'href').startswith('https://dev.i.fastcdn.kiev.ua/cf/')
         assert pg.eval_on_selector_all('.lp-item[data-lp-id="7"] [data-lp-cloud]', 'e => e.length') == 1
         assert pg.inner_text('[data-ws-turn-text]') == 'Макети ваші'
         assert pg.inner_text('[data-ws-status]') == 'Куплено'
+        assert pg.inner_text('[data-balance]') == '3 800 грн', 'баланс у шапці'
         assert pg.eval_on_selector_all('[data-ws-buy]', 'e => e.length') == 0
         assert pg.is_hidden('[data-lp-lock]')
     run(test, buy_html())
@@ -252,4 +255,23 @@ def test_buy_refusal_shows_error_and_fresh_window():
         pg.evaluate("""() => window.DesignWs.panel('1').render({layouts: [], count: 0, rev: 'r9'})""")
         assert pg.is_disabled('[data-ws-buy]')
         assert pg.is_visible('[data-ws-buy-hint]')
+    run(test, buy_html())
+
+
+def test_buy_refusal_without_window_no_retry_reload_on_close():
+    """400 без html («Макети вже куплено» в іншій вкладці): текст, «Оплатити» не вмикається, закриття вікна — перезавантаження"""
+    def test(pg, site):
+        site.buy = lambda route, request: site.json(route, {'error': 'Макети вже куплено'}, 400)
+        pg.click('[data-ws-buy]')
+        pg.wait_for_selector('[data-pay-body] [data-fresh]')
+        pg.wait_for_selector('[data-pay].show')
+        pg.click('[data-pay-body] [data-pay-submit]')
+        pg.wait_for_function('() => !document.querySelector("[data-pay-error]").hidden')
+        assert pg.inner_text('[data-pay-error]') == 'Макети вже куплено'
+        pg.wait_for_timeout(200)
+        assert pg.is_disabled('[data-pay-body] [data-pay-submit]'), 'повтор безглуздий'
+        pg.evaluate('() => { window.__stay = 1; }')
+        with pg.expect_navigation():
+            pg.click('[data-pay] [data-bs-dismiss="modal"]')
+        assert pg.evaluate('() => window.__stay') is None, 'сторінку перезавантажено'
     run(test, buy_html())

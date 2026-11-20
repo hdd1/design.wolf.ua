@@ -51,7 +51,7 @@ $badge = static fn(string $key): string => $key === 'feed' && $feedNew > 0
           <?php endforeach ?>
         </nav>
         <div class="ms-auto d-flex align-items-center gap-3">
-          <span class="balance"><i class="fal fa-wallet"></i><span class="label">Баланс</span> <?= View::price($h['balance']) ?></span>
+          <span class="balance"><i class="fal fa-wallet"></i><span class="label">Баланс</span> <span data-balance><?= View::price($h['balance']) ?></span></span>
           <span class="user"><span class="avatar"><?= View::e($h['initials']) ?></span><span class="short"><?= View::e($h['short']) ?></span></span>
         </div>
       <?php else: ?>

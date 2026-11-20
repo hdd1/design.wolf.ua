@@ -406,6 +406,7 @@ final class BuyHttpTest extends TestCase
         foreach ($json['layouts'] as $l) $this->assertMatchesRegularExpression('~^https://dev\.i\.fastcdn\.kiev\.ua/cf/~', $l['download']);
         $this->assertSame(['mine' => false, 'text' => 'Макети ваші'], array_intersect_key($json['turn'], ['mine' => 1, 'text' => 1]));
         $this->assertStringContainsString('Куплено', $json['status_html']);
+        $this->assertSame('3' . self::NB . '800' . self::NB . 'грн', $json['balance_text'], 'баланс для шапки');
 
         // Гроші й рядки
         $this->assertEquals(3800, (float)self::inv($client));
@@ -423,6 +424,7 @@ final class BuyHttpTest extends TestCase
         $text = self::text($html);
         $this->assertStringContainsString('Макети ваші', $text);
         $this->assertStringContainsString('Завантажити', $text);
+        $this->assertMatchesRegularExpression('~<span data-balance>3' . self::NB . '800' . self::NB . 'грн</span>~u', $html);
         $this->assertStringNotContainsString('data-ws-buy', $html);
         $this->assertStringNotContainsString('Оплата: звідки?', $text);
         $this->assertCount(2, self::cfUrls($html));

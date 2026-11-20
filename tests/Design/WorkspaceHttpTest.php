@@ -429,8 +429,8 @@ final class WorkspaceHttpTest extends TestCase
             array_intersect_key($l, ['label' => 1, 'original_name' => 1, 'size' => 1, 'ext' => 1]));
         $file = Paths::root() . "/layouts/$orderId/{$l['id']}.pdf";
         $this->assertSame($bytes, file_get_contents($file));
-        $this->assertSame('0600', substr(sprintf('%o', fileperms($file)), -4));
-        $this->assertSame('0700', substr(sprintf('%o', fileperms(dirname($file))), -4));
+        $this->assertSame('0644', substr(sprintf('%o', fileperms($file)), -4));
+        $this->assertSame('0755', substr(sprintf('%o', fileperms(dirname($file))), -4));
         $this->assertStringNotContainsString('fastcdn', json_encode($json));
 
         // Заміна — з тим самим підписом; чужий / неіснуючий file_id — відмова на першій частині

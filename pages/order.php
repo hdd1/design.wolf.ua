@@ -4,15 +4,23 @@
  * і вибором (макет 6.4), стани режиму 2 «чекаємо відповіді дизайнера» / «дизайнер відмовився» / «дизайнер назвав ціну»
  * (крім «Обрати» — другорядні «Запросити іншого дизайнера» і «Збирати пропозиції», рішення власника 2026-11-19).
  * ?chat={id пропозиції} — відкрите листування (на телефоні — окремий екран), ?chat=0 — без бокової панелі; ?done=… — тост.
- * Замовлення «В роботі» з обраним дизайнером — робочий простір (макет 6.5, views/partials/workspace.php): шапка з ціною,
- * «Купую» (неактивна, «Незабаром»), «чий хід» з фактичною кількістю макетів, стрічка обраного листування і панель «Макети»
- * Після помилки POST сторінку рендерить pages/order-update.php з $posted
+ * Замовлення з обраним дизайнером «В роботі», «Куплено», «Доопрацювання» — робочий простір (макет 6.5,
+ * views/partials/workspace.php): шапка з ціною, «Купую» з вікном оплати (views/partials/pay-modal.php, Purchases::quote — поки
+ * замовлення можна купити), «чий хід» з фактичною кількістю макетів, стрічка обраного листування і панель «Макети»
+ * («Завантажити» в куплених). Доопрацювання: «Прийняти» / «Відмовитися» на пропозицію дизайнера, «Скасувати доопрацювання»
+ * (POST /orders/{id}/rework; після помилки сторінку рендерить pages/order-rework.php з $posted)
+ * «Скасувати замовлення» (статуси 1–4; ?form=cancel — форма partials/order-cancel, POST /orders/{id}/cancel; у чернетки — теж
+ * ця сторінка, а не форма брифу) і «Скарга» в робочому просторі після купівлі (?form=complaint, POST /orders/{id}/complaint,
+ * «Скаргу надіслано {дата}»). Скасоване — «Скасовано: {причина}», бриф, пропозиції й листування лише для читання (без
+ * робочого простору: прев'ю й макети видалено з диска).
+ * Після помилки POST сторінку рендерить pages/order-update.php (pages/order-rework.php, order-cancel.php, order-complaint.php) з $posted
  * @var array $params
- * @var ?array{error:string} $posted
+ * @var ?array{error:string, form?:string, text?:string} $posted  form = cancel | complaint — відкрита форма, text — введене
  */
 use Design\BriefPage;
 use Design\Chat;
 use Design\ChunkUpload;
+use Design\Complaints;
 use Design\Csrf;
 use Design\Guard;
 use Design\Http;
@@ -22,14 +30,20 @@ use Design\OfferStatus;
 use Design\Orders;
 use Design\OrderStatus;
 use Design\Products;
+use Design\Purchases;
+use Design\Rework;
 use Design\View;
 use Design\Workspace;
 
 $me = Guard::customer();
 $order = Orders::get((int)$params['id'], $me);
 if ($order === null) Http::notFound();
+$posted ??= null;
+$form = $posted['form'] ?? Http::str($_GET, 'form');
+$canCancel = in_array($order['status'], Orders::CANCELLABLE, true);
+$cancelForm = $canCancel && $form === 'cancel';
 
-if ($order['status'] === OrderStatus::DRAFT) {
+if ($order['status'] === OrderStatus::DRAFT && !$cancelForm) {
     $saved = isset($_GET['saved']);
     BriefPage::render([
         'productName' => $order['product_name'],
@@ -39,12 +53,18 @@ if ($order['status'] === OrderStatus::DRAFT) {
         'fields' => BriefPage::fromSnapshot($order['answers'], Products::get($order['product_id'])),
         'csrf' => Csrf::token($me),
         'savedAt' => $saved ? date('H:i') : null,
+        'cancelUrl' => '/orders/' . $order['id'] . '/?form=cancel#order-cancel',
     ], $saved ? 'Чернетку збережено. Її видно в «Мої замовлення»' : null);
     exit;
 }
 
 $id = $order['id'];
-$posted ??= null;
+$cancelled = $order['status'] === OrderStatus::CANCELLED;
+$orderCancel = $canCancel ? ['form' => $cancelForm, 'reason' => ($posted['form'] ?? '') === 'cancel' ? (string)$posted['text'] : ''] : null;
+$complaint = in_array($order['status'], [OrderStatus::PURCHASED, OrderStatus::REWORK], true)
+    ? ['form' => $form === 'complaint', 'text' => ($posted['form'] ?? '') === 'complaint' ? (string)$posted['text'] : '',
+       'last' => Complaints::lastForOrder($order['id'])['created'] ?? null]
+    : null;
 $csrf = Csrf::token($me);
 $mode2 = Offers::mode2State($id, $me);
 $state = $mode2['state'] ?? null;
@@ -64,7 +84,7 @@ $open = count(array_filter($cards, $choosable));
 $list = $state !== 'waiting' && $state !== 'declined';
 // Робочий простір: замовлення в роботі — листування обраного дизайнера; закрите листування з іншим (?chat={id}) — як на етапі 3
 $asked = Http::str($_GET, 'chat');
-$ws = $chosen !== null && $order['status'] === OrderStatus::IN_WORK && ($asked === '' || $asked === (string)$chosen['id']);
+$ws = $chosen !== null && in_array($order['status'], Workspace::STATUSES, true) && ($asked === '' || $asked === (string)$chosen['id']);
 
 // Відкрите листування: ?chat= (лише пропозиція зі списку цього замовлення; 0 — закрите), інакше обраний дизайнер
 // або перша пропозиція, яку можна обрати
@@ -94,13 +114,14 @@ if (isset($byId[$sel])) {
         'title' => $card['designer_name'] !== '' ? $card['designer_name'] : 'Дизайнер',
         'subtitle' => $card['price_client'] > 0
             ? View::price($card['price_client']) . ($card['deadline'] ? ' · до ' . View::date($card['deadline']) : '') : '',
-        'note' => $card['status'] === OfferStatus::CHOSEN ? null : 'До вибору — лише текстові повідомлення. Файли і прев\'ю — після вибору дизайнера',
+        'note' => $card['status'] === OfferStatus::CHOSEN || $cancelled ? null : 'До вибору — лише текстові повідомлення. Файли і прев\'ю — після вибору дизайнера',
         'csrf' => $csrf,
         'messages' => $messages,
         'write' => $access['write'],
         'footer' => $footer,
-        // Робочий простір — листування обраного дизайнера: прев'ю, цитати, перегляд (клієнт лише дивиться й коментує)
-        'workspace' => $card['status'] === OfferStatus::CHOSEN
+        // Робочий простір — листування обраного дизайнера: прев'ю, цитати, перегляд (клієнт лише дивиться й коментує).
+        // Скасоване — звичайне листування для читання (картинок прев'ю вже немає)
+        'workspace' => $card['status'] === OfferStatus::CHOSEN && !$cancelled
             ? ['orderId' => $id, 'upload' => false, 'hide' => false, 'chunk' => ChunkUpload::partSize()] : null,
     ];
 }
@@ -111,6 +132,8 @@ $reason = $refused !== null ? Offers::declineReason($refused['id']) : null;
 
 // Плашка «чий хід»
 $alert = match (true) {
+    $cancelled => ['mine' => false, 'kind' => 'cancelled', 'icon' => 'fa-ban', 'title' => OrderStatus::cancelled((string)$order['cancel_reason']),
+        'sub' => 'Скасовано ' . View::when($order['cancelled_at']) . '. Бриф і листування — лише для читання'],
     $state === 'waiting' => ['mine' => false, 'icon' => 'fa-hourglass-half', 'title' => 'Чекаємо відповіді дизайнера',
         'sub' => 'Дизайнер отримав запрошення і сповіщення. Зазвичай відповідають за кілька годин'],
     $state === 'declined' => ['mine' => true, 'icon' => 'fa-hand-paper', 'title' => 'Ваш хід: оберіть, як продовжити',
@@ -129,10 +152,17 @@ $toasts = [
     'chosen' => 'Дизайнера обрано — він отримав сповіщення',
     'invited' => 'Запрошення надіслано — дизайнер отримав сповіщення',
     'collect' => 'Бриф опубліковано — дизайнери вже бачать його',
+    'rework-accepted' => 'Доопрацювання прийнято — дизайнер отримав сповіщення',
+    'rework-declined' => 'Ви відмовилися від доопрацювання',
+    'rework-cancelled' => 'Доопрацювання скасовано',
+    'cancelled' => 'Замовлення скасовано — дизайнери отримали сповіщення',
+    'complaint' => 'Скаргу надіслано — менеджер Майстерні зв\'яжеться з вами',
 ];
 
 $workspace = null;
 if ($ws && $chat !== null && $chat['workspace'] !== null) {
+    $quote = Purchases::quote($id, $me);
+    $reworkOrder = Rework::order($id);
     $workspace = [
         'role' => 'client',
         'order' => $order,
@@ -140,20 +170,29 @@ if ($ws && $chat !== null && $chat['workspace'] !== null) {
         'back' => ['href' => '/orders/', 'label' => 'Мої замовлення'],
         'who' => trim('Дизайнер ' . $chosen['designer_name']),
         'whoName' => $chosen['designer_name'] !== '' ? $chosen['designer_name'] : 'Дизайнер',
-        'turn' => Workspace::turn($access['offer'], Messages::ROLE_CLIENT),
+        'turn' => Workspace::turn($access['offer'], Messages::ROLE_CLIENT, $reworkOrder),
         'chat' => $chat,
-        'panel' => Workspace::layouts($id),
+        'panel' => Workspace::layouts($id, true),
         'edit' => false,
         'csrf' => $csrf,
         'chunk' => $chat['workspace']['chunk'],
         'error' => $posted['error'] ?? null,
+        'quote' => $quote,
+        'rework' => Workspace::rework($access['offer'], Messages::ROLE_CLIENT, $reworkOrder),
+        'orderCancel' => $orderCancel,
+        'complaint' => $complaint,
     ];
 }
 
 View::render('layout', [
     'title' => $order['title'],
     'active' => 'orders',
-    'scripts' => $chat === null ? [] : ($chat['workspace'] !== null ? ['/assets/js/chat.js', '/assets/js/workspace.js'] : ['/assets/js/chat.js']),
+    'scripts' => match (true) {
+        $chat === null => [],
+        $chat['workspace'] === null => ['/assets/js/chat.js'],
+        default => ['/assets/js/chat.js', '/assets/js/workspace-layouts.js', '/assets/js/workspace.js',
+            ...(($workspace['quote'] ?? null) !== null ? ['/assets/js/workspace-buy.js'] : [])],
+    },
     'toast' => $posted === null ? ($toasts[Http::str($_GET, 'done')] ?? null) : null,
     'body' => View::fetch('order', [
         'order' => $order,
@@ -173,5 +212,6 @@ View::render('layout', [
         'chatOpen' => $explicit && $chat !== null,
         'csrf' => $csrf,
         'workspace' => $workspace,
+        'orderCancel' => $orderCancel,
     ]),
 ]);

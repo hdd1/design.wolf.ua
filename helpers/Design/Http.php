@@ -42,33 +42,45 @@ final class Http
     {
         if (self::$output !== null) {
             (self::$output)($data, $code);
-        } else {
-            self::noStore();
-            http_response_code($code);
-            header('Content-Type: application/json; charset=utf-8');
-            echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            if ($after !== null) {
-                if (function_exists('fastcgi_finish_request')) {
-                    fastcgi_finish_request();
-                } else {
-                    while (ob_get_level() > 0) ob_end_flush();
-                    flush();
-                }
+            self::finishThen($after, false);
+            return;
+        }
+        self::noStore();
+        http_response_code($code);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        self::finishThen($after, true);
+    }
+
+    /** $after — як у respond(): виконується, коли браузер уже отримав перенаправлення (сповіщення після дії форми) */
+    public static function redirect(string $url, int $code = 302, ?\Closure $after = null): never
+    {
+        http_response_code($code);
+        header('Location: ' . $url);
+        self::finishThen($after, true);
+        exit;
+    }
+
+    /**
+     * Робота після відповіді: закрити запит ($close — fastcgi_finish_request; поза php-fpm — flush), тоді $after.
+     * Збій $after — лише в журнал: відповідь уже віддано. Без $after — нічого (запит закриється сам)
+     */
+    private static function finishThen(?\Closure $after, bool $close): void
+    {
+        if ($after === null) return;
+        if ($close) {
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } else {
+                while (ob_get_level() > 0) ob_end_flush();
+                flush();
             }
         }
-        if ($after === null) return;
         try {
             $after();
         } catch (\Throwable $e) {
             error_log('design: робота після відповіді ' . ($_SERVER['REQUEST_URI'] ?? '') . ': ' . $e);
         }
-    }
-
-    public static function redirect(string $url, int $code = 302): never
-    {
-        http_response_code($code);
-        header('Location: ' . $url);
-        exit;
     }
 
     public static function notFound(): never

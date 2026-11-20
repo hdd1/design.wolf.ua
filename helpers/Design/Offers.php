@@ -22,6 +22,7 @@ final class Offers
     private const ERR_UNAVAILABLE = 'Дизайнер недоступний';
     private const ERR_INVITE_GONE = 'Запрошення вже неактуальне';
     private const ERR_ALREADY_SENT = 'Ви вже запропонували — змініть пропозицію';
+    private const ERR_CANCELLED = 'Замовлення скасовано';
 
     /** Активні пропозиції режиму 2: запрошення без відповіді або «Так» (для клієнта — якщо дизайнер досі схвалений; див. reopenable) */
     private const ACTIVE = [OfferStatus::INVITED, OfferStatus::SENT];
@@ -72,15 +73,18 @@ final class Offers
 
     /**
      * Змінити надіслану пропозицію (до вибору). Нова сума — нова P за поточною націнкою; без зміни суми знімок ціни лишається.
-     * Зміна ціни для клієнта або терміну — системне повідомлення в листування
+     * Зміна ціни для клієнта або терміну — системне повідомлення в листування. Замовлення скасоване — «Замовлення скасовано»
      */
     public static function update(int $offerId, int $designerId, string $text, int $price, string $deadline): void
     {
         $text = self::validate($text, $price, $deadline);
+        $orderId = self::orderOf($offerId, $designerId);
 
         $pdo = Sql::pdo();
         $pdo->beginTransaction();
         try {
+            // Спільний замок замовлення (як у propose): скасування клієнтом не проскочить між перевіркою і записом
+            self::notCancelled($orderId);
             // Замок рядка: вибір клієнтом або друга вкладка не перепишуть ціну між читанням і записом
             $row = Sql::one('SELECT status, price_designer, markup_percent, price_client, deadline FROM design_offers
                              WHERE id = ? AND designer_id = ? FOR UPDATE', [$offerId, $designerId]);
@@ -115,7 +119,8 @@ final class Offers
     /**
      * Дизайнер відкликає надіслану пропозицію (до вибору). Повторно надіслати можна в той самий рядок.
      * Режим 2 (відкликання після «Так») — як відмова: замовлення лишається в зборі режиму 2 без пропозиції,
-     * клієнту — «Запросити іншого» / «Збирати пропозиції», клієнту й куратору — ті самі сповіщення, що й при «Ні»
+     * клієнту — «Запросити іншого» / «Збирати пропозиції», клієнту й куратору — ті самі сповіщення, що й при «Ні».
+     * Замовлення скасоване — «Замовлення скасовано» (лише для читання)
      */
     public static function withdraw(int $offerId, int $designerId): void
     {
@@ -124,7 +129,7 @@ final class Offers
         $pdo = Sql::pdo();
         $pdo->beginTransaction();
         try {
-            $order = Sql::one('SELECT customer_id, mode FROM design_orders WHERE id = ? FOR SHARE', [$orderId]);
+            $order = self::notCancelled($orderId);
             $n = Sql::exec('UPDATE design_offers SET status = ? WHERE id = ? AND designer_id = ? AND status = ?',
                 [OfferStatus::WITHDRAWN, $offerId, $designerId, OfferStatus::SENT]);
             if ($n === 0) throw new DesignerException('Пропозицію вже не можна відкликати');
@@ -472,7 +477,7 @@ final class Offers
     /**
      * Стрічка брифів схваленого дизайнера: брифи в зборі пропозицій режиму 1 (крім своїх замовлень)
      * і замовлення, де клієнт обрав іншого, а цей дизайнер пропонував. Нові зверху
-     * @return array{items:list<array{order_id:int, product_name:string, title:string, published_at:?string, preview:list<array{q:string,a:string}>, offers:int, mine:?array{id:int,status:int,text:string,price_designer:int,price_client:int,deadline:?string}, chosen_other:bool, is_new:bool}>, total:int, pages:int}
+     * @return array{items:list<array{order_id:int, customer_id:int, product_name:string, title:string, published_at:?string, preview:list<array{q:string,a:string}>, offers:int, mine:?array{id:int,status:int,text:string,price_designer:int,price_client:int,deadline:?string}, chosen_other:bool, is_new:bool}>, total:int, pages:int}
      */
     public static function feed(int $designerId, int $page): array
     {
@@ -486,7 +491,7 @@ final class Offers
         $offset = (max(1, $page) - 1) * self::PER_PAGE;
 
         $rows = Sql::all(
-            "SELECT o.id, o.title, o.answers, o.published_at, p.name AS product_name,
+            "SELECT o.id, o.customer_id, o.title, o.answers, o.published_at, p.name AS product_name,
                     (SELECT COUNT(*) FROM design_offers x WHERE x.order_id = o.id AND x.status IN (?, ?)) AS offers,
                     m.id AS mine_id, m.status AS mine_status, m.text AS mine_text, m.price_designer, m.price_client, m.deadline
              FROM design_orders o
@@ -498,6 +503,7 @@ final class Offers
 
         $items = array_map(static fn(array $r): array => [
             'order_id' => (int)$r['id'],
+            'customer_id' => (int)$r['customer_id'],
             'product_name' => (string)$r['product_name'],
             'title' => (string)$r['title'] !== '' ? (string)$r['title'] : (string)$r['product_name'],
             'published_at' => $r['published_at'] === null ? null : (string)$r['published_at'],
@@ -636,6 +642,18 @@ final class Offers
     }
 
     /**
+     * У транзакції: спільний замок рядка замовлення; скасоване клієнтом — лише для читання (пропозицію не змінити й не відкликати)
+     * @return array{customer_id:mixed, mode:mixed, status:mixed} рядок замовлення
+     */
+    private static function notCancelled(int $orderId): array
+    {
+        $order = Sql::one('SELECT customer_id, mode, status FROM design_orders WHERE id = ? FOR SHARE', [$orderId]);
+        if ($order === null) throw new DesignerException(self::ERR_NOT_FOUND);
+        if ((int)$order['status'] === OrderStatus::CANCELLED) throw new DesignerException(self::ERR_CANCELLED);
+        return $order;
+    }
+
+    /**
      * У транзакції: замок замовлення, потім пропозиції; запрошення ще чекає відповіді («Так» / «Ні»)
      * @return array{customer_id:mixed} рядок замовлення
      */
@@ -701,7 +719,7 @@ final class Offers
             'msgSMS' => $sms,
         ]);
         $client = Customers::header($customerId)['name'] ?? 'Клієнт';
-        self::notifyCurator($customerId,
+        Notify::curator($customerId,
             'Майстерня дизайну: дизайнер ' . ($name !== '' ? $name : 'id ' . $designerId) . ' відмовився від №' . $orderId
             . ' (клієнт ' . $client . ', id ' . $customerId . ') (' . $time . ')',
             $sms);
@@ -733,7 +751,7 @@ final class Offers
             $done++;
             $customerId = (int)$r['customer_id'];
             $client = Customers::header($customerId)['name'] ?? 'Клієнт';
-            self::notifyCurator($customerId,
+            Notify::curator($customerId,
                 'Майстерня дизайну: бриф №' . $r['id'] . ' (' . $r['product_name'] . ') клієнта ' . $client . ' (id ' . $customerId . ') добу без пропозицій ('
                 . date('d.m H:i') . ')',
                 'Майстерня дизайну: бриф №' . $r['id'] . ' без пропозицій. design.wolf.ua');
@@ -741,15 +759,37 @@ final class Offers
         return $done;
     }
 
-    /** Куратор клієнта — customers.curator_id (users.id); немає — лише запис у журнал */
-    private static function notifyCurator(int $customerId, string $msg, string $msgSMS): void
+    /**
+     * Крон (раз на годину): «В роботі» / «Доопрацювання», дата обраної пропозиції вже минула (< сьогодні), а купівлі немає
+     * → куратору клієнта один раз (notified_deadline_at). Прийнята доробка скидає відмітку (Rework::accept) — з новою датою
+     * крон спрацює знову. Відмітка ставиться й коли куратора немає (лише error_log), щоб не повторювати щогодини
+     * @return int скільки замовлень оброблено
+     */
+    public static function notifyDeadline(): int
     {
-        $curatorId = (int)Sql::value('SELECT curator_id FROM customers WHERE id = ?', [$customerId]);
-        if ($curatorId <= 0) {
-            error_log('Design\\Offers: у клієнта id ' . $customerId . ' немає куратора — сповіщення не надіслано: ' . $msg);
-            return;
+        $rows = Sql::all(
+            'SELECT o.id, o.customer_id, o.status FROM design_orders o JOIN design_offers f ON f.id = o.chosen_offer_id
+             WHERE o.status IN (?, ?) AND o.notified_deadline_at IS NULL AND f.deadline < CURDATE() ORDER BY o.id',
+            [OrderStatus::IN_WORK, OrderStatus::REWORK]);
+
+        $done = 0;
+        foreach ($rows as $r) {
+            // Захоплюємо відмітку першими: паралельний запуск, купівля чи нова дата, що встигли, не дадуть дубля
+            $claimed = Sql::exec(
+                'UPDATE design_orders o JOIN design_offers f ON f.id = o.chosen_offer_id SET o.notified_deadline_at = NOW()
+                 WHERE o.id = ? AND o.status IN (?, ?) AND o.notified_deadline_at IS NULL AND f.deadline < CURDATE()',
+                [$r['id'], OrderStatus::IN_WORK, OrderStatus::REWORK]);
+            if ($claimed === 0) continue;
+            $done++;
+            $customerId = (int)$r['customer_id'];
+            $client = Customers::header($customerId)['name'] ?? 'Клієнт';
+            // «Доопрацювання»: макети вже купувались раз — «не куплено» було б неправдою
+            $what = (int)$r['status'] === OrderStatus::REWORK ? 'термін доопрацювання минув' : 'термін минув, макети не куплено';
+            Notify::curator($customerId,
+                'Майстерня дизайну: №' . $r['id'] . ' — ' . $what . ' (клієнт ' . $client . ', id ' . $customerId . ')',
+                'Майстерня дизайну: №' . $r['id'] . ' — ' . $what . '. design.wolf.ua');
         }
-        Notify::send(['user_id' => $curatorId, 'msg' => $msg, 'msgSMS' => $msgSMS]);
+        return $done;
     }
 
     /** @return array{0:float, 1:int} поточна націнка k і ціна для клієнта P */

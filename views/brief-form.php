@@ -8,6 +8,7 @@
  * @var string $csrf
  * @var ?string $error
  * @var ?string $savedAt    «14:20», якщо щойно збережено
+ * @var ?string $cancelUrl  чернетка: «Скасувати замовлення» (сторінка замовлення з формою причини); новий бриф — немає
  */
 use Design\View;
 
@@ -64,4 +65,7 @@ $about = ['Візитка' => 'візитку', 'Флаєр' => 'флаєр', '�
       <button class="btn btn-primary btn-lg" type="submit" name="action" value="next">Далі: як обрати дизайнера</button>
     </div>
   </form>
+  <?php if (!empty($cancelUrl)): ?>
+  <div class="order-cancel-link text-end"><a class="link-red" href="<?= View::e($cancelUrl) ?>"><i class="fal fa-ban"></i> Скасувати замовлення</a></div>
+  <?php endif ?>
 </div></div>

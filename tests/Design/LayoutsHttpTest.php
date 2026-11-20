@@ -299,14 +299,14 @@ final class LayoutsHttpTest extends TestCase
         $designer = $this->designer();
         [$orderId, $offerId] = $this->inWork($client, $designer);
 
-        // Порожня панель: у клієнта — «ще не завантажив», «Купую» неактивна з «Незабаром»
+        // Порожня панель: у клієнта — «ще не завантажив», «Купую» вимкнена, поки немає макетів (етап 5)
         [$code, , $html] = self::fetch("/orders/$orderId/", $client);
         $this->assertSame(200, $code);
         $this->assertStringContainsString('data-layouts', $html);
         $this->assertStringContainsString('Дизайнер ще не завантажив макети', $html);
         $this->assertMatchesRegularExpression('~<button[^>]*class="[^"]*ws-buy[^"]*"[^>]*disabled~', $html);
         $text = self::text($html);
-        $this->assertStringContainsString('Купую Незабаром', $text);
+        $this->assertStringContainsString('Купую Коли дизайнер завантажить макети', $text);
         $this->assertStringContainsString('Ціна 1 200 грн', $text);
         $this->assertStringContainsString('Термін до ' . View::date(date('Y-m-d', strtotime('+3 day'))), $text);
         $this->assertStringContainsString('Дизайнер ' . self::DESIGNER_NAME, $text);
@@ -345,12 +345,13 @@ final class LayoutsHttpTest extends TestCase
         $this->assertSame(200, $code);
         $this->assertSame(2, $panel['count']);
         $this->assertSame([$a['id'], $b['id']], array_column($panel['layouts'], 'id'));
-        $this->assertSame(['id', 'label', 'original_name', 'size', 'size_text', 'ext'], array_keys($panel['layouts'][0]));
+        $this->assertSame(['id', 'label', 'original_name', 'size', 'size_text', 'ext', 'purchased', 'download', 'cloud_status'], array_keys($panel['layouts'][0]));
+        $this->assertSame([[false, '', 0], [false, '', 0]], array_map(static fn($l) => [$l['purchased'], $l['download'], $l['cloud_status']], $panel['layouts']));
         $this->assertSame('293 КБ', str_replace("\u{00A0}", ' ', $panel['layouts'][1]['size_text']));
-        $this->assertSame('Макети завантажено — перегляньте список. Купівля — незабаром', $panel['turn']['text']);
+        $this->assertSame('Ваш хід: перевірте макети і натисніть «Купую»', $panel['turn']['text']);
         [, $poll] = self::getJson("/offers/$offerId/messages?after=0", $client);
         $this->assertSame($panel['rev'], $poll['workspace']['layouts_rev']);
-        $this->assertSame('Макети завантажено — перегляньте список. Купівля — незабаром', $poll['workspace']['turn']['text']);
+        $this->assertSame('Ваш хід: перевірте макети і натисніть «Купую»', $poll['workspace']['turn']['text']);
         $this->assertSame('Дизайнер завантажив 2 макети. Файли відкриються після покупки', $poll['workspace']['turn']['sub']);
         [$code, $d] = self::getJson("/orders/$orderId/layouts", $designer);
         $this->assertSame(200, $code);
@@ -482,8 +483,8 @@ final class LayoutsHttpTest extends TestCase
         // Жодних посилань i.fastcdn на папку макетів
         exec('find ' . escapeshellarg(self::LINKS) . ' -type l -lname ' . escapeshellarg("$root/layouts/*"), $links);
         $this->assertSame([], $links);
-        // Файл закритий для nginx («інших»)
-        $this->assertSame('0600', substr(sprintf('%o', fileperms("$root/layouts/$orderId/$id.pdf")), -4));
+        // Звичайний файл 0644 (посилання на нього все одно немає — перевірено вище)
+        $this->assertSame('0644', substr(sprintf('%o', fileperms("$root/layouts/$orderId/$id.pdf")), -4));
     }
 
     public function test_limits_messages(): void
@@ -549,7 +550,9 @@ final class LayoutsHttpTest extends TestCase
         $this->assertStringContainsString('Термін до ' . View::date(date('Y-m-d', strtotime('+3 day'))), $text);
         $this->assertStringContainsString('Завантажити макети', $text);
         $this->assertStringContainsString('Клієнт ', $text);
-        foreach (['Змінити', 'Заробіток', '★'] as $s) $this->assertStringNotContainsString($s, $text);
+        // «Заробіток» — пункт меню дизайнера (етап 5), у самій шапці замовлення його немає
+        $main = self::text(substr($html, (int)strpos($html, '<main')));
+        foreach (['Змінити', 'Заробіток', '★'] as $s) $this->assertStringNotContainsString($s, $main);
 
         $this->assertSame("Ваш хід: покажіть перше прев'ю", $designerTurn());
         $this->assertSame('Дизайнер працює над макетами', $clientTurn());
@@ -566,7 +569,7 @@ final class LayoutsHttpTest extends TestCase
         self::send($offerId, $designer, 'Дякую, вантажу');
         $this->layout($orderId, $offerId, $designer, 'Візитка.pdf', 1000);
         $this->assertSame('Макети завантажено · чекаємо, поки клієнт натисне «Купую»', $designerTurn());
-        $this->assertSame('Макети завантажено — перегляньте список. Купівля — незабаром', $clientTurn());
+        $this->assertSame('Ваш хід: перевірте макети і натисніть «Купую»', $clientTurn());
 
         // Приховане прев'ю доходить до клієнта опитуванням; без видимих прев'ю — знову «покажіть перше прев'ю»
         [, $poll] = self::getJson("/offers/$offerId/messages?after=0", $client);

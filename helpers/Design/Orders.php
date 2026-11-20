@@ -6,6 +6,17 @@ namespace Design;
 final class Orders
 {
     public const MAX_TITLE = 255;
+    /** Причина скасування — до 2000 символів */
+    public const REASON_MAX = 2000;
+    /** Статуси, з яких клієнт може скасувати замовлення: до першої купівлі (і без проведених покупок) */
+    public const CANCELLABLE = [OrderStatus::DRAFT, OrderStatus::COLLECTING, OrderStatus::WAITING_DESIGNER, OrderStatus::IN_WORK];
+
+    /**
+     * Тести: викликається після коммиту скасування, перед прибиранням файлів (щоб зламати прибирання)
+     * @internal
+     * @var (\Closure(int): void)|null
+     */
+    public static ?\Closure $afterCommit = null;
 
     public static function create(int $customerId, int $productId, array $answers, string $title = ''): int
     {
@@ -45,11 +56,92 @@ final class Orders
         throw new BriefException('Замовлення не можна опублікувати');
     }
 
-    /** @return array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string}|null чуже — null */
+    /**
+     * Клієнт скасовує замовлення (спека «Скасувати замовлення»): статуси CANCELLABLE (1–4) і жодної проведеної покупки; причина
+     * обов'язкова, 1–REASON_MAX символів. Статус «Скасовано», cancel_reason, cancelled_at; статуси пропозицій не змінюються —
+     * замовлення й листування стають лише для читання (кожна дія перевіряє статус під замком рядка замовлення).
+     * Транзакція з замком рядка замовлення (як Purchases::buy і вибір дизайнера — купівля й скасування не перетинаються).
+     * Після коммиту файли прев'ю (з симлінками i.fastcdn) і некуплених макетів видаляються з диска, рядки лишаються.
+     * Сповіщення — notifyCancel(), сторінка шле його після відповіді браузеру
+     * @throws DesignerException
+     */
+    public static function cancel(int $orderId, int $customerId, string $reason): void
+    {
+        $reason = trim(mb_scrub($reason));
+        if ($reason === '') throw new DesignerException('Вкажіть причину');
+        if (mb_strlen($reason) > self::REASON_MAX) throw new DesignerException('Причина — не довше ' . self::REASON_MAX . ' символів');
+
+        $pdo = Sql::pdo();
+        $pdo->beginTransaction();
+        try {
+            $o = Sql::one('SELECT status FROM design_orders WHERE id = ? AND customer_id = ? FOR UPDATE', [$orderId, $customerId]);
+            if ($o === null) throw new DesignerException('Замовлення не знайдено');
+            $status = (int)$o['status'];
+            if ($status === OrderStatus::CANCELLED) throw new DesignerException('Замовлення вже скасовано');
+            $bought = Sql::value('SELECT EXISTS (SELECT 1 FROM design_purchases WHERE order_id = ? AND status = ?)', [$orderId, Purchases::STATUS_DONE]);
+            if (!in_array($status, self::CANCELLABLE, true) || (bool)$bought) {
+                throw new DesignerException('Скасувати можна лише до першої купівлі');
+            }
+            Sql::exec('UPDATE design_orders SET status = ?, cancel_reason = ?, cancelled_at = NOW() WHERE id = ?',
+                [OrderStatus::CANCELLED, $reason, $orderId]);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+        // Файли — після коммиту (як Previews::hide): не вдався коммит — замовлення живе з усіма файлами. Збій прибирання —
+        // лише журнал: замовлення вже скасоване, клієнт має отримати перенаправлення, а дизайнери — сповіщення
+        // — кожне прибирання у своєму try, щоб збій одного не пропустив інше
+        foreach ([
+            static function () use ($orderId): void {
+                if (self::$afterCommit !== null) (self::$afterCommit)($orderId);
+            },
+            static fn() => Previews::removeOrderFiles($orderId),
+            static fn() => Layouts::removeUnpurchasedFiles($orderId),
+        ] as $cleanup) {
+            try {
+                $cleanup();
+            } catch (\Throwable $e) {
+                error_log("design: прибирання файлів скасованого замовлення $orderId: " . $e);
+            }
+        }
+    }
+
+    /**
+     * Сповіщення про скасування (після відповіді браузеру): обраному дизайнеру, запрошеному (режим 2) і всім, хто надіслав
+     * пропозицію, — «Замовлення №N скасовано клієнтом» (без причини); куратору клієнта — з причиною.
+     * Стан читається заново: замовлення не скасоване або це скасована чернетка (published_at NULL) — нічого
+     */
+    public static function notifyCancel(int $orderId): void
+    {
+        $o = Sql::one('SELECT customer_id, status, cancel_reason, chosen_offer_id, published_at FROM design_orders WHERE id = ?', [$orderId]);
+        if ($o === null || (int)$o['status'] !== OrderStatus::CANCELLED) return;
+        if ($o['published_at'] === null) return;   // чернетку ніхто не бачив: ні дизайнерам, ні куратору сповіщати нічого
+        $time = ' (' . date('d.m H:i') . ')';
+        $what = 'Майстерня дизайну: замовлення №' . $orderId . ' скасовано клієнтом.';
+        $designers = Sql::all('SELECT DISTINCT designer_id FROM design_offers WHERE order_id = ? AND (id = ? OR status IN (?, ?)) ORDER BY designer_id',
+            [$orderId, (int)$o['chosen_offer_id'], OfferStatus::INVITED, OfferStatus::SENT]);
+        foreach ($designers as $d) {
+            Notify::send([
+                'customer_id' => (int)$d['designer_id'],
+                'msg' => $what . ' ' . Config::siteUrl() . '/feed/' . $orderId . '/' . $time,
+                'msgSMS' => $what . ' design.wolf.ua',
+            ]);
+        }
+        $customerId = (int)$o['customer_id'];
+        $client = Customers::header($customerId)['name'] ?? 'Клієнт';
+        Notify::curator($customerId,
+            'Майстерня дизайну: клієнт ' . $client . ' (id ' . $customerId . ') скасував замовлення №' . $orderId . '. Причина: '
+            . preg_replace('/\s+/u', ' ', (string)$o['cancel_reason']) . $time,
+            'Майстерня дизайну: клієнт скасував №' . $orderId . '. design.wolf.ua');
+    }
+
+    /** @return array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string, cancel_reason:?string, cancelled_at:?string}|null чуже — null */
     public static function get(int $orderId, int $customerId): ?array
     {
         $r = Sql::one(
-            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at
+            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at,
+                    o.cancel_reason, o.cancelled_at
              FROM design_orders o JOIN design_products p ON p.id = o.product_id
              WHERE o.id = ? AND o.customer_id = ?', [$orderId, $customerId]);
         return $r === null ? null : self::withAnswers($r);
@@ -57,12 +149,13 @@ final class Orders
 
     /**
      * Замовлення без перевірки власника — для сторінки дизайнера (хто що бачить, вирішує сторінка)
-     * @return array{id:int, customer_id:int, status:int, mode:int, product_id:int, product_name:string, title:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string}|null
+     * @return array{id:int, customer_id:int, status:int, mode:int, product_id:int, product_name:string, title:string, answers:list<array{q:string,a:string}>, created:string, published_at:?string, cancel_reason:?string, cancelled_at:?string}|null
      */
     public static function find(int $orderId): ?array
     {
         $r = Sql::one(
-            'SELECT o.id, o.customer_id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at
+            'SELECT o.id, o.customer_id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.answers, o.created, o.published_at,
+                    o.cancel_reason, o.cancelled_at
              FROM design_orders o JOIN design_products p ON p.id = o.product_id
              WHERE o.id = ?', [$orderId]);
         return $r === null ? null : ['customer_id' => (int)$r['customer_id']] + self::withAnswers($r);
@@ -82,16 +175,17 @@ final class Orders
 
     /**
      * Замовлення клієнта для «Мої замовлення», нові зверху. offers — пропозиції, які можна обрати (надіслані схваленими
-     * дизайнерами) — для «чий хід»; designer / price — обраний дизайнер і ціна для клієнта, поки не обрано — '' і 0
-     * @return list<array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, created:string, published_at:?string, offers:int, designer:string, price:int}>
+     * дизайнерами) — для «чий хід»; designer / price — обраний дизайнер і ціна для клієнта, поки не обрано — '' і 0;
+     * rework — є пропозиція доопрацювання без відповіді (Rework::pending); cancel_reason — причина скасування («чий хід»)
+     * @return list<array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, created:string, published_at:?string, cancel_reason:?string, cancelled_at:?string, offers:int, designer:string, price:int, rework:bool}>
      */
     public static function forCustomer(int $customerId): array
     {
         $rows = Sql::all(
-            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.created, o.published_at,
+            'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.created, o.published_at, o.cancel_reason, o.cancelled_at,
                     (SELECT COUNT(*) FROM design_offers f JOIN design_designers d ON d.customer_id = f.designer_id
                      WHERE f.order_id = o.id AND f.status = ? AND d.status = ?) AS offers,
-                    cd.name AS designer, c.price_client AS price
+                    cd.name AS designer, c.price_client AS price, o.paid_client, o.rework_price_designer, o.rework_price_client, o.rework_deadline
              FROM design_orders o
              JOIN design_products p ON p.id = o.product_id
              LEFT JOIN design_offers c ON c.id = o.chosen_offer_id
@@ -101,6 +195,7 @@ final class Orders
             'offers' => (int)$r['offers'],
             'designer' => (string)$r['designer'],
             'price' => (int)$r['price'],
+            'rework' => Rework::pending($r) !== null,
         ], $rows);
     }
 
@@ -115,6 +210,8 @@ final class Orders
             'title' => (string)$r['title'] !== '' ? (string)$r['title'] : (string)$r['product_name'],
             'created' => (string)$r['created'],
             'published_at' => $r['published_at'] === null ? null : (string)$r['published_at'],
+            'cancel_reason' => $r['cancel_reason'] === null ? null : (string)$r['cancel_reason'],
+            'cancelled_at' => $r['cancelled_at'] === null ? null : (string)$r['cancelled_at'],
         ];
     }
 

@@ -8,6 +8,8 @@
  * @var ?array $reason повідомлення дизайнера з причиною відмови @var int $sel відкрите листування
  * @var ?array $chat параметри partials/chat @var bool $chatOpen @var string $csrf
  * @var ?array $workspace параметри partials/workspace — замовлення в роботі (макет 6.5); тоді решта не показується
+ * @var ?array{form:bool, reason:string} $orderCancel  клієнт може скасувати (статуси 1–4): посилання «Скасувати замовлення» внизу,
+ *      form — відкрита форма (partials/order-cancel) під «чий хід»; null — ні (скасоване: alert kind = cancelled, «Скасовано: …»)
  */
 use Design\Chat;
 use Design\OrderStatus;
@@ -18,6 +20,7 @@ if ($workspace !== null) {
     return;
 }
 $id = $order['id'];
+$orderCancel ??= null;
 $filled = count(array_filter($order['answers'], static fn($p) => $p['a'] !== ''));
 ?>
 <div class="container page<?= $chatOpen ? ' chat-open' : '' ?>">
@@ -38,10 +41,14 @@ $filled = count(array_filter($order['answers'], static fn($p) => $p['a'] !== '')
         <div class="alert-d error mt-4" role="alert"><i class="fal fa-exclamation-circle mt-1"></i><div class="fw-semibold"><?= View::e($error) ?></div></div>
       <?php endif ?>
 
-      <div class="alert-d <?= $alert['mine'] ? 'turn' : 'info' ?> mt-4">
+      <div class="alert-d <?= View::e($alert['kind'] ?? ($alert['mine'] ? 'turn' : 'info')) ?> mt-4">
         <span class="ic"><i class="fal <?= $alert['icon'] ?>"></i></span>
         <div><div class="t"><?= View::e($alert['title']) ?></div><?php if ($alert['sub'] !== ''): ?><div class="text-2 small"><?= View::e($alert['sub']) ?></div><?php endif ?></div>
       </div>
+
+      <?php if ($orderCancel['form'] ?? false): ?>
+        <div class="mt-3"><?php View::render('partials/order-cancel', ['orderId' => $id, 'csrf' => $csrf, 'reason' => $orderCancel['reason']]) ?></div>
+      <?php endif ?>
 
       <details class="brief-box card-d mt-3">
         <summary><i class="fal fa-file-alt"></i> Бриф · <?= View::e($order['product_name']) ?> · <?= $filled ?> <?= OrderStatus::plural($filled, 'відповідь', 'відповіді', 'відповідей') ?><span class="more"></span></summary>
@@ -86,6 +93,10 @@ $filled = count(array_filter($order['answers'], static fn($p) => $p['a'] !== '')
           <h2 class="h4 fw-bold" style="font-family:var(--font-ui)">Пропозицій поки немає</h2>
           <p class="text-2 mb-0">Дизайнери вже бачать ваш бриф. Зазвичай перші пропозиції приходять протягом дня — ми надішлемо сповіщення.</p>
         </div>
+      <?php endif ?>
+
+      <?php if ($orderCancel !== null && !$orderCancel['form']): ?>
+        <div class="order-cancel-link"><a class="link-red" href="/orders/<?= $id ?>/?form=cancel#order-cancel"><i class="fal fa-ban"></i> Скасувати замовлення</a></div>
       <?php endif ?>
     </div>
 

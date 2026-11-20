@@ -15,7 +15,7 @@ use Design\Workspace;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Макети: файли 0600 у папці 0700, ліміти числа й суми, заміна/видалення зі слідом у листуванні, доступ лише обраного дизайнера.
+ * Макети: звичайні файли 0644 у папці 0755, ліміти числа й суми, заміна/видалення зі слідом у листуванні, доступ лише обраного дизайнера.
  * Клієнт і дизайнери — фіктивні customer_id 999999901+; замовлення й пропозиції тест вставляє сам (id — автоінкремент).
  * DESIGN_WORK_ROOT — тимчасова папка; файли — випадкові байти. Ліміти в МБ підміняються в кеші Settings (БД не чіпаємо:
  * 5 ГБ не пишемо). Макети через i.fastcdn не віддаються — тест перевіряє, що дерево симлінків CDN не змінилося
@@ -28,6 +28,8 @@ final class LayoutsTest extends TestCase
     private const B = 999999903;          // інший схвалений дизайнер
     private const IDS = [self::CLIENT, self::A, self::B];
     private const NB = "\u{00A0}";
+    /** design_purchases.id для «куплених» макетів (рядка купівлі тест не створює) */
+    private const PURCHASE = 999999901;
 
     private string $root;
     private string|false $oldRoot;
@@ -152,7 +154,7 @@ final class LayoutsTest extends TestCase
         }
     }
 
-    public function test_add_moves_file_private_perms(): void
+    public function test_add_moves_file_public_perms(): void
     {
         [$orderId, $offerId] = $this->inWork();
         $tmp = $this->upload(2516582);
@@ -167,9 +169,9 @@ final class LayoutsTest extends TestCase
         $path = $this->root . "/layouts/$orderId/{$r['id']}.pdf";
         $this->assertSame($content, file_get_contents($path));
         clearstatcache();
-        $this->assertSame(0600, fileperms($path) & 0777, 'файл макета закритий для «інших» навіть при umask 022');
-        $this->assertSame(0700, fileperms($this->root . "/layouts/$orderId") & 0777);
-        $this->assertSame(0700, fileperms($this->root . '/layouts') & 0777);
+        $this->assertSame(0644, fileperms($path) & 0777, 'файл макета — звичайний 0644 незалежно від umask і прав tmp');
+        $this->assertSame(0755, fileperms($this->root . "/layouts/$orderId") & 0777);
+        $this->assertSame(0755, fileperms($this->root . '/layouts') & 0777);
 
         $row = Sql::one('SELECT * FROM design_files WHERE id = ?', [$r['id']]);
         $this->assertSame($orderId, (int)$row['order_id']);
@@ -203,17 +205,18 @@ final class LayoutsTest extends TestCase
         $this->assertSame([], $this->tmpFiles());
     }
 
-    public function test_add_fixes_loose_layouts_dir_perms(): void
+    /** Закритих прав більше немає: наявна папка (хоч би яка) не чіпається й не блокує запис, файл усе одно 0644 */
+    public function test_add_keeps_existing_layouts_dir_perms(): void
     {
         [$orderId] = $this->inWork();
-        mkdir($this->root . "/layouts/$orderId", 0755, true);
-        chmod($this->root . "/layouts/$orderId", 0755);
+        mkdir($this->root . "/layouts/$orderId", 0700, true);
+        chmod($this->root . "/layouts/$orderId", 0700);
 
         $r = Layouts::add($orderId, self::A, $this->upload(), 'a.psd');
 
         clearstatcache();
-        $this->assertSame(0700, fileperms($this->root . "/layouts/$orderId") & 0777, 'Paths::layouts наявну папку не чіпає — Layouts доводить до 0700');
-        $this->assertSame(0600, fileperms($this->root . "/layouts/$orderId/{$r['id']}.psd") & 0777);
+        $this->assertSame(0700, fileperms($this->root . "/layouts/$orderId") & 0777, 'наявна папка не чіпається');
+        $this->assertSame(0644, fileperms($this->root . "/layouts/$orderId/{$r['id']}.psd") & 0777);
     }
 
     public function test_name_parsing(): void
@@ -361,7 +364,7 @@ final class LayoutsTest extends TestCase
         $this->assertEqualsCanonicalizing([$b['id'] . '.ai', $new['id'] . '.pdf'], $this->files($orderId), 'старий файл видалено');
         $this->assertSame($content, file_get_contents($this->root . "/layouts/$orderId/{$new['id']}.pdf"));
         clearstatcache();
-        $this->assertSame(0600, fileperms($this->root . "/layouts/$orderId/{$new['id']}.pdf") & 0777);
+        $this->assertSame(0644, fileperms($this->root . "/layouts/$orderId/{$new['id']}.pdf") & 0777);
         $this->assertSame('Візитка-final.PDF', Sql::value('SELECT original_name FROM design_files WHERE id = ?', [$new['id']]));
         $this->assertSame(md5($content), Sql::value('SELECT md5 FROM design_files WHERE id = ?', [$new['id']]));
 
@@ -452,11 +455,16 @@ final class LayoutsTest extends TestCase
         $try(self::A, $orderId, $mine['id']);
         Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::APPROVED, self::A]);
 
-        // замовлення не «В роботі» (рахунок, куплено, скасовано, чернетка)
-        foreach ([OrderStatus::AWAITING_INVOICE, OrderStatus::PURCHASED, OrderStatus::REWORK, OrderStatus::CANCELLED, OrderStatus::COLLECTING] as $status) {
+        // замовлення не «В роботі» і не «Доопрацювання» (рахунок, куплено, скасовано, чернетка)
+        foreach ([OrderStatus::AWAITING_INVOICE, OrderStatus::PURCHASED, OrderStatus::CANCELLED, OrderStatus::COLLECTING] as $status) {
             Sql::exec('UPDATE design_orders SET status = ? WHERE id = ?', [$status, $orderId]);
             $try(self::A, $orderId, $mine['id']);
         }
+        // «Доопрацювання» — дизайнер працює як «В роботі» (етап 5)
+        Sql::exec('UPDATE design_orders SET status = ? WHERE id = ?', [OrderStatus::REWORK, $orderId]);
+        Layouts::rename($mine['id'], self::A, 'Доопрацьований');
+        $this->assertSame('Доопрацьований', (string)Sql::value('SELECT label FROM design_files WHERE id = ?', [$mine['id']]));
+        Layouts::rename($mine['id'], self::A, 'mine');
         Sql::exec('UPDATE design_orders SET status = ? WHERE id = ?', [OrderStatus::IN_WORK, $orderId]);
 
         // пропозицію не «обрано»
@@ -495,12 +503,131 @@ final class LayoutsTest extends TestCase
         $this->assertSame([$a['id'], $c['id'], $b2['id']], array_column($list, 'id'));
         $this->assertSame(3, Layouts::count($orderId));
         $this->assertSame(1, Layouts::count($other));
-        $this->assertSame(['id', 'label', 'original_name', 'size', 'ext', 'created'], array_keys($list[0]));
+        $this->assertSame(['id', 'label', 'original_name', 'size', 'ext', 'created', 'purchased'], array_keys($list[0]));
+        $this->assertSame([false, false, false], array_column($list, 'purchased'));
         $this->assertSame(['A', 'A.pdf', 300, 'pdf'], [$list[0]['label'], $list[0]['original_name'], $list[0]['size'], $list[0]['ext']]);
         $this->assertSame(['', 'C'], [$list[1]['ext'], $list[1]['label']]);
         $this->assertSame(['ai', 'B', 450], [$list[2]['ext'], $list[2]['label'], $list[2]['size']]);
         $this->assertMatchesRegularExpression('/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/', $list[0]['created']);
         $this->assertStringNotContainsString($this->root, json_encode($list));
+    }
+
+    /** Куплений макет (purchase_id не null) — ні заміни, ні видалення, ні перейменування, навіть коли дизайнер ще працює */
+    public function test_purchased_is_immutable(): void
+    {
+        [$orderId, $offerId] = $this->inWork();
+        $a = Layouts::add($orderId, self::A, $this->upload(100), 'Візитка.pdf');
+        $b = Layouts::add($orderId, self::A, $this->upload(100), 'Флаєр.pdf');
+        Sql::exec('UPDATE design_files SET purchase_id = ? WHERE id = ?', [self::PURCHASE, $a['id']]);
+        $messages = count(Messages::list($offerId));
+        $row = static fn(int $id): array => Sql::one('SELECT status, label, purchase_id, file FROM design_files WHERE id = ?', [$id]);
+        $was = $row($a['id']);
+
+        $bought = 'Куплений макет змінити не можна';
+        $tmp = $this->upload();
+        $this->assertDenied(fn() => Layouts::replace($a['id'], self::A, $tmp, 'x.pdf'), $bought);
+        $this->assertFileDoesNotExist($tmp, 'файл заміни прибрано');
+        $this->assertDenied(fn() => Layouts::remove($a['id'], self::A), $bought);
+        $this->assertDenied(fn() => Layouts::rename($a['id'], self::A, 'Нове'), $bought);
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 100, $a['id']), $bought);
+
+        $this->assertSame($was, $row($a['id']));
+        $this->assertEqualsCanonicalizing([$a['id'] . '.pdf', $b['id'] . '.pdf'], $this->files($orderId));
+        $this->assertCount($messages, Messages::list($offerId), 'без системних повідомлень');
+        $this->assertSame([], $this->tmpFiles());
+        $this->assertSame([true, false], array_column(Layouts::forOrder($orderId), 'purchased'));
+
+        // Некуплений поруч — як і раніше
+        Layouts::precheck($orderId, self::A, 100, $b['id']);
+        Layouts::rename($b['id'], self::A, 'Флаєр 2');
+        $this->assertSame('Флаєр 2', $row($b['id'])['label']);
+    }
+
+    /**
+     * «Доопрацювання»: дизайнер працює як «В роботі» (новий макет, перейменування, заміна й видалення некупленого), а куплений
+     * раніше макет — так само незмінний (заміна, видалення, перейменування, precheck — відмова, нічого не змінилось)
+     */
+    public function test_purchased_is_immutable_in_rework(): void
+    {
+        [$orderId, $offerId] = $this->inWork(OrderStatus::REWORK);
+        $a = Layouts::add($orderId, self::A, $this->upload(100), 'Візитка.pdf');
+        Sql::exec('UPDATE design_files SET purchase_id = ? WHERE id = ?', [self::PURCHASE, $a['id']]);
+        $b = Layouts::add($orderId, self::A, $this->upload(100), 'Зворот з QR.pdf');
+        $messages = count(Messages::list($offerId));
+        $row = static fn(int $id): array => Sql::one('SELECT status, label, purchase_id, file FROM design_files WHERE id = ?', [$id]);
+        $was = $row($a['id']);
+
+        $bought = 'Куплений макет змінити не можна';
+        $tmp = $this->upload();
+        $this->assertDenied(fn() => Layouts::replace($a['id'], self::A, $tmp, 'x.pdf'), $bought);
+        $this->assertFileDoesNotExist($tmp, 'файл заміни прибрано');
+        $this->assertDenied(fn() => Layouts::remove($a['id'], self::A), $bought);
+        $this->assertDenied(fn() => Layouts::rename($a['id'], self::A, 'Нове'), $bought);
+        $this->assertDenied(fn() => Layouts::precheck($orderId, self::A, 100, $a['id']), $bought);
+        $this->assertSame($was, $row($a['id']));
+        $this->assertCount($messages, Messages::list($offerId), 'без системних повідомлень');
+        $this->assertSame([], $this->tmpFiles());
+
+        // Новий (некуплений) — дизайнер змінює вільно
+        Layouts::rename($b['id'], self::A, 'Зворот');
+        $c = Layouts::replace($b['id'], self::A, $this->upload(100), 'Зворот v2.pdf');
+        Layouts::remove($c['id'], self::A);
+        $this->assertSame([true], array_column(Layouts::forOrder($orderId), 'purchased'));
+        $this->assertEqualsCanonicalizing([$a['id'] . '.pdf'], $this->files($orderId));
+    }
+
+    /**
+     * «Завантажити» (FileGlobal::encode, cloud-links/cf) — лише купленим макетам і лише клієнту: у дизайнера й у некупленого
+     * посилання немає, симлінк для некупленого не створюється. Версія списку змінюється з купівлею (панелі перечитуються)
+     */
+    public function test_download_only_purchased_for_client(): void
+    {
+        [$orderId] = $this->inWork();
+        $a = Layouts::add($orderId, self::A, $this->upload(100), 'Візитка 90×50.pdf');
+        $b = Layouts::add($orderId, self::A, $this->upload(100), 'Флаєр');
+        $c = Layouts::add($orderId, self::A, $this->upload(100), 'Банер.ai');
+        $links = fn(): array => self::cfLinks($this->root);
+
+        $before = Workspace::layouts($orderId, true);
+        $this->assertSame(['', '', ''], array_column($before['layouts'], 'download'));
+        $this->assertSame([false, false, false], array_column($before['layouts'], 'purchased'));
+        $this->assertSame([], $links());
+
+        Sql::exec('UPDATE design_files SET purchase_id = ? WHERE id IN (?, ?)', [self::PURCHASE, $a['id'], $b['id']]);
+        $designer = Workspace::layouts($orderId, false);
+        $this->assertSame(['', '', ''], array_column($designer['layouts'], 'download'));
+        $this->assertSame([true, true, false], array_column($designer['layouts'], 'purchased'));
+        $this->assertSame([], $links(), 'дизайнеру посилання не будуються');
+        $this->assertNotSame($before['rev'], $designer['rev'], 'купівля змінює версію списку');
+
+        $client = Workspace::layouts($orderId, true);
+        $this->assertSame($designer['rev'], $client['rev']);
+        [$la, $lb, $lc] = $client['layouts'];
+        $this->assertSame('', $lc['download']);
+        $re = '~^https://i\.fastcdn\.kiev\.ua/cf/([0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]+)(\.pdf)?\?(.+)$~';
+        $this->assertMatchesRegularExpression($re, $la['download']);
+        preg_match($re, $la['download'], $m);
+        $this->assertSame('.pdf', $m[2]);
+        parse_str($m[3], $q);
+        $this->assertSame(['download' => '1', 'name' => "Дизайн №$orderId — Візитка 90×50.pdf"], $q);
+        $this->assertStringNotContainsString('+', $la['download'], 'пробіли — %20, не «+» (так їх покаже браузер в імені файла)');
+        $this->assertSame($this->root . "/layouts/$orderId/{$a['id']}.pdf", readlink(CdnLinksGuard::ROOTS[1] . '/' . $m[1] . '.pdf'));
+
+        preg_match($re, $lb['download'], $m);
+        $this->assertSame('', $m[2] ?? '', 'без розширення');
+        parse_str($m[3], $q);
+        $this->assertSame("Дизайн №$orderId — Флаєр", $q['name']);
+
+        $this->assertEqualsCanonicalizing([$this->root . "/layouts/$orderId/{$a['id']}.pdf", $this->root . "/layouts/$orderId/{$b['id']}"],
+            array_map('readlink', $links()), 'симлінки — лише купленим');
+        $this->assertStringNotContainsString($this->root, json_encode($client, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    /** Симлінки cloud-links/cf на файли під $root (тимчасова папка тесту) */
+    private static function cfLinks(string $root): array
+    {
+        exec('find ' . escapeshellarg(CdnLinksGuard::ROOTS[1]) . ' -mindepth 4 -maxdepth 4 -type l -lname ' . escapeshellarg("$root/*"), $out);
+        return $out;
     }
 
     public function test_one_notification_for_a_batch(): void
@@ -532,7 +659,7 @@ final class LayoutsTest extends TestCase
             $this->assertFalse(Sql::pdo()->inTransaction());
             $this->assertFileExists($tmp);
             clearstatcache();
-            $this->assertSame(0600, fileperms($tmp) & 0777, 'tmp закритий ще до перенесення');
+            $this->assertSame(0644, fileperms($tmp) & 0777, 'tmp уже з правами 0644 до перенесення');
             $other->beginTransaction();
             $this->assertSame($orderId, (int)$other->query("SELECT id FROM design_orders WHERE id = $orderId FOR UPDATE NOWAIT")->fetchColumn());
             $other->rollBack();

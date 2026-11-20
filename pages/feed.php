@@ -1,6 +1,7 @@
 <?php
 /** Стрічка брифів схваленого дизайнера: GET /feed/?page=N. Відкриття стрічки скидає кружечок нових брифів у меню */
 use Design\Csrf;
+use Design\Customers;
 use Design\Designers;
 use Design\DesignerStatus;
 use Design\Guard;
@@ -17,6 +18,9 @@ if ($page > $feed['pages']) {   // застаріле посилання на с
     $page = $feed['pages'];
     $feed = Offers::feed($me, $page);
 }
+// Факти про клієнта брифу — по одному запиту на клієнта сторінки
+$facts = [];
+foreach ($feed['items'] as $b) $facts[$b['customer_id']] ??= Customers::factsLine(Customers::facts($b['customer_id']));
 // Позначки «нове» вже пораховані від попереднього відкриття — тепер відмічаємо це
 Offers::markFeedSeen($me);
 
@@ -25,5 +29,5 @@ View::render('layout', [
     'active' => 'feed',
     'scripts' => ['/assets/js/offer-form.js'],
     'toast' => Http::str($_GET, 'done') === 'withdrawn' ? 'Пропозицію відкликано' : null,
-    'body' => View::fetch('feed', ['page' => $page, 'csrf' => Csrf::token($me)] + $feed),
+    'body' => View::fetch('feed', ['page' => $page, 'csrf' => Csrf::token($me), 'facts' => $facts] + $feed),
 ]);

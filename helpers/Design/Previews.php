@@ -23,17 +23,19 @@ final class Previews
     public static ?\Closure $beforeRender = null;
 
     /**
-     * Обрана пропозиція, якщо дизайнер може працювати з прев'ю замовлення: замовлення «В роботі», його chosen_offer_id —
+     * Обрана пропозиція, якщо дизайнер може працювати з прев'ю (і макетами — Layouts) замовлення: замовлення «В роботі» або
+     * «Доопрацювання» (дизайнер працює як «В роботі»), його chosen_offer_id —
      * пропозиція цього дизайнера в статусі «обрано», дизайнер схвалений. Інакше null
      * @return array|null пропозиція у вигляді Offers::get
      */
     public static function canWork(int $orderId, int $designerId): ?array
     {
-        $chosen = Sql::value('SELECT chosen_offer_id FROM design_orders WHERE id = ? AND status = ?', [$orderId, OrderStatus::IN_WORK]);
+        $chosen = Sql::value('SELECT chosen_offer_id FROM design_orders WHERE id = ? AND status IN (?, ?)',
+            [$orderId, OrderStatus::IN_WORK, OrderStatus::REWORK]);
         if ($chosen === null) return null;
         $offer = Offers::get((int)$chosen);
         if ($offer === null || $offer['designer_id'] !== $designerId || $offer['status'] !== OfferStatus::CHOSEN
-            || $offer['order_status'] !== OrderStatus::IN_WORK) {
+            || !in_array($offer['order_status'], [OrderStatus::IN_WORK, OrderStatus::REWORK], true)) {
             return null;
         }
         return Designers::status($designerId) === DesignerStatus::APPROVED ? $offer : null;
@@ -147,9 +149,25 @@ final class Previews
     }
 
     /**
+     * Скасування замовлення (Orders::cancel, після коммиту): картинки всіх прев'ю замовлення видаляються з диска разом із
+     * симлінками i.fastcdn (як у hide), порожня папка замовлення — теж. Рядки й підписи лишаються. Тимчасові tmp-… файли
+     * рендеру, що саме йде, не чіпаємо: Previews::add під замком побачить скасування і прибере їх сам
+     */
+    public static function removeOrderFiles(int $orderId): void
+    {
+        $dir = self::dir($orderId);
+        if (!is_dir($dir)) return;
+        foreach (Sql::all('SELECT id FROM design_previews WHERE order_id = ?', [$orderId]) as $r) {
+            self::removeFiles($dir, (int)$r['id'], true);
+        }
+        @rmdir($dir);
+    }
+
+    /**
      * Прев'ю замовлення за номером, ключ — id. urls — по сторінці {view, card}: адреси i.fastcdn лише для наявних файлів
-     * (немає файлу — ''); у прихованих — порожній список. based_on_num — номер версії «на основі», caption — текст повідомлення
-     * @return array<int, array{id:int, num:int, pages:int, hidden:bool, based_on_num:?int, caption:string, urls:list<array{view:string, card:string}>}>
+     * (немає файлу — ''); у прихованих — порожній список. based_on_num — номер версії «на основі», caption — текст повідомлення.
+     * removed — замовлення скасовано, картинки видалено з диска (Orders::cancel): адрес немає, як у прихованих
+     * @return array<int, array{id:int, num:int, pages:int, hidden:bool, removed:bool, based_on_num:?int, caption:string, urls:list<array{view:string, card:string}>}>
      */
     public static function forOrder(int $orderId): array
     {
@@ -196,12 +214,14 @@ final class Previews
             array_merge([$orderId], $ids ?? [])
         );
         $dir = self::dir($orderId);
+        $removed = $rows !== []
+            && (int)Sql::value('SELECT status FROM design_orders WHERE id = ?', [$orderId]) === OrderStatus::CANCELLED;
         $out = [];
         foreach ($rows as $r) {
             $id = (int)$r['id'];
             $hidden = $r['hidden_at'] !== null;
             $urls = [];
-            for ($n = 1; !$hidden && $n <= (int)$r['pages']; $n++) {
+            for ($n = 1; !$hidden && !$removed && $n <= (int)$r['pages']; $n++) {
                 $urls[] = ['view' => self::url("$dir/$id-p$n-view.webp"), 'card' => self::url("$dir/$id-p$n-card.webp")];
             }
             $out[$id] = [
@@ -209,6 +229,7 @@ final class Previews
                 'num' => (int)$r['num'],
                 'pages' => (int)$r['pages'],
                 'hidden' => $hidden,
+                'removed' => $removed && !$hidden,
                 'based_on_num' => $r['based_on_num'] === null ? null : (int)$r['based_on_num'],
                 'caption' => (string)$r['caption'],
                 'urls' => $urls,

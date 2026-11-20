@@ -3,11 +3,13 @@
  * «Мої пропозиції і замовлення» (макет 6.9, вкладки «Пропозиції» і «В роботі»; «Завершені» і «Заробіток» — етап 5)
  * @var string $tab offers | work @var string $csrf
  * @var list<array{id:int, order_id:int, status:int, order_status:int, mode:int, product_name:string, title:string, client:string, text:string, price_designer:int, price_client:int, deadline:?string, messages:int, updated:string}> $offers
- * @var list<array> $work  Offers::mine + turn — «чий хід» дизайнера (Workspace::turn) для замовлень «В роботі», інакше null
+ * @var list<array> $work  Offers::mine + turn — «чий хід» дизайнера (Workspace::turn) для замовлень «В роботі» і скасованих, інакше null
+ * Пропозиції скасованих клієнтом замовлень — сірі «Замовлення скасовано клієнтом», без «Змінити» / «Відкликати» / «Відповісти»
  */
 use Design\OfferStatus;
 use Design\OrderStatus;
 use Design\View;
+use Design\Workspace;
 
 $terms = static fn(array $o): string => View::price($o['price_designer']) . ' на руки' . ($o['deadline'] ? ' · до ' . View::date($o['deadline']) : '');
 $chat = static fn(array $o): string => $o['messages'] > 0
@@ -31,15 +33,19 @@ $chat = static fn(array $o): string => $o['messages'] > 0
       </div>
     <?php endif ?>
     <?php foreach ($offers as $o): $url = '/feed/' . $o['order_id'] . '/'; $st = $o['status'];
+        $cancelled = $o['order_status'] === OrderStatus::CANCELLED;
         $reopen = in_array($st, [OfferStatus::DECLINED, OfferStatus::WITHDRAWN], true) && $o['order_status'] === OrderStatus::COLLECTING && $o['mode'] === 1;
-        $grey = !in_array($st, [OfferStatus::INVITED, OfferStatus::SENT], true) ?>
-      <div class="offer-row<?= $grey ? ' is-closed' : '' ?><?= $st === OfferStatus::INVITED ? ' mine' : '' ?>">
+        $grey = $cancelled || !in_array($st, [OfferStatus::INVITED, OfferStatus::SENT], true) ?>
+      <div class="offer-row<?= $grey ? ' is-closed' : '' ?><?= $st === OfferStatus::INVITED && !$cancelled ? ' mine' : '' ?>">
         <div class="min-w-0">
           <div class="num">№<?= $o['order_id'] ?> · <?= View::e(View::date($o['updated'])) ?></div>
           <a class="title" href="<?= $url ?>"><?= View::e($o['title']) ?></a>
         </div>
         <div class="min-w-0">
-          <?php if ($st === OfferStatus::INVITED): ?>
+          <?php if ($cancelled): ?>
+            <div class="head"><?= $st === OfferStatus::INVITED ? 'Вас запрошували на замовлення' : ($o['price_designer'] > 0 ? 'Ви запропонували ' . View::e($terms($o)) : 'Ваша пропозиція') ?></div>
+            <div class="sub"><i class="fal fa-ban"></i> <?= View::e(Workspace::CANCELLED_DESIGNER) ?></div>
+          <?php elseif ($st === OfferStatus::INVITED): ?>
             <div class="head">Вас обрали для замовлення — береш?</div>
             <div class="sub"><i class="fal fa-user"></i> Клієнт <?= View::e($o['client']) ?> чекає відповіді</div>
           <?php elseif ($st === OfferStatus::SENT): ?>
@@ -57,7 +63,9 @@ $chat = static fn(array $o): string => $o['messages'] > 0
           <?php endif ?>
         </div>
         <div class="acts">
-          <?php if ($st === OfferStatus::INVITED): ?>
+          <?php if ($cancelled): ?>
+            <?php if ($o['messages'] > 0): ?><a class="lnk" href="<?= $url ?>#chat">Листування</a><?php endif ?>
+          <?php elseif ($st === OfferStatus::INVITED): ?>
             <a class="btn btn-primary" href="<?= $url ?>">Відповісти</a>
           <?php elseif ($st === OfferStatus::SENT): ?>
             <a class="lnk" href="<?= $url ?>?form=edit#offer">Змінити</a>
@@ -86,7 +94,7 @@ $chat = static fn(array $o): string => $o['messages'] > 0
     <?php foreach ($work as $o): ?>
       <a class="order-row<?= ($o['turn']['mine'] ?? true) ? ' mine' : '' ?>" href="/feed/<?= $o['order_id'] ?>/">
         <div><div class="num">№<?= $o['order_id'] ?> · клієнт <?= View::e($o['client']) ?><?= $o['deadline'] ? ' · до ' . View::e(View::date($o['deadline'])) : '' ?></div><div class="title"><?= View::e($o['title']) ?></div></div>
-        <div><?php View::render('partials/status', ['status' => $o['order_status']]) ?><?php if ($o['turn'] !== null): ?><div class="turn"><i class="fal <?= $o['turn']['mine'] ? 'fa-hand-paper' : 'fa-hourglass-half' ?> me-1"></i><?= View::e($o['turn']['text']) ?></div><?php else: ?><div class="turn"><i class="fal fa-hand-paper me-1"></i>Клієнт обрав вас<?= $o['deadline'] ? ' · готово до ' . View::e(View::date($o['deadline'])) : '' ?></div><?php endif ?></div>
+        <div><?php View::render('partials/status', ['status' => $o['order_status']]) ?><?php if ($o['turn'] !== null): ?><div class="turn"><i class="fal <?= $o['turn']['mine'] ? 'fa-hand-paper' : ($o['order_status'] === OrderStatus::CANCELLED ? 'fa-ban' : 'fa-hourglass-half') ?> me-1"></i><?= View::e($o['turn']['text']) ?></div><?php else: ?><div class="turn"><i class="fal fa-hand-paper me-1"></i>Клієнт обрав вас<?= $o['deadline'] ? ' · готово до ' . View::e(View::date($o['deadline'])) : '' ?></div><?php endif ?></div>
         <div class="who"><?= $o['messages'] > 0 ? 'Листування · ' . $o['messages'] : '' ?></div>
         <div class="sum"><?= View::e(View::price($o['price_designer'])) ?></div>
         <i class="fal fa-chevron-right chev"></i>

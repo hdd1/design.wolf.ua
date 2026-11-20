@@ -22,6 +22,12 @@ final class Router
         ['POST', '#^/orders/(?<id>' . self::ID . ')/previews/(?<preview>' . self::ID . ')$#', 'order-preview'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/layouts$#', 'order-layouts'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')/layouts/(?<file>' . self::ID . ')$#', 'order-layout'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/layouts/(?<file>' . self::ID . ')/cloud$#', 'order-cloud'],
+        ['GET', '#^/orders/(?<id>' . self::ID . ')/buy$#', 'order-buy-quote'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/buy$#', 'order-buy'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/rework$#', 'order-rework'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/cancel$#', 'order-cancel'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/complaint$#', 'order-complaint'],
         ['GET', '#^/designer/$#', 'designer'],
         ['POST', '#^/designer$#', 'designer-save'],
         ['POST', '#^/designer/works$#', 'designer-work-add'],
@@ -36,6 +42,7 @@ final class Router
         ['GET', '#^/feed/(?<id>' . self::ID . ')/$#', 'feed-order'],
         ['POST', '#^/feed/(?<id>' . self::ID . ')$#', 'feed-offer'],
         ['GET', '#^/my-offers/$#', 'my-offers'],
+        ['GET', '#^/earnings/$#', 'earnings'],
     ];
 
     /** @return array{page:string,params:array<string,string>}|null */

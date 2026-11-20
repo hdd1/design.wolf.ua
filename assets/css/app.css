@@ -64,18 +64,27 @@ main{flex:1 0 auto}
 .brand{display:flex;align-items:center;gap:var(--s-3);text-decoration:none;color:var(--text)}
 .brand img{height:56px;width:auto}
 @media (max-width:575px){.brand img{height:44px}}
+@media (min-width:992px){.nav-wide .brand .brand-title{white-space:nowrap}}
 .brand .brand-text{border-left:1px solid var(--border);padding-left:var(--s-3);line-height:1.15}
 .brand .brand-title{font-family:var(--font-head);font-weight:600;font-size:1.2rem;color:var(--text)}
 .brand .brand-sub{font-size:.8rem;color:var(--text-2)}
 .main-nav{display:flex;gap:var(--s-2);align-self:stretch}
+.nav-wide .main-nav{gap:0}
 .main-nav a,.main-nav span{display:flex;align-items:center;padding:0 var(--s-3);color:var(--text-2);text-decoration:none;font-weight:500;border-bottom:3px solid transparent}
+.nav-wide .main-nav a{white-space:nowrap;padding:0 .7rem}
 .main-nav a:hover{color:var(--text)}
 .main-nav a.active{color:var(--text);font-weight:700;border-bottom-color:var(--orange)}
 .balance{display:inline-flex;align-items:center;gap:var(--s-2);background:var(--bg);border-radius:var(--r-pill);padding:.45rem .9rem;font-weight:700;font-size:.92rem}
 .avatar{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;background:var(--orange-soft);color:#9A5B00;font-weight:700;font-size:.85rem;flex:none}
 .user{display:flex;align-items:center;gap:var(--s-2);font-weight:600}
+.nav-wide .user{white-space:nowrap}
 @media (max-width:991px){.main-nav,.balance .label{display:none}.brand .brand-sub{display:none}.user .short{display:none}}
 .mobile-nav{display:none}
+/* Меню дизайнера (5 пунктів) у шапку на десктопі не вміщається вужче 1400px — до того те саме, що й на мобільному: другий рядок */
+@media (min-width:992px) and (max-width:1399px){.nav-wide .main-nav,.nav-wide .balance .label{display:none}.nav-wide .brand .brand-sub{display:none}.nav-wide .user .short{display:none}
+  .nav-wide .mobile-nav{display:flex;gap:var(--s-2);overflow-x:auto;padding:var(--s-2) 0;border-top:1px solid var(--border)}
+  .nav-wide .mobile-nav a{white-space:nowrap;padding:.35rem .8rem;border-radius:var(--r-pill);color:var(--text-2);text-decoration:none;font-weight:500}
+  .nav-wide .mobile-nav a.active{background:var(--orange-soft);color:var(--text);font-weight:700}}
 @media (max-width:991px){.mobile-nav{display:flex;gap:var(--s-2);overflow-x:auto;padding:var(--s-2) 0;border-top:1px solid var(--border)}
   .mobile-nav a{white-space:nowrap;padding:.35rem .8rem;border-radius:var(--r-pill);color:var(--text-2);text-decoration:none;font-weight:500}
   .mobile-nav a.active{background:var(--orange-soft);color:var(--text);font-weight:700}}
@@ -731,6 +740,25 @@ body.pvv-open{overflow:hidden}
 .ws-cta .btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;white-space:nowrap}
 .ws-buy:disabled{background:#ECECEC;border-color:#ECECEC;color:var(--text-3);opacity:1}
 .ws-soon{font-size:.8rem;color:var(--text-3)}
+.ws-cta form{margin:0}
+.ws-rework-cancel .btn{padding:.3rem .5rem;font-size:.9rem}
+.ws-rework{margin-top:var(--s-4);border:2px solid var(--blue);scroll-margin-top:140px}
+/* Скасування замовлення і скарга (етап 5): форми-аркуші, посилання під головною кнопкою, плашка «Скасовано: …» */
+.order-cancel{border:2px solid var(--red);scroll-margin-top:140px}
+.ws-top .order-cancel,.ws-complaint{margin-top:var(--s-4)}
+.ws-complaint{border:2px solid var(--orange);scroll-margin-top:140px}
+.order-cancel textarea,.ws-complaint textarea{max-width:640px}
+.order-cancel-link{margin-top:var(--s-5);font-size:.92rem}
+.order-cancel-link .link-red{font-weight:600}
+.ws-cta .ws-link{padding:.3rem .5rem;font-size:.9rem;font-weight:600}
+.ws-complaint-link{color:var(--text-2);text-decoration:none}
+.ws-complaint-link:hover{color:var(--text);text-decoration:underline}
+.btn-red{background:var(--red);border-color:var(--red);color:#fff}
+.btn-red:hover,.btn-red:focus-visible{background:#8A0019;border-color:#8A0019;color:#fff}
+.alert-d.cancelled{background:var(--red-soft);border-left:4px solid var(--red)}
+.alert-d.cancelled .ic{color:var(--red)}
+.alert-d.cancelled .t{color:var(--text)}
+.ws-rework-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s-4);margin-top:var(--s-4);max-width:640px}
 .ws-turn{margin-top:var(--s-4)}
 .ws-turn [hidden]{display:none}
 .ws-brief{margin-top:var(--s-3)}
@@ -779,6 +807,49 @@ body.pvv-open{overflow:hidden}
 .lp-note i,.lp-lock i{margin-top:.2rem}
 .lp-empty{color:var(--text-3);margin:0;text-align:center;padding:var(--s-3) 0}
 .lp-empty[hidden],.lp .chat-error[hidden],[data-lp-count-wrap][hidden]{display:none}
+/* Куплені макети: «Завантажити», місце під «Скопіювати в хмару»; у дизайнера — «Куплено» */
+.lp-item.is-bought .lp-ext,.lp[data-edit="0"] .lp-item.is-bought .lp-ext{background:var(--green-soft);color:var(--green)}
+.lp-acts{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-2);margin-top:var(--s-2)}
+.lp-download{display:inline-flex;align-items:center;gap:.4rem;font-weight:600}
+.lp-cloud:empty{display:none}
+.lp-cloud-go{display:inline-flex;align-items:center;gap:.4rem}
+.lp-cloud-go.is-error{color:var(--red);padding-left:0;padding-right:0}
+.lp-cloud-state{display:inline-flex;align-items:center;gap:.4rem;font-size:.875rem;color:var(--text-2)}
+.lp-cloud-state.is-done{color:var(--green);font-weight:600}
+.lp-bought{display:inline-flex;align-items:center;gap:.3rem;flex:none;font-size:.78rem;font-weight:700;color:var(--green);background:var(--green-soft);border-radius:var(--r-pill);padding:.2rem .6rem}
+.lp-lock[hidden],.ws-soon[hidden]{display:none}
+.ws-status{display:inline-flex}
+
+/* Вікно «Оплата: звідки?» (оболонка — як .choose-modal) */
+.pay-modal .modal-dialog{max-width:520px}
+.pay-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s-2)}
+.pay-tab{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.2rem;border:1px solid var(--border);border-radius:var(--r-m);background:#fff;padding:var(--s-3) var(--s-2);font-weight:700;font-size:.85rem;line-height:1.2;color:var(--text);text-align:center}
+.pay-tab i{font-size:1.3rem;color:var(--blue)}
+.pay-tab.active{border-color:var(--blue);background:var(--blue-soft);box-shadow:inset 0 0 0 1px var(--blue)}
+.pay-tab:disabled{opacity:1;background:var(--bg);color:var(--text-3);cursor:not-allowed}
+.pay-tab:disabled i{color:var(--text-3)}
+.pay-soon{font-size:.72rem;font-weight:600;color:var(--text-3)}
+.pay-body{display:flex;flex-direction:column;gap:var(--s-3);transition:opacity .15s}
+.pay-body.is-loading{opacity:.6}
+.pay-body.is-loading [data-pay-submit]{pointer-events:none}
+.pay-sum{margin:0;background:var(--cream);border-radius:var(--r-m);padding:var(--s-3) var(--s-4);display:flex;flex-direction:column;gap:.4rem}
+.pay-sum>div{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s-3)}
+.pay-sum dt{font-weight:400;color:var(--text-2)}
+.pay-sum dd{margin:0;font-weight:700;white-space:nowrap}
+.pay-sum .pay-total dd{font-size:1.3rem}
+.pay-sum dd.text-danger{color:var(--red)!important}
+.pay-note{margin:0;font-size:.85rem;color:var(--text-2)}
+.pay-reason{padding:var(--s-3) var(--s-4)}
+.pay-reason i{margin-top:.2rem}
+.pay-free{display:flex;gap:var(--s-3);align-items:flex-start;background:var(--green-soft);border-radius:var(--r-m);padding:var(--s-3) var(--s-4)}
+.pay-free .ic{color:var(--green);font-size:1.4rem;line-height:1.2}
+.pay-free .t{font-weight:700}
+.pay-error[hidden]{display:none}
+[data-pay-submit]{display:inline-flex;align-items:center;justify-content:center;gap:.5rem}
+@media (max-width:575px){
+  .pay-tab{font-size:.76rem;padding:var(--s-2) .25rem}
+  .pay-tab i{font-size:1.1rem}
+}
 
 @media (max-width:991px){
   .ws-top{padding:var(--s-3) 0 var(--s-4)}
@@ -800,6 +871,11 @@ body.pvv-open{overflow:hidden}
   .ws-term .sep{display:inline}
   .ws-cta{flex:1 1 100%;width:auto}
   .ws-cta:has([data-ws-upload]){display:none}
+  .ws-rework-fields{grid-template-columns:minmax(0,1fr)}
+  .ws-rework .sheet-actions{flex-direction:column-reverse;align-items:stretch}
+  .ws-rework .sheet-actions .btn{width:100%}
+  .order-cancel .sheet-actions,.ws-complaint .sheet-actions{flex-direction:column-reverse;align-items:stretch}
+  .order-cancel .sheet-actions .btn,.ws-complaint .sheet-actions .btn{width:100%}
   .ws-turn{margin-top:var(--s-3)}
   .ws-turn .ic{width:40px;height:40px}
   .ws-tabs{display:flex;background:#fff;border-bottom:1px solid var(--border)}
@@ -816,3 +892,26 @@ body.pvv-open{overflow:hidden}
   .lp-drop-ic{font-size:1.5rem}
   .lp-drop-hint{flex:1 1 100%}
 }
+
+/* «Заробіток» дизайнера */
+.earn-total{display:flex;align-items:center;gap:var(--s-4);padding:var(--s-4) var(--s-5);margin-bottom:var(--s-3)}
+.earn-total .ic{width:56px;height:56px;border-radius:50%;background:var(--blue-soft);color:var(--blue);display:inline-flex;align-items:center;justify-content:center;font-size:1.4rem;flex:none}
+.earn-sum{font-size:1.5rem}
+.earn-sum strong{font-weight:800}
+.earn-note{margin-bottom:var(--s-4)}
+.earn-list{overflow:hidden}
+.earn-row{display:grid;grid-template-columns:110px 80px minmax(0,1fr) auto;gap:var(--s-4);align-items:center;padding:var(--s-3) var(--s-5);border-bottom:1px solid var(--border);text-decoration:none;color:var(--text)}
+.earn-row:last-child{border-bottom:0}
+.earn-row:hover{background:var(--blue-soft)}
+.earn-row .when,.earn-row .num{color:var(--text-3);font-size:.9rem}
+.earn-row .title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.earn-row .sum{font-weight:700;white-space:nowrap}
+@media (max-width:575px){
+  .earn-row{grid-template-columns:auto minmax(0,1fr) auto;gap:var(--s-1) var(--s-3);padding:var(--s-3) var(--s-4)}
+  .earn-row .when{grid-column:1;grid-row:1}
+  .earn-row .num{grid-column:2;grid-row:1}
+  .earn-row .title{grid-column:1 / span 2;grid-row:2;white-space:normal}
+  .earn-row .sum{grid-column:3;grid-row:1 / span 2}
+}
+.brief-card .bc-facts{color:var(--text-2);font-size:.88rem}
+.fo-meta .client-facts{color:var(--text-2)}

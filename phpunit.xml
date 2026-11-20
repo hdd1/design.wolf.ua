@@ -9,6 +9,10 @@
             <directory>tests/Design</directory>
         </testsuite>
     </testsuites>
+    <listeners>
+        <!-- Тест, що лишив симлінк чи каталог у cloud-links від root, — провалений (tests/CdnLinksListener.php) -->
+        <listener class="CdnLinksListener" file="tests/CdnLinksListener.php"/>
+    </listeners>
     <php>
         <!-- Тесты не создают секрет в хранилище -->
         <env name="DESIGN_CSRF_SECRET" value="phpunit-only-secret-0123456789abcdef0123456789abcdef"/>

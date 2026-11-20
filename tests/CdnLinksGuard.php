@@ -1,15 +1,16 @@
 <?php
 
 /**
- * Прибирання за тестами, які в процесі PHPUnit викликають Media::url → ImageGlobal::encode.
- * encode створює в спільному дереві CDN /home/connect/cloud-links/ci шарди xx/yy/zz і симлінк від користувача процесу
+ * Прибирання за тестами, які в процесі PHPUnit викликають Media::url → ImageGlobal::encode (дерево cloud-links/ci) або
+ * Workspace::layouts → FileGlobal::encode («Завантажити» купленого макета, дерево cloud-links/cf).
+ * encode створює в спільному дереві CDN шарди xx/yy/zz і симлінк від користувача процесу
  * (тести йдуть від root — каталоги root:root 755, у них php-fpm уже нічого не створить).
  * snapshot() — до виклику, cleanup() — після: прибирає лише нові симлінки й нові порожні каталоги цього користувача,
  * найглибші спершу. Наявні до тесту записи (і чужі) не чіпає.
  */
 final class CdnLinksGuard
 {
-    public const ROOT = '/home/connect/cloud-links/ci';
+    public const ROOTS = ['/home/connect/cloud-links/ci', '/home/connect/cloud-links/cf'];
 
     /** @return array{dirs: array<string, true>, links: array<string, true>} */
     public static function snapshot(): array
@@ -32,11 +33,26 @@ final class CdnLinksGuard
         }
     }
 
-    /** @return list<string> каталоги (d) або симлінки (l) у дереві шардів */
+    /** @return list<string> каталоги й симлінки дерев шардів, власник яких — користувач цього процесу (одним find) */
+    public static function owned(): array
+    {
+        $out = [];
+        $roots = array_filter(self::ROOTS, 'is_dir');
+        if ($roots) {
+            exec('find ' . implode(' ', array_map('escapeshellarg', $roots)) . ' -mindepth 1 -maxdepth 4 -uid ' . posix_geteuid()
+                . ' \( -type d -o -type l \)', $out);
+        }
+        return $out;
+    }
+
+    /** @return list<string> каталоги (d) або симлінки (l) у деревах шардів */
     private static function find(string $type): array
     {
-        if (!is_dir(self::ROOT)) return [];
-        exec('find ' . escapeshellarg(self::ROOT) . ' -mindepth 1 -maxdepth 4 -type ' . $type, $out);
+        $out = [];
+        foreach (self::ROOTS as $root) {
+            if (is_dir($root)) exec('find ' . escapeshellarg($root) . ' -mindepth 1 -maxdepth 4 -type ' . $type, $out);
+        }
         return $out;
     }
 }
+

@@ -4,7 +4,7 @@ namespace Design;
 
 /**
  * Папки файлів робочого простору (етап 4).
- * root/previews/{orderId}/ — превʼю (0755), root/layouts/{orderId}/ — макети (0700).
+ * root/previews/{orderId}/ — превʼю (0755), root/layouts/{orderId}/ — макети (0755; з етапу 5 звичайні файли, без закритих прав).
  * Права — явним chmod: umask php-fpm 022, а /mnt/work відкритий для «інших».
  */
 final class Paths
@@ -23,10 +23,10 @@ final class Paths
         return self::ensure(self::root() . '/previews', $orderId, 0755);
     }
 
-    /** Папка макетів замовлення (лише власник процесу: 0700); створюється разом із батьківськими */
+    /** Папка макетів замовлення (0755, як і превʼю); створюється разом із батьківськими */
     public static function layouts(int $orderId): string
     {
-        return self::ensure(self::root() . '/layouts', $orderId, 0700);
+        return self::ensure(self::root() . '/layouts', $orderId, 0755);
     }
 
     /** Створює відсутні root, parent і папку замовлення; права ставить лише новим, наявні не чіпає */

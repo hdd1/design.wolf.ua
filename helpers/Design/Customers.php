@@ -5,7 +5,7 @@ namespace Design;
 /** Клієнти wolf.ua (customers) — тільки читання */
 final class Customers
 {
-    /** @return array{name:string, short:string, initials:string, balance:int}|null для шапки: «Олена Мельник», «Олена М.», «ОМ», баланс у гривнях */
+    /** @return array{name:string, short:string, initials:string, balance:int}|null для шапки: «Олена Мельник», «Олена М.», «ОМ», баланс у цілих гривнях вниз (799,50 → 799, як у вікні оплати) */
     public static function header(int $id): ?array
     {
         $r = Sql::one('SELECT first_name, last_name, inv_sum FROM customers WHERE id = ?', [$id]);
@@ -20,7 +20,37 @@ final class Customers
             'name' => $name,
             'short' => $first !== '' ? trim($first . ($l !== '' ? ' ' . $l . '.' : '')) : $name,
             'initials' => $f . $l,
-            'balance' => (int)round((float)$r['inv_sum']),
+            'balance' => (int)floor((float)$r['inv_sum']),   // вниз до гривні — як вікно оплати (Purchases::quote)
         ];
+    }
+
+    /** Субакаунт wolf.ua (customers.parent_id ≠ 0): на design нічого не може. Немає такого клієнта — не субакаунт */
+    public static function isSub(int $id): bool
+    {
+        return (int)Sql::value('SELECT parent_id FROM customers WHERE id = ?', [$id]) !== 0;
+    }
+
+    /**
+     * Факти про клієнта для брифу дизайнерів: orders — опубліковані замовлення (published_at не NULL: скасована чернетка не
+     * рахується, хоч і має статус «Скасовано»), bought — з проведеною купівлею (design_purchases.status 2; одне замовлення — раз),
+     * cancelled — скасовані опубліковані
+     * @return array{orders:int, bought:int, cancelled:int}
+     */
+    public static function facts(int $customerId): array
+    {
+        $r = Sql::one(
+            'SELECT COUNT(*) AS orders,
+                    COALESCE(SUM(EXISTS (SELECT 1 FROM design_purchases p WHERE p.order_id = o.id AND p.status = ?)), 0) AS bought,
+                    COALESCE(SUM(o.status = ?), 0) AS cancelled
+             FROM design_orders o WHERE o.customer_id = ? AND o.published_at IS NOT NULL',
+            [Purchases::STATUS_DONE, OrderStatus::CANCELLED, $customerId]);
+        return ['orders' => (int)$r['orders'], 'bought' => (int)$r['bought'], 'cancelled' => (int)$r['cancelled']];
+    }
+
+    /** Рядок фактів для брифу: «Замовлень: 5 · куплено: 3 · скасовано: 1»; клієнт лише з цим замовленням (N ≤ 1) — «Новий клієнт» */
+    public static function factsLine(array $facts): string
+    {
+        if ($facts['orders'] <= 1) return 'Новий клієнт';
+        return 'Замовлень: ' . $facts['orders'] . ' · куплено: ' . $facts['bought'] . ' · скасовано: ' . $facts['cancelled'];
     }
 }

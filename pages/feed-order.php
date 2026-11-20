@@ -3,9 +3,13 @@
  * Бриф для дизайнера: GET /feed/{id}/ — повний бриф, своя пропозиція або запрошення, листування.
  * Бачить схвалений дизайнер: бриф у зборі пропозицій режиму 1 або замовлення, де в нього є пропозиція / запрошення.
  * ?form=propose|edit|take|decline — відкрита форма; ?done=… — тост після дії.
- * Обраний дизайнер замовлення «В роботі» — робочий простір (макет 6.5, views/partials/workspace.php): шапка «Ви отримаєте ·
- * клієнт побачить», «Термін до …», «Завантажити макети», «чий хід» дизайнера, стрічка і панель «Макети для друку».
- * Після помилки POST сторінку рендерить pages/feed-offer.php з $posted (form, values, error)
+ * Обраний дизайнер замовлення «В роботі», «Куплено», «Доопрацювання» — робочий простір (макет 6.5, views/partials/workspace.php):
+ * шапка «Ви отримаєте · клієнт побачить», «Термін до …», «Завантажити макети» (поки можна працювати), «чий хід» дизайнера,
+ * стрічка і панель «Макети для друку» (куплені — без змін, без посилань). «Куплено» — «Ще не закінчили» (?form=rework — форма
+ * пропозиції доопрацювання, POST /orders/{id}/rework), «чий хід» з пропозицією без відповіді; «Доопрацювання» — як «В роботі».
+ * Скасоване клієнтом замовлення — лише для читання: «Замовлення скасовано клієнтом» (без причини), без форм, листування без
+ * робочого простору (прев'ю видалено з диска).
+ * Після помилки POST сторінку рендерить pages/feed-offer.php (або pages/order-rework.php, form = rework) з $posted (form, values, error)
  * @var array $params
  * @var ?array{form:string, values:array{text:string,price:string,deadline:string,reason:string}, error:string} $posted
  */
@@ -23,6 +27,7 @@ use Design\OfferStatus;
 use Design\Orders;
 use Design\OrderStatus;
 use Design\Previews;
+use Design\Rework;
 use Design\Settings;
 use Design\View;
 use Design\Workspace;
@@ -39,11 +44,12 @@ $offer = Offers::forDesigner($id, $me);
 $open = $order['status'] === OrderStatus::COLLECTING && $order['mode'] === 1;
 if ($offer === null && !$open) Http::notFound();
 $status = $offer['status'] ?? null;
+$cancelled = $order['status'] === OrderStatus::CANCELLED;
 
 $invite = $status === OfferStatus::INVITED && $order['status'] === OrderStatus::WAITING_DESIGNER && $order['mode'] === 2;
 $forms = array_filter([
     'propose' => $open && in_array($status, [null, OfferStatus::DECLINED, OfferStatus::WITHDRAWN], true),
-    'edit' => $status === OfferStatus::SENT,
+    'edit' => $status === OfferStatus::SENT && !$cancelled,
     'take' => $invite,
     'decline' => $invite,
 ]);
@@ -74,13 +80,13 @@ if ($offer !== null && $status !== OfferStatus::INVITED) {
             'title' => $client,
             'subtitle' => $offer['price_designer'] <= 0 ? ''
                 : 'Ви: ' . View::price($offer['price_designer']) . ' на руки' . ($offer['deadline'] ? ' · до ' . View::date($offer['deadline']) : ''),
-            'note' => $status === OfferStatus::CHOSEN ? null : 'До вибору — лише текстові повідомлення. Файли і прев\'ю — після вибору дизайнера',
+            'note' => $status === OfferStatus::CHOSEN || $cancelled ? null : 'До вибору — лише текстові повідомлення. Файли і прев\'ю — після вибору дизайнера',
             'csrf' => $csrf,
             'messages' => $messages,
             'write' => $access['write'],
             'footer' => null,
             // Робочий простір: обраний дизайнер; додавати й приховувати прев'ю — поки замовлення в роботі
-            'workspace' => $status === OfferStatus::CHOSEN ? (static function () use ($id, $me): array {
+            'workspace' => $status === OfferStatus::CHOSEN && !$cancelled ? (static function () use ($id, $me): array {
                 $can = Previews::canWork($id, $me) !== null;
                 return ['orderId' => $id, 'upload' => $can, 'hide' => $can, 'chunk' => ChunkUpload::partSize()];
             })() : null,
@@ -94,10 +100,18 @@ $toasts = [
     'withdrawn' => 'Пропозицію відкликано',
     'accepted' => 'Ви взяли замовлення — клієнт побачить вашу пропозицію',
     'declined' => 'Ви відмовилися від замовлення',
+    'rework-sent' => 'Пропозицію доопрацювання надіслано — клієнт отримав сповіщення',
 ];
 
 $workspace = null;
-if ($chat !== null && $chat['workspace'] !== null && $order['status'] === OrderStatus::IN_WORK) {
+if ($chat !== null && $chat['workspace'] !== null && in_array($order['status'], Workspace::STATUSES, true)) {
+    $reworkOrder = Rework::order($id);
+    $rework = Workspace::rework($access['offer'], Messages::ROLE_DESIGNER, $reworkOrder);
+    // Форма «Ще не закінчили»: після помилки — введене; інакше сума = уже нараховане (та сама — правка без доплати), дата порожня
+    $rework['form'] = ($posted['form'] ?? Http::str($_GET, 'form')) === 'rework';
+    $rework['values'] = ($posted['form'] ?? '') === 'rework'
+        ? ['price' => $posted['values']['price'], 'deadline' => $posted['values']['deadline']]
+        : ['price' => (string)$rework['paid_designer'], 'deadline' => ''];
     $workspace = [
         'role' => 'designer',
         'order' => $order,
@@ -105,13 +119,14 @@ if ($chat !== null && $chat['workspace'] !== null && $order['status'] === OrderS
         'back' => ['href' => '/my-offers/?tab=work', 'label' => 'Мої пропозиції'],
         'who' => 'Клієнт ' . $client,
         'whoName' => $client,
-        'turn' => Workspace::turn($access['offer'], Messages::ROLE_DESIGNER),
+        'turn' => Workspace::turn($access['offer'], Messages::ROLE_DESIGNER, $reworkOrder),
         'chat' => $chat,
-        'panel' => Workspace::layouts($id),
+        'panel' => Workspace::layouts($id, false),
         'edit' => $chat['workspace']['upload'],
         'csrf' => $csrf,
         'chunk' => $chat['workspace']['chunk'],
         'error' => $posted['error'] ?? null,
+        'rework' => $rework,
     ];
 }
 
@@ -119,6 +134,7 @@ $scripts = ['/assets/js/offer-form.js'];
 if ($chat !== null) $scripts[] = '/assets/js/chat.js';
 if ($chat['workspace'] ?? null) {
     if ($chat['workspace']['upload']) $scripts[] = '/assets/js/chunk-upload.js';
+    $scripts[] = '/assets/js/workspace-layouts.js';
     $scripts[] = '/assets/js/workspace.js';
 }
 View::render('layout', [
@@ -130,6 +146,7 @@ View::render('layout', [
         'order' => $order,
         'offer' => $offer,
         'client' => $client,
+        'facts' => $workspace === null ? Customers::factsLine(Customers::facts($order['customer_id'])) : '',
         'forms' => $forms,
         'form' => $form,
         'values' => $values,

@@ -148,9 +148,10 @@ final class PreviewsTest extends TestCase
         // forOrder: ключ — id, за номером; по сторінці — адреси view і card
         $list = Previews::forOrder($orderId);
         $this->assertSame([$first['id'], $second['id']], array_keys($list));
-        $this->assertSame(['id', 'num', 'pages', 'hidden', 'based_on_num', 'caption', 'urls'], array_keys($list[$first['id']]));
+        $this->assertSame(['id', 'num', 'pages', 'hidden', 'removed', 'based_on_num', 'caption', 'urls'], array_keys($list[$first['id']]));
         $this->assertSame('Перший варіант <b>&</b>', $list[$first['id']]['caption']);
         $this->assertFalse($list[$first['id']]['hidden']);
+        $this->assertFalse($list[$first['id']]['removed'], 'замовлення не скасоване');
         $this->assertNull($list[$first['id']]['based_on_num']);
         $this->assertCount(1, $list[$first['id']]['urls']);
         $this->assertMatchesRegularExpression('~^https://\S+\.webp$~', $list[$first['id']]['urls'][0]['view']);
@@ -334,7 +335,7 @@ final class PreviewsTest extends TestCase
         $v2 = Previews::add($orderId, self::A, $this->upload(), 'v2', null);
         $v3 = Previews::add($orderId, self::A, $this->upload(), 'v3', null);
         $list = Previews::forOrder($orderId);   // url → ImageGlobal::encode створює симлінки
-        $link = static fn(string $url): string => CdnLinksGuard::ROOT . '/' . substr($url, strpos($url, '/ci/') + 4);
+        $link = static fn(string $url): string => CdnLinksGuard::ROOTS[0] . '/' . substr($url, strpos($url, '/ci/') + 4);
         $links = static fn(array $p): array => array_map($link, [$p['urls'][0]['view'], $p['urls'][0]['card']]);
         $file = fn(int $id, string $size): string => $this->root . "/previews/$orderId/$id-p1-$size.webp";
         foreach ([$v1, $v2, $v3] as $v) {

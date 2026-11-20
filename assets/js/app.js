@@ -37,3 +37,11 @@ window.addEventListener('pageshow', function () {
     form.querySelectorAll('button').forEach(function (b) { b.classList.remove('is-sending'); b.removeAttribute('aria-disabled'); });
   });
 });
+
+// Мобільне меню прокручується вбік: активний пункт (наприклад «Заробіток») не має ховатися за краєм
+document.querySelectorAll('.mobile-nav').forEach(function (nav) {
+  var a = nav.querySelector('a.active');
+  if (!a || nav.scrollWidth <= nav.clientWidth) return;
+  var n = nav.getBoundingClientRect(), r = a.getBoundingClientRect();
+  nav.scrollLeft += r.left - n.left - (n.width - r.width) / 2;
+});

@@ -79,6 +79,22 @@ final class RouterTest extends TestCase
         $this->assertNull(Router::match('GET', '/orders/345/layouts/9'));
         $this->assertNull(Router::match('POST', '/orders/345/layouts/abc'));
         $this->assertNull(Router::withSlash('/orders/345/layouts'));
+        // Купівля: вікно оплати (GET, JSON) і оплата (POST)
+        $this->assertSame(['page' => 'order-buy-quote', 'params' => ['id' => '345']], Router::match('GET', '/orders/345/buy'));
+        $this->assertSame(['page' => 'order-buy', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/buy'));
+        $this->assertNull(Router::match('POST', '/orders/345/buy/'));
+        $this->assertNull(Router::match('POST', '/orders/abc/buy'));
+        $this->assertNull(Router::withSlash('/orders/345/buy'));
+        // Доопрацювання: лише POST (форми сторінок)
+        $this->assertSame(['page' => 'order-rework', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/rework'));
+        $this->assertNull(Router::match('GET', '/orders/345/rework'));
+        $this->assertNull(Router::match('POST', '/orders/abc/rework'));
+        // Етап 5, Task 7: скасування замовлення і скарга — лише POST
+        $this->assertSame(['page' => 'order-cancel', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/cancel'));
+        $this->assertSame(['page' => 'order-complaint', 'params' => ['id' => '345']], Router::match('POST', '/orders/345/complaint'));
+        $this->assertNull(Router::match('GET', '/orders/345/cancel'));
+        $this->assertNull(Router::match('GET', '/orders/345/complaint'));
+        $this->assertNull(Router::match('POST', '/orders/345/cancel/'));
     }
 
     public function test_chat_routes(): void
@@ -103,6 +119,9 @@ final class RouterTest extends TestCase
         $this->assertNull(Router::match('GET', '/feed/abc/'));
         $this->assertNull(Router::match('GET', '/feed/1234567890/'));
         $this->assertNull(Router::match('POST', '/my-offers/'));
+        $this->assertSame(['page' => 'earnings', 'params' => []], Router::match('GET', '/earnings/'));
+        $this->assertNull(Router::match('POST', '/earnings/'));
+        $this->assertSame('/earnings/', Router::withSlash('/earnings'));
         $this->assertSame('/feed/', Router::withSlash('/feed'));
         $this->assertSame('/feed/345/', Router::withSlash('/feed/345'));
         $this->assertSame('/my-offers/', Router::withSlash('/my-offers'));

@@ -4,7 +4,7 @@ namespace Design;
 
 /**
  * Макети замовлення (design_files): файли для друку, які обраний дизайнер вантажить у замовлення «В роботі».
- * Лежать у Paths::layouts({orderId})/{id}.{ext} (папка 0700, файл 0600) — лише на локальному диску, назовні не віддаються.
+ * Лежать у Paths::layouts({orderId})/{id}.{ext} (папка 0755, файл 0644) — звичайні файли на локальному диску; посилання i.fastcdn на них не створюються.
  * Статус: 1 завантажено, 2 замінено, 3 видалено. Ліміти (кількість і сума) — лише по status = 1.
  * Кожна дія з макетом (крім перейменування) — системне повідомлення в листуванні обраної пропозиції (data.event, data.file_id);
  * сповіщення клієнту методи не шлють, а повертають notice (Workspace::notifyClient — сторінка шле його після відповіді).
@@ -144,7 +144,7 @@ final class Layouts
 
     /**
      * Спільна частина add/replace.
-     * 1) Без замка: доступ, розмір, папка (0700), 0600 для $tmp, md5 — усе повільне до транзакції.
+     * 1) Без замка: доступ, розмір, папка (0755), 0644 для $tmp, md5 — усе повільне до транзакції.
      * 2) Коротка транзакція з замком рядка замовлення: повторний доступ, (replace) старий → status 2, ліміти, рядок, системне
      *    повідомлення, rename $tmp → {id}.{ext}, коммит. Помилка — відкат, готовий файл видаляється.
      * 3) Після коммиту: видалення файла старого макета. Сповіщення клієнту — notice у відповіді (шле сторінка).
@@ -160,9 +160,9 @@ final class Layouts
             if (!is_file($tmp)) throw new DesignerException('Файл не знайдено — завантажте його ще раз');
             $size = (int)filesize($tmp);
             self::checkSize($size);
-            $dir = self::dir($orderId);
-            // Права — до перенесення: у папку макетів файл потрапляє вже закритим для «інших»
-            if (!chmod($tmp, 0600)) throw new \RuntimeException('Не вдалося закрити права файла макета');
+            $dir = Paths::layouts($orderId);
+            // Права — явно (umask php-fpm 022, а ChunkUpload кладе результат 0600): макет — звичайний файл 0644
+            if (!chmod($tmp, 0644)) throw new \RuntimeException('Не вдалося виставити права файла макета');
             $md5 = md5_file($tmp);
             if ($md5 === false) throw new \RuntimeException('Не вдалося порахувати md5 файла макета');
             if (self::$beforeTransaction !== null) (self::$beforeTransaction)($orderId, $tmp);
@@ -264,22 +264,6 @@ final class Layouts
         if ((int)$r['total'] + $size > Settings::layoutMaxTotalBytes()) {
             throw new DesignerException('Разом не більше ' . View::bytes(Settings::layoutMaxTotalBytes()) . ' на замовлення');
         }
-    }
-
-    /**
-     * Папка макетів замовлення, створена й гарантовано 0700 (Paths::layouts наявні папки не чіпає):
-     * якщо права інші й виправити не вдалося — файли не кладемо, бо nginx / «інші» могли б їх прочитати
-     */
-    private static function dir(int $orderId): string
-    {
-        $dir = Paths::layouts($orderId);
-        clearstatcache(true, $dir);
-        if ((fileperms($dir) & 0777) !== 0700) {
-            if (!@chmod($dir, 0700)) throw new \RuntimeException('Папка макетів ' . $dir . ' має не 0700 і права не виправити');
-            clearstatcache(true, $dir);
-            if ((fileperms($dir) & 0777) !== 0700) throw new \RuntimeException('Папка макетів ' . $dir . ' має не 0700');
-        }
-        return $dir;
     }
 
     /** Видаляє файл макета з диска (після коммиту); збій лише в журнал — рядок уже не активний */

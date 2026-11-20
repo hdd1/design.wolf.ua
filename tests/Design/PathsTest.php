@@ -69,13 +69,13 @@ final class PathsTest extends TestCase
         $this->assertSame('0755', $this->mode($this->tmp));
     }
 
-    public function test_layouts_created_0700_with_parents(): void
+    public function test_layouts_created_0755_with_parents(): void
     {
         $dir = Paths::layouts(123);
         $this->assertSame($this->tmp . '/layouts/123', $dir);
         $this->assertDirectoryExists($dir);
-        $this->assertSame('0700', $this->mode($dir));
-        $this->assertSame('0700', $this->mode($this->tmp . '/layouts'));
+        $this->assertSame('0755', $this->mode($dir));
+        $this->assertSame('0755', $this->mode($this->tmp . '/layouts'));
         $this->assertSame('0755', $this->mode($this->tmp), 'корінь — 0755');
     }
 
@@ -84,7 +84,7 @@ final class PathsTest extends TestCase
         umask(077);
         $this->assertSame('0755', $this->mode(Paths::previews(5)));
         umask(0);
-        $this->assertSame('0700', $this->mode(Paths::layouts(5)));
+        $this->assertSame('0755', $this->mode(Paths::layouts(5)));
     }
 
     public function test_repeat_call_keeps_existing_folder_untouched(): void

@@ -75,4 +75,52 @@ final class SchemaTest extends TestCase
             $this->assertSame($v, Sql::value('SELECT value FROM design_settings WHERE `key` = ?', [$k]), $k);
         }
     }
+
+    public function test_stage5_tables(): void
+    {
+        $col = fn(string $t, string $c) => (string)Sql::value('SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?', [$t, $c]);
+        $nullable = fn(string $t, string $c) => (string)Sql::value('SELECT is_nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?', [$t, $c]);
+        foreach (['design_purchases', 'design_complaints'] as $t) {
+            $this->assertStringStartsWith('utf8mb4', (string)Sql::value(
+                'SELECT table_collation FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?', [$t]), $t);
+            $this->assertSame($col('design_orders', 'id'), $col($t, 'order_id'), "$t.order_id");
+            $this->assertSame('1', (string)Sql::value("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = 'idx_order'", [$t]), "$t idx_order");
+        }
+        // design_purchases
+        $this->assertSame($col('design_offers', 'id'), $col('design_purchases', 'offer_id'));
+        foreach (['payer_id', 'price_client', 'price_designer', 'amount_client', 'amount_designer', 'transaction_client_id', 'transaction_designer_id'] as $c) {
+            $this->assertSame('int', $col('design_purchases', $c), $c);
+        }
+        $this->assertSame('decimal(5,2)', $col('design_purchases', 'markup_percent'));
+        $this->assertSame('tinyint', $col('design_purchases', 'method'));
+        $this->assertSame('tinyint', $col('design_purchases', 'status'));
+        foreach (['transaction_client_id', 'transaction_designer_id', 'paid_at'] as $c) {
+            $this->assertSame('YES', $nullable('design_purchases', $c), $c);
+        }
+        $this->assertSame('NO', $nullable('design_purchases', 'payer_id'));
+        // design_complaints
+        $this->assertSame($col('design_purchases', 'id'), $col('design_complaints', 'purchase_id'));
+        $this->assertSame('text', $col('design_complaints', 'text'));
+        $this->assertSame('tinyint', $col('design_complaints', 'status'));
+        foreach (['resolution', 'resolved_by', 'resolved_at'] as $c) {
+            $this->assertSame('YES', $nullable('design_complaints', $c), $c);
+        }
+        // design_orders: скасування і доопрацювання
+        $this->assertSame('text', $col('design_orders', 'cancel_reason'));
+        $this->assertSame('datetime', $col('design_orders', 'cancelled_at'));
+        $this->assertSame('int', $col('design_orders', 'rework_price_designer'));
+        $this->assertSame('int', $col('design_orders', 'rework_price_client'));
+        $this->assertSame('date', $col('design_orders', 'rework_deadline'));
+        $this->assertSame('datetime', $col('design_orders', 'rework_proposed_at'));
+        foreach (['cancel_reason', 'cancelled_at', 'rework_price_designer', 'rework_price_client', 'rework_deadline', 'rework_proposed_at'] as $c) {
+            $this->assertSame('YES', $nullable('design_orders', $c), $c);
+        }
+        // design_files: копія в хмару
+        $this->assertSame('tinyint', $col('design_files', 'cloud_status'));
+        $this->assertSame('NO', $nullable('design_files', 'cloud_status'));
+        $this->assertSame('0', Sql::value("SELECT column_default FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'design_files' AND column_name = 'cloud_status'"));
+        $this->assertSame('varchar(255)', $col('design_files', 'cloud_error'));
+        $this->assertSame('YES', $nullable('design_files', 'cloud_error'));
+        $this->assertSame('1', (string)Sql::value("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'design_files' AND index_name = 'idx_cloud_status'"));
+    }
 }

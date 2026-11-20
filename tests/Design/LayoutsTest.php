@@ -15,7 +15,7 @@ use Design\Workspace;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Макети: файли 0600 у папці 0700, ліміти числа й суми, заміна/видалення зі слідом у листуванні, доступ лише обраного дизайнера.
+ * Макети: звичайні файли 0644 у папці 0755, ліміти числа й суми, заміна/видалення зі слідом у листуванні, доступ лише обраного дизайнера.
  * Клієнт і дизайнери — фіктивні customer_id 999999901+; замовлення й пропозиції тест вставляє сам (id — автоінкремент).
  * DESIGN_WORK_ROOT — тимчасова папка; файли — випадкові байти. Ліміти в МБ підміняються в кеші Settings (БД не чіпаємо:
  * 5 ГБ не пишемо). Макети через i.fastcdn не віддаються — тест перевіряє, що дерево симлінків CDN не змінилося
@@ -152,7 +152,7 @@ final class LayoutsTest extends TestCase
         }
     }
 
-    public function test_add_moves_file_private_perms(): void
+    public function test_add_moves_file_public_perms(): void
     {
         [$orderId, $offerId] = $this->inWork();
         $tmp = $this->upload(2516582);
@@ -167,9 +167,9 @@ final class LayoutsTest extends TestCase
         $path = $this->root . "/layouts/$orderId/{$r['id']}.pdf";
         $this->assertSame($content, file_get_contents($path));
         clearstatcache();
-        $this->assertSame(0600, fileperms($path) & 0777, 'файл макета закритий для «інших» навіть при umask 022');
-        $this->assertSame(0700, fileperms($this->root . "/layouts/$orderId") & 0777);
-        $this->assertSame(0700, fileperms($this->root . '/layouts') & 0777);
+        $this->assertSame(0644, fileperms($path) & 0777, 'файл макета — звичайний 0644 незалежно від umask і прав tmp');
+        $this->assertSame(0755, fileperms($this->root . "/layouts/$orderId") & 0777);
+        $this->assertSame(0755, fileperms($this->root . '/layouts') & 0777);
 
         $row = Sql::one('SELECT * FROM design_files WHERE id = ?', [$r['id']]);
         $this->assertSame($orderId, (int)$row['order_id']);
@@ -203,17 +203,18 @@ final class LayoutsTest extends TestCase
         $this->assertSame([], $this->tmpFiles());
     }
 
-    public function test_add_fixes_loose_layouts_dir_perms(): void
+    /** Закритих прав більше немає: наявна папка (хоч би яка) не чіпається й не блокує запис, файл усе одно 0644 */
+    public function test_add_keeps_existing_layouts_dir_perms(): void
     {
         [$orderId] = $this->inWork();
-        mkdir($this->root . "/layouts/$orderId", 0755, true);
-        chmod($this->root . "/layouts/$orderId", 0755);
+        mkdir($this->root . "/layouts/$orderId", 0700, true);
+        chmod($this->root . "/layouts/$orderId", 0700);
 
         $r = Layouts::add($orderId, self::A, $this->upload(), 'a.psd');
 
         clearstatcache();
-        $this->assertSame(0700, fileperms($this->root . "/layouts/$orderId") & 0777, 'Paths::layouts наявну папку не чіпає — Layouts доводить до 0700');
-        $this->assertSame(0600, fileperms($this->root . "/layouts/$orderId/{$r['id']}.psd") & 0777);
+        $this->assertSame(0700, fileperms($this->root . "/layouts/$orderId") & 0777, 'наявна папка не чіпається');
+        $this->assertSame(0644, fileperms($this->root . "/layouts/$orderId/{$r['id']}.psd") & 0777);
     }
 
     public function test_name_parsing(): void
@@ -361,7 +362,7 @@ final class LayoutsTest extends TestCase
         $this->assertEqualsCanonicalizing([$b['id'] . '.ai', $new['id'] . '.pdf'], $this->files($orderId), 'старий файл видалено');
         $this->assertSame($content, file_get_contents($this->root . "/layouts/$orderId/{$new['id']}.pdf"));
         clearstatcache();
-        $this->assertSame(0600, fileperms($this->root . "/layouts/$orderId/{$new['id']}.pdf") & 0777);
+        $this->assertSame(0644, fileperms($this->root . "/layouts/$orderId/{$new['id']}.pdf") & 0777);
         $this->assertSame('Візитка-final.PDF', Sql::value('SELECT original_name FROM design_files WHERE id = ?', [$new['id']]));
         $this->assertSame(md5($content), Sql::value('SELECT md5 FROM design_files WHERE id = ?', [$new['id']]));
 
@@ -532,7 +533,7 @@ final class LayoutsTest extends TestCase
             $this->assertFalse(Sql::pdo()->inTransaction());
             $this->assertFileExists($tmp);
             clearstatcache();
-            $this->assertSame(0600, fileperms($tmp) & 0777, 'tmp закритий ще до перенесення');
+            $this->assertSame(0644, fileperms($tmp) & 0777, 'tmp уже з правами 0644 до перенесення');
             $other->beginTransaction();
             $this->assertSame($orderId, (int)$other->query("SELECT id FROM design_orders WHERE id = $orderId FOR UPDATE NOWAIT")->fetchColumn());
             $other->rollBack();

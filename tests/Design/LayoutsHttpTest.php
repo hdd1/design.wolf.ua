@@ -482,8 +482,8 @@ final class LayoutsHttpTest extends TestCase
         // Жодних посилань i.fastcdn на папку макетів
         exec('find ' . escapeshellarg(self::LINKS) . ' -type l -lname ' . escapeshellarg("$root/layouts/*"), $links);
         $this->assertSame([], $links);
-        // Файл закритий для nginx («інших»)
-        $this->assertSame('0600', substr(sprintf('%o', fileperms("$root/layouts/$orderId/$id.pdf")), -4));
+        // Звичайний файл 0644 (посилання на нього все одно немає — перевірено вище)
+        $this->assertSame('0644', substr(sprintf('%o', fileperms("$root/layouts/$orderId/$id.pdf")), -4));
     }
 
     public function test_limits_messages(): void

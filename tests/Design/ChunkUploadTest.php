@@ -153,7 +153,8 @@ final class ChunkUploadTest extends TestCase
     public function test_assembles_and_returns_path(): void
     {
         $id = self::fileId();
-        $parts = ['перша-', 'друга-', 'третя'];
+        // По ~0,7 МБ: межа кількості частин — від заявленого розміру (2 МБ — до 4 частин)
+        $parts = ['перша-' . str_repeat('1', 700000), 'друга-' . str_repeat('2', 700000), 'третя' . str_repeat('3', 700000)];
         $size = strlen(implode('', $parts));
         $scope = '29:1:layout';
         foreach ($parts as $i => $bytes) {
@@ -185,7 +186,8 @@ final class ChunkUploadTest extends TestCase
             $this->assertSame(self::ERR_META, $this->error(self::meta(['chunkIndex' => $bad])), "chunkIndex $bad");
         }
         foreach (['0', '-1', 'x', '52'] as $bad) {   // 50 МБ: не більше ceil(50/1)+1 = 51 частини (частина в браузері — від 1 МБ)
-            $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => $bad])), "totalChunks $bad");
+            $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => $bad, 'totalSize' => (string)(50 * self::MB)])),
+                "totalChunks $bad");
         }
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalSize' => 'x'])));
         // Від’ємні цілі (не з форми, а int) — так само
@@ -194,9 +196,32 @@ final class ChunkUploadTest extends TestCase
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalSize' => -5])));
         $this->assertSame('Файл порожній', $this->error(self::meta(['totalSize' => '0'])));
         // 51 частина — ще можна (на dev upload_max_filesize 2M: частини ~1,9 МБ): далі перевіряється сама частина
-        $this->assertSame('Файл не надіслано', $this->error(self::meta(['totalChunks' => '51', 'chunkIndex' => '50'])));
+        $this->assertSame('Файл не надіслано',
+            $this->error(self::meta(['totalChunks' => '51', 'chunkIndex' => '50', 'totalSize' => (string)(50 * self::MB)])));
         // Межа рахується від ліміту: 1 МБ — до 2 частин
         $this->assertSame(self::ERR_META, $this->error(self::meta(['totalChunks' => '3']), [], self::MB));
+    }
+
+    /**
+     * Межа кількості частин — від заявленого розміру, а не лише від ліміту: заявлений 1 байт чи 10 МБ при ліміті 1 ГБ
+     * не розкласти на тисячі частин (кожна до 5 МБ), що заповнили б tmp_uppy до відмови на склеюванні.
+     * Частина в браузері — від 1 МБ (MIN_CHUNK; у CLI partSize ~1,9 МБ), тож 10 МБ — до ceil(10)+1 = 11 частин
+     */
+    public function test_part_count_limit_follows_declared_size(): void
+    {
+        $gb = 1024 * self::MB;
+        $check = fn(string $size, string $total): string => $this->error(
+            self::meta(['totalSize' => $size, 'totalChunks' => $total, 'chunkIndex' => (string)((int)$total - 1)]), [], $gb);
+        $this->assertSame(self::ERR_META, $check('1', '1025'), 'заявлений 1 байт — не 1025 частин');
+        $this->assertSame(self::ERR_META, $check('1', '3'));
+        $this->assertSame('Файл не надіслано', $check('1', '2'), '1 байт — до 2 частин (+1 на округлення браузера)');
+        $this->assertSame(self::ERR_META, $check((string)(10 * self::MB), '12'));
+        $this->assertSame('Файл не надіслано', $check((string)(10 * self::MB), '11'));
+        $this->assertSame('Файл не надіслано', $check((string)(10 * self::MB + 1), '12'), 'неповна остання частина');
+        // заявлено більше за ліміт — межа від ліміту, а відмова — «завеликий»
+        $this->assertSame(self::ERR_META, $this->error(self::meta(['totalSize' => (string)(2 * $gb), 'totalChunks' => '1026']), [], $gb));
+        $this->assertSame('Файл завеликий: 2048 МБ. Максимум — 1024 МБ',
+            $this->error(self::meta(['totalSize' => (string)(2 * $gb), 'totalChunks' => '1025']), [], $gb));
     }
 
     public function test_rejects_missing_or_foreign_part(): void

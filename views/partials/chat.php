@@ -69,8 +69,8 @@ foreach ($messages as $m) {
         <?php if (substr($m['time'], 0, 10) !== $day): $day = substr($m['time'], 0, 10) ?>
       <div class="chat-day" data-day="<?= View::e($day) ?>"><span><?= View::e(Chat::day($m['time'])) ?></span></div>
         <?php endif ?>
-        <?php if ($m['system']): ?>
-      <div class="chat-sys"><?= Chat::html($m['text']) ?></div>
+        <?php if ($m['system']): // текст системного містить текст дизайнера (підпис макета) — без посилань ?>
+      <div class="chat-sys"><?= View::e($m['text']) ?></div>
         <?php elseif ($m['preview'] !== null): $p = $m['preview']; $card = $p['urls'][0]['card'] ?? '' ?>
       <div class="chat-msg is-preview<?= $m['mine'] ? ' mine' : '' ?>" data-id="<?= $m['id'] ?>">
         <?php if (!$m['mine']): ?><span class="avatar avatar-sm"><?= View::e(Chat::initials($m['author'])) ?></span><?php endif ?>

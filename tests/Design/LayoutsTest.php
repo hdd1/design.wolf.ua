@@ -11,6 +11,7 @@ use Design\Products;
 use Design\Settings;
 use Design\Sql;
 use Design\View;
+use Design\Workspace;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -188,7 +189,11 @@ final class LayoutsTest extends TestCase
         $this->assertSame('Завантажено макет «Візитка 1» · 2,4' . self::NB . 'МБ', $msgs[0]['text']);
         $this->assertSame(['event' => 'layout_add', 'file_id' => $r['id']], $msgs[0]['data']);
 
-        // клієнт сповіщений
+        // сам add не сповіщає (сторінка шле notice після відповіді браузеру); notice — сповіщення клієнту
+        $this->assertSame([], Notify::$sent);
+        $this->assertSame(['offer_id' => $offerId, 'customer_id' => self::CLIENT, 'designer_id' => self::A, 'order_id' => $orderId],
+            $r['notice']);
+        Workspace::notifyClient($r['notice']);
         $this->assertCount(1, Notify::$sent);
         $this->assertSame(self::CLIENT, Notify::$sent[0]['customer_id']);
         $this->assertStringContainsString('нове повідомлення від Петро Дизайнер по №' . $orderId, Notify::$sent[0]['msg']);
@@ -502,13 +507,16 @@ final class LayoutsTest extends TestCase
     {
         [$orderId, $offerId] = $this->inWork();
         $a = Layouts::add($orderId, self::A, $this->upload(), 'a.pdf');
-        Layouts::add($orderId, self::A, $this->upload(), 'b.pdf');
-        Layouts::remove($a['id'], self::A);
+        $b = Layouts::add($orderId, self::A, $this->upload(), 'b.pdf');
+        $removed = Layouts::remove($a['id'], self::A);
+        $this->assertSame([], Notify::$sent, 'самі дії не сповіщають — сторінка шле notice після відповіді');
+        $this->assertSame($a['notice'], $removed);
+        foreach ([$a['notice'], $b['notice'], $removed] as $notice) Workspace::notifyClient($notice);
         $this->assertCount(1, Notify::$sent, 'пачка дій — одне сповіщення, поки клієнт не відкрив листування');
         $this->assertCount(3, Messages::list($offerId), 'але кожна дія залишає слід у стрічці');
 
         Sql::exec('UPDATE design_offers SET client_notified_at = NOW() - INTERVAL 120 SECOND, client_seen_at = NOW() - INTERVAL 60 SECOND WHERE id = ?', [$offerId]);
-        Layouts::add($orderId, self::A, $this->upload(), 'c.pdf');
+        Workspace::notifyClient(Layouts::add($orderId, self::A, $this->upload(), 'c.pdf')['notice']);
         $this->assertCount(2, Notify::$sent);
     }
 

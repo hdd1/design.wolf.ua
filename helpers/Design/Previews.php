@@ -12,6 +12,8 @@ final class Previews
 {
     private const ERR_CLOSED = "Додавати й приховувати прев'ю може лише обраний дизайнер замовлення в роботі";
     private const ERR_BASED_ON = "Версію, на основі якої зроблено прев'ю, не знайдено";
+    /** Дерево симлінків i.fastcdn (ImageGlobal::$symlinkRoot) */
+    private const CDN_LINKS = '/home/connect/cloud-links/ci/';
 
     /**
      * Тести: викликається перед рендером (поза транзакцією) — щоб перевірити, що замок замовлення в цей час вільний
@@ -44,8 +46,9 @@ final class Previews
      * 3) Коротка транзакція з замком рядка замовлення: повторна перевірка доступу й «на основі», num = MAX + 1, рядок прев'ю,
      *    повідомлення дизайнера (text = підпис, може бути порожнім; preview_id), перейменування файлів у {id}-p{n}-*.webp, коммит.
      * Будь-яка помилка — відкат і видалення і тимчасових, і вже перейменованих файлів. $tmp видаляється в будь-якому разі.
-     * Після коммиту — сповіщення клієнту (правило «перше непрочитане»). basedOn — id неприхованої версії цього ж замовлення
-     * @return array{id:int, num:int, message_id:int}
+     * Сповіщення клієнту тут не шлеться: notice — що сповістити (Workspace::notifyClient) після відповіді браузеру.
+     * basedOn — id неприхованої версії цього ж замовлення
+     * @return array{id:int, num:int, message_id:int, notice:array}
      * @throws DesignerException доступ, підпис, «на основі», файл (текст для користувача)
      */
     public static function add(int $orderId, int $designerId, string $tmp, string $caption, ?int $basedOn): array
@@ -97,14 +100,7 @@ final class Previews
             if (is_file($tmp)) @unlink($tmp);
         }
 
-        // Сповіщення — після запису: його збій не скасовує вже надіслане прев'ю
-        try {
-            Messages::notifyNew($offer['id'], Messages::ROLE_CLIENT, $offer['customer_id'],
-                Designers::get($designerId)['name'] ?? 'дизайнера', $orderId);
-        } catch (\Throwable $e) {
-            error_log("design: сповіщення про прев'ю $id замовлення $orderId: " . $e);
-        }
-        return ['id' => $id, 'num' => $num, 'message_id' => $messageId];
+        return ['id' => $id, 'num' => $num, 'message_id' => $messageId, 'notice' => Workspace::notice($offer, $designerId)];
     }
 
     /**
@@ -123,8 +119,9 @@ final class Previews
     }
 
     /**
-     * Приховати прев'ю (лише обраний дизайнер замовлення в роботі): hidden_at = NOW(), картинки видаляються з диска,
-     * рядок і підпис лишаються. Повтор нічого не змінює (лише добирає файли, якщо попередній раз їх не вдалося видалити).
+     * Приховати прев'ю (лише обраний дизайнер замовлення в роботі): hidden_at = NOW(), картинки видаляються з диска
+     * разом із їхніми симлінками i.fastcdn (інакше биті посилання копились би в cloud-links), рядок і підпис лишаються.
+     * Повтор нічого не змінює (лише добирає файли, якщо попередній раз їх не вдалося видалити).
      * Немає прев'ю і немає доступу — та сама відповідь (id не перебрати)
      * @throws DesignerException
      */
@@ -146,7 +143,7 @@ final class Previews
             throw $e;
         }
         // Файли — після коммиту: якщо коммит не вдався, прев'ю лишається видимим і з картинками
-        self::removeFiles(self::dir($orderId), $previewId);
+        self::removeFiles(self::dir($orderId), $previewId, true);
     }
 
     /**
@@ -234,11 +231,32 @@ final class Previews
         return \ImageGlobal::encode($file);
     }
 
-    /** Видаляє всі картинки прев'ю з основою імен $base (id або тимчасова tmp-…): {base}-p{n}-view.webp і -card.webp */
-    private static function removeFiles(string $dir, int|string $base): void
+    /**
+     * Видаляє всі картинки прев'ю з основою імен $base (id або тимчасова tmp-…): {base}-p{n}-view.webp і -card.webp;
+     * $links — і симлінки i.fastcdn на них (ті, що створив url → ImageGlobal::encode)
+     */
+    private static function removeFiles(string $dir, int|string $base, bool $links = false): void
     {
         foreach (glob("$dir/$base-p*-{view,card}.webp", GLOB_BRACE) ?: [] as $f) {
-            if (preg_match('~/' . preg_quote((string)$base, '~') . '-p\d+-(?:view|card)\.webp$~', $f)) @unlink($f);
+            if (!preg_match('~/' . preg_quote((string)$base, '~') . '-p\d+-(?:view|card)\.webp$~', $f)) continue;
+            if ($links) self::unlinkCdn($f);
+            @unlink($f);
+        }
+    }
+
+    /**
+     * Симлінк i.fastcdn на файл прев'ю $file: той самий шлях, що рахує ImageGlobal::encode (sha256 шляху з сіллю, шарди
+     * xx/yy/zz, розширення). Видаляється, лише якщо це справді симлінк саме на $file — інших посилань не чіпаємо
+     */
+    private static function unlinkCdn(string $file): void
+    {
+        require_once '/home/connect/cdn.wolf.ua/helpers/ImageGlobal.php';
+        $hash = hash('sha256', $file . \CdnConfig::get('image_link_salt'));
+        $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+        $link = self::CDN_LINKS . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . substr($hash, 4, 2) . '/'
+            . substr($hash, 6) . ($ext === '' ? '' : '.' . $ext);
+        if (is_link($link) && readlink($link) === $file && !@unlink($link)) {
+            error_log("design: не вдалося видалити посилання i.fastcdn $link");
         }
     }
 }

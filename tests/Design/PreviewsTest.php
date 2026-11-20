@@ -10,6 +10,7 @@ use Design\Previews;
 use Design\Products;
 use Design\Settings;
 use Design\Sql;
+use Design\Workspace;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -322,12 +323,51 @@ final class PreviewsTest extends TestCase
         $this->assertSame(3, Previews::add($orderId, self::A, $this->upload(), '', null)['num']);
     }
 
+    /**
+     * Приховане прев'ю: симлінки i.fastcdn на його видалені файли теж видаляються (не копляться биті), а посилання
+     * інших прев'ю й симлінк на тому ж місці, що веде не на файл цього прев'ю, — не чіпаються
+     */
+    public function test_hide_removes_cdn_links_of_its_files_only(): void
+    {
+        [$orderId] = $this->inWork();
+        $v1 = Previews::add($orderId, self::A, $this->upload(), 'v1', null);
+        $v2 = Previews::add($orderId, self::A, $this->upload(), 'v2', null);
+        $v3 = Previews::add($orderId, self::A, $this->upload(), 'v3', null);
+        $list = Previews::forOrder($orderId);   // url → ImageGlobal::encode створює симлінки
+        $link = static fn(string $url): string => CdnLinksGuard::ROOT . '/' . substr($url, strpos($url, '/ci/') + 4);
+        $links = static fn(array $p): array => array_map($link, [$p['urls'][0]['view'], $p['urls'][0]['card']]);
+        $file = fn(int $id, string $size): string => $this->root . "/previews/$orderId/$id-p1-$size.webp";
+        foreach ([$v1, $v2, $v3] as $v) {
+            foreach ($links($list[$v['id']]) as $i => $l) {
+                $this->assertTrue(is_link($l));
+                $this->assertSame($file($v['id'], $i === 0 ? 'view' : 'card'), readlink($l));
+            }
+        }
+        // На місці посилання картки v3 — симлінк на інший файл: його hide не чіпає
+        [$v3view, $v3card] = $links($list[$v3['id']]);
+        unlink($v3card);
+        symlink($file($v2['id'], 'card'), $v3card);
+
+        Previews::hide($v1['id'], self::A);
+        Previews::hide($v3['id'], self::A);
+        clearstatcache();
+        foreach ($links($list[$v1['id']]) as $l) $this->assertFalse(is_link($l), "посилання $l на файл прихованого прев'ю видалено");
+        $this->assertFalse(is_link($v3view));
+        $this->assertTrue(is_link($v3card), 'чужий симлінк на тому ж місці лишився');
+        $this->assertSame($file($v2['id'], 'card'), readlink($v3card));
+        foreach ($links($list[$v2['id']]) as $l) $this->assertTrue(is_link($l), 'посилання неприхованого прев\'ю лишились');
+        $this->assertNotSame([], Previews::forOrder($orderId)[$v2['id']]['urls']);
+    }
+
     public function test_notify_client_first_unread(): void
     {
         [$orderId, $offerId] = $this->inWork();
-        Previews::add($orderId, self::A, $this->upload(), 'v1', null);
-        Previews::add($orderId, self::A, $this->upload(), 'v2', null);
-        Previews::add($orderId, self::A, $this->upload(), 'v3', null);
+        $added = [];
+        foreach (['v1', 'v2', 'v3'] as $caption) $added[] = Previews::add($orderId, self::A, $this->upload(), $caption, null);
+        $this->assertSame([], Notify::$sent, 'сам add не сповіщає — сторінка шле notice після відповіді браузеру');
+        $this->assertSame(['offer_id' => $offerId, 'customer_id' => self::CLIENT, 'designer_id' => self::A, 'order_id' => $orderId],
+            $added[0]['notice']);
+        foreach ($added as $a) Workspace::notifyClient($a['notice']);
 
         $this->assertCount(1, Notify::$sent, 'пачка прев\'ю — одне сповіщення, поки клієнт не відкрив листування');
         $this->assertSame(self::CLIENT, Notify::$sent[0]['customer_id']);
@@ -338,7 +378,7 @@ final class PreviewsTest extends TestCase
 
         // клієнт відкрив листування (давно) — наступне прев'ю знову сповіщає
         Sql::exec('UPDATE design_offers SET client_notified_at = NOW() - INTERVAL 120 SECOND, client_seen_at = NOW() - INTERVAL 60 SECOND WHERE id = ?', [$offerId]);
-        Previews::add($orderId, self::A, $this->upload(), 'v4', null);
+        Workspace::notifyClient(Previews::add($orderId, self::A, $this->upload(), 'v4', null)['notice']);
         $this->assertCount(2, Notify::$sent);
     }
 

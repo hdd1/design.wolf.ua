@@ -10,6 +10,7 @@ use Design\OrderStatus;
 use Design\Previews;
 use Design\Products;
 use Design\Sql;
+use Design\View;
 use PHPUnit\Framework\TestCase;
 
 /** Текст повідомлення в HTML: екранування і клікабельні http(s)-посилання (те саме робить chat.js через textContent) */
@@ -40,6 +41,30 @@ final class ChatTest extends TestCase
     public function test_quotes_not_part_of_link(): void
     {
         $this->assertSame('&quot;<a href="https://a.ua" target="_blank" rel="noopener nofollow ugc">https://a.ua</a>&quot;', Chat::html('"https://a.ua"'));
+    }
+
+    /**
+     * Системне повідомлення містить текст дизайнера (підпис макета) — посиланням він не стає: інакше рядок, що виглядає як
+     * системний, вів би на чужу адресу. Звичайні повідомлення — з посиланнями, як і були (chat.js робить те саме)
+     */
+    public function test_system_message_text_not_linkified(): void
+    {
+        $msg = static fn(int $id, bool $system, string $text): array => ['id' => $id, 'mine' => false, 'system' => $system,
+            'author' => $system ? '' : 'Тарас Г.', 'text' => $text, 'time' => date('Y-m-d') . ' 10:00', 'preview' => null, 'reply' => null];
+        $html = View::fetch('partials/chat', [
+            'offerId' => 1, 'title' => 'Петро', 'subtitle' => '', 'note' => null, 'csrf' => 'x', 'write' => false, 'footer' => null,
+            'messages' => [
+                $msg(1, true, 'Завантажено макет «https://evil.example/pay <b>»» · 2 МБ'),
+                $msg(2, false, 'Гляньте https://a.ua/x'),
+            ],
+        ]);
+        $this->assertStringContainsString('<div class="chat-sys">Завантажено макет «https://evil.example/pay &lt;b&gt;»» · 2 МБ</div>', $html);
+        $this->assertStringNotContainsString('href="https://evil.example', $html);
+        $this->assertStringContainsString('<a href="https://a.ua/x" target="_blank" rel="noopener nofollow ugc">', $html);
+        // chat.js: системні — лише textContent, без richText
+        $js = (string)file_get_contents(dirname(__DIR__, 2) . '/assets/js/chat.js');
+        $this->assertStringContainsString("item = el('div', 'chat-sys', m.text);", $js);
+        $this->assertStringNotContainsString("richText(el('div', 'chat-sys')", $js);
     }
 
     private const CLIENT = 999999811;

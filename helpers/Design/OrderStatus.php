@@ -32,6 +32,8 @@ final class OrderStatus
 
     /**
      * «Чий хід» для клієнта: mine — чекаємо дії клієнта.
+     * «В роботі» з макетами — до етапу 5 («Купую» неактивна, «Незабаром») не «ваш хід»: лише перегляд списку
+     * (рішення після фінального рев'ю етапу 4; власник може змінити)
      * @return array{mine:bool, text:string}
      */
     public static function turn(int $status, int $offers = 0, int $layouts = 0): array
@@ -43,7 +45,7 @@ final class OrderStatus
                 : ['mine' => false, 'text' => 'Чекаємо пропозицій від дизайнерів'],
             self::WAITING_DESIGNER => ['mine' => false, 'text' => 'Чекаємо відповіді дизайнера'],
             self::IN_WORK => $layouts > 0
-                ? ['mine' => true, 'text' => 'Ваш хід: перевірте макети і натисніть «Купую»']
+                ? ['mine' => false, 'text' => 'Макети завантажено — перегляньте список. Купівля — незабаром']
                 : ['mine' => false, 'text' => 'Дизайнер працює над макетами'],
             self::AWAITING_INVOICE => ['mine' => false, 'text' => 'Чекаємо оплату рахунку — макети відкриються після неї'],
             self::PURCHASED => ['mine' => false, 'text' => 'Готово · макети у вашій хмарі wolf.ua'],

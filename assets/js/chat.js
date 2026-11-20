@@ -238,7 +238,8 @@
     function build(m) {
       var item;
       if (m.system) {
-        item = richText(el('div', 'chat-sys'), m.text);
+        // Системне містить текст дизайнера (підпис макета) — без посилань, лише текст (як chat.php)
+        item = el('div', 'chat-sys', m.text);
       } else if (m.preview) {
         item = previewItem(m);
       } else {

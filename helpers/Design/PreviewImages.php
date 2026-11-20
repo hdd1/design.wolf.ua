@@ -23,6 +23,11 @@ final class PreviewImages
     private static int $gsTimeout = 40;
     /** Скільки stderr gs тримати для журналу */
     private const GS_ERR_BYTES = 4096;
+    /**
+     * Скільки stdout gs тримати (рядки PAGE підрахунку сторінок); більше — підрахунок не довіряємо (див. pdfPages).
+     * static — тест ставить менше
+     */
+    private static int $gsOutMax = 65536;
     /** Шлях до файлу, який віддаємо gs/Imagick: лише безпечні символи (жодних «[», «:», пробілів, лапок) */
     private const SAFE_PATH = '~^/[A-Za-z0-9._/-]+$~D';
     /** Тимчасова основа імен файлів (рендер до появи id) */
@@ -292,7 +297,13 @@ final class PreviewImages
             '-dFirstPage=1', "-dLastPage=$limit", '-c', $hook, '-f', $src,
         ];
         $out = '';
-        if (self::run($args, $deadline, null, $out) !== 0) return [];
+        if (self::run($args, $deadline, null, $out, $overflow) !== 0) return [];
+        // Вивід не вмістився (скарги PDF-інтерпретатора витіснили б рядки PAGE): сторінок було б менше, ніж є, і прев'ю
+        // мовчки вийшло б без останніх — краще відмова «пошкоджений»
+        if ($overflow) {
+            error_log('Design\\PreviewImages: вивід gs при підрахунку сторінок понад ' . self::$gsOutMax . ' байт — відмова');
+            throw new DesignerException(Images::ERR_BROKEN);
+        }
         // Скарги PDF-інтерпретатора («**** Error…») gs теж пише в stdout — беремо лише рядки з міткою
         preg_match_all('/^PAGE ([\d.]+) ([\d.]+) *$/m', $out, $m, PREG_SET_ORDER);
         $sizes = [];
@@ -358,12 +369,12 @@ final class PreviewImages
     }
 
     /**
-     * Запуск gs без оболонки (масив аргументів), stdin — /dev/null, stdout — у $out (не більше 64 КБ),
-     * stderr — у журнал лише при збої. $tick викликається між читаннями (≈ кожні 50 мс).
+     * Запуск gs без оболонки (масив аргументів), stdin — /dev/null, stdout — у $out (не більше $gsOutMax; що не вмістилось —
+     * відкидається, і тоді $overflow = true), stderr — у журнал лише при збої. $tick викликається між читаннями (≈ кожні 50 мс).
      * @return int код завершення
      * @throws DesignerException ERR_PDF_SLOW, якщо процес не завершився до $deadline (його вбито)
      */
-    private static function run(array $args, float $deadline, ?callable $tick, ?string &$out = null): int
+    private static function run(array $args, float $deadline, ?callable $tick, ?string &$out = null, ?bool &$overflow = null): int
     {
         if (!function_exists('proc_open')) throw new \RuntimeException('proc_open вимкнено — PDF-прев\'ю неможливі');
         if (is_file(self::TIMEOUT_BIN) && is_executable(self::TIMEOUT_BIN)) {
@@ -376,6 +387,7 @@ final class PreviewImages
         if (!is_resource($proc)) throw new \RuntimeException('Не вдалося запустити ' . $args[0]);
         self::$proc = $proc;
         $out = '';
+        $overflow = false;
         $err = '';
         try {
             foreach ($pipes as $p) stream_set_blocking($p, false);
@@ -399,7 +411,11 @@ final class PreviewImages
                             unset($open[$k]);
                             continue;
                         }
-                        if ($k === 1 && strlen($out) < 65536) $out .= $chunk;
+                        if ($k === 1) {
+                            $room = self::$gsOutMax - strlen($out);
+                            if (strlen($chunk) > $room) $overflow = true;
+                            if ($room > 0) $out .= substr($chunk, 0, $room);
+                        }
                         if ($k === 2 && strlen($err) < self::GS_ERR_BYTES) $err .= $chunk;
                     }
                 }

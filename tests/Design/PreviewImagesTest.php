@@ -394,6 +394,25 @@ final class PreviewImagesTest extends TestCase
         }
     }
 
+    /**
+     * Вивід gs при підрахунку сторінок не вмістився в межу (скарги битого PDF витіснили б рядки PAGE) — відмова «пошкоджений»,
+     * а не прев'ю без останніх сторінок. Межу тест ставить такою, що вміщує лише перший рядок PAGE із трьох
+     */
+    public function test_page_count_output_overflow_rejected(): void
+    {
+        $max = new ReflectionProperty(PreviewImages::class, 'gsOutMax');
+        $max->setAccessible(true);
+        $saved = $max->getValue();
+        $src = $this->minipdf('three.pdf', 3);
+        try {
+            $max->setValue(null, 20);
+            $this->assertRejected(Images::ERR_BROKEN, fn() => PreviewImages::make($src, $this->dir, 1));
+        } finally {
+            $max->setValue(null, $saved);
+        }
+        $this->assertSame(3, PreviewImages::make($src, $this->dir, 2)['pages'], 'зі звичайною межею — усі 3 сторінки');
+    }
+
     public function test_rejects_fake_pdf(): void
     {
         $src = "$this->tmp/fake.pdf";

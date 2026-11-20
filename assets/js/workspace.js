@@ -122,6 +122,8 @@
     var list = panel.querySelector('[data-lp-list]');
     var errorBox = panel.querySelector('[data-lp-error]');
     var loading = false, again = false, renaming = null;
+    // id макетів, заміна яких ще завантажується: у їхніх пунктах «Замінити», «Видалити» й олівець вимкнено
+    var replacing = {};
 
     function error(msg) {
       if (!errorBox) { if (msg) window.alert(msg); return; }
@@ -156,12 +158,27 @@
         var del = iconButton('icon-btn del', 'fa-trash-alt', 'Видалити');
         del.dataset.lpDelete = '';
         li.appendChild(del);
+        if (replacing[l.id]) lockItem(li, true);
       } else {
         var lock = icon('fa-lock-alt lp-locked');
         lock.setAttribute('aria-hidden', 'true');
         li.appendChild(lock);
       }
       return li;
+    }
+
+    // Пункт макета, який зараз замінюється: кнопки вимкнено, щоб друга заміна / видалення не зустрілись із першою
+    function lockItem(li, on) {
+      li.classList.toggle('is-replacing', on);
+      li.querySelectorAll('button').forEach(function (b) { b.disabled = on; });
+    }
+
+    function setReplacing(id, on) {
+      if (on) replacing[id] = (replacing[id] || 0) + 1;
+      else if (replacing[id] > 1) replacing[id]--;
+      else delete replacing[id];
+      var li = list.querySelector('.lp-item[data-lp-id="' + id + '"]');
+      if (li && !li.classList.contains('is-busy')) lockItem(li, !!replacing[id]);
     }
 
     // data — {layouts, count, rev, turn} (Workspace::layouts + turn)
@@ -204,7 +221,7 @@
           return;
         }
         li.classList.remove('is-busy');
-        li.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+        lockItem(li, !!replacing[li.dataset.lpId]);
         error(failText(status, json, 'Не вдалося змінити макет — спробуйте ще раз'));
         if (status === 422) refresh();   // макет уже замінено чи видалено в іншій вкладці
       });
@@ -249,7 +266,7 @@
 
     list.addEventListener('click', function (e) {
       var li = e.target.closest('.lp-item');
-      if (!li || !edit) return;
+      if (!li || !edit || replacing[li.dataset.lpId]) return;
       if (e.target.closest('[data-lp-rename]')) startRename(li);
       else if (e.target.closest('[data-lp-replace]')) {
         replaceId = li.dataset.lpId;
@@ -313,7 +330,10 @@
       cancel.addEventListener('click', function () {
         if (row.controller) { row.controller.abort(); return; }   // reject AbortError → рядок прибирається
         var i = queue.indexOf(row);
-        if (i >= 0) queue.splice(i, 1);
+        if (i >= 0) {
+          queue.splice(i, 1);
+          if (row.fileId) setReplacing(row.fileId, false);
+        }
         li.remove();
       });
       return row;
@@ -324,7 +344,10 @@
         var row = uploadRow(f, fileId, label);
         if (f.size <= 0) row.fail('Файл порожній');
         else if (max && f.size > max) row.fail('Файл більший за ' + panel.dataset.maxText + ' — це максимум для одного макета');
-        else queue.push(row);
+        else {
+          if (fileId) setReplacing(fileId, true);   // до кінця завантаження заміни (успіх, помилка, «Скасувати»)
+          queue.push(row);
+        }
       });
       pump();
     }
@@ -357,6 +380,7 @@
         row.controller = null;
         row.done = true;
         running--;
+        if (row.fileId) setReplacing(row.fileId, false);
         pump();
       });
     }

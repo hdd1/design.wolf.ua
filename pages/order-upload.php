@@ -7,8 +7,11 @@
  * Ліміти — на першій частині за заявленим розміром (макети — Layouts::precheck; прев'ю — ліміт receive).
  * Відповідь: проміжна частина — {done:false}; остання — {done:true, preview, message?} / {done:true, layout};
  * помилка — 4xx/5xx {error}. Остаточна відповідь (і помилка обробки) запамʼятовується разом із кодом HTTP: повтор останньої
- * частини отримує ту саму відповідь з тим самим кодом. Файл уже збережено — завжди {done:true}: збій побудови частини
- * відповіді (повідомлення стрічки, рядок макета) лише в журнал, браузер добере стрічку опитуванням
+ * частини отримує ту саму відповідь з тим самим кодом. Помилка обробки — {error, final:true}: файл уже спожито, повтор
+ * частини нічого не змінить (chunk-upload.js її не повторює). Файл уже збережено — завжди {done:true}: збій побудови частини
+ * відповіді (повідомлення стрічки, рядок макета) лише в журнал, браузер добере стрічку опитуванням.
+ * Порядок наприкінці: remember (і зняти блокування) → відповідь браузеру й закрити запит → лише тоді сповіщення клієнту
+ * (api2 без тайм-ауту: якщо «зависне», повтор частини вже отримає запамʼятовану відповідь, а не 503 і дубль)
  * @var array $params
  */
 use Design\Chat;
@@ -20,6 +23,7 @@ use Design\Layouts;
 use Design\Offers;
 use Design\Previews;
 use Design\Settings;
+use Design\Workspace;
 
 $busyText = ChunkUpload::ERR_BUSY;
 
@@ -77,11 +81,13 @@ try {
 
 // Остання частина: файл склеєно ($part['path'] у tmp_uppy) — обробка споживає його в будь-якому разі
 $code = 200;
+$notice = null;
 try {
     if ($purpose === 'preview') {
         $basedOn = $optionalId('based_on', "Версію, на основі якої зроблено прев'ю, не знайдено");
         $added = Previews::add($orderId, $me, $part['path'], Http::str($_POST, 'caption'), $basedOn);
         // Прев'ю вже створено: далі ніщо не перетворює відповідь на помилку
+        $notice = $added['notice'];
         $response = ['done' => true, 'preview' => ['id' => $added['id'], 'num' => $added['num']]];
         try {
             $response['preview'] = Previews::byIds($orderId, [$added['id']])[$added['id']] ?? $response['preview'];
@@ -100,7 +106,8 @@ try {
             ? Layouts::add($orderId, $me, $part['path'], $part['name'])
             : Layouts::replace($replaceId, $me, $part['path'], $part['name']);
         // Макет уже збережено: далі ніщо не перетворює відповідь на помилку
-        $response = ['done' => true, 'layout' => $saved];
+        $notice = $saved['notice'];
+        $response = ['done' => true, 'layout' => ['id' => $saved['id'], 'label' => $saved['label'], 'size' => $saved['size']]];
         try {
             foreach (Layouts::forOrder($orderId) as $l) if ($l['id'] === $saved['id']) $response['layout'] = $l;
         } catch (\Throwable $e) {
@@ -109,19 +116,21 @@ try {
     }
 } catch (DesignerException $e) {
     $code = 422;
-    $response = ['error' => $e->getMessage()];
+    $response = ['error' => $e->getMessage(), 'final' => true];
 } catch (\Throwable $e) {
     error_log("design: обробка завантаження ($purpose) замовлення $orderId від $me: " . $e);
     $code = $lockTimeout($e) ? 503 : 500;
-    $response = ['error' => $lockTimeout($e) ? $busyText : 'Не вдалося обробити файл — завантажте його ще раз'];
+    $response = ['error' => $lockTimeout($e) ? $busyText : 'Не вдалося обробити файл — завантажте його ще раз', 'final' => true];
 } finally {
     if (is_file($part['path'])) @unlink($part['path']);
 }
 
-// Повтор останньої частини отримає цю ж відповідь; збій запису — лише в журнал (результат уже є)
+// Повтор останньої частини отримає цю ж відповідь; збій запису — лише в журнал (результат уже є). remember знімає блокування
 try {
     ChunkUpload::remember($key, ['status' => $code, 'body' => $response]);
 } catch (\Throwable $e) {
     error_log("design: не запамʼятати відповідь завантаження $key: " . $e);
 }
-Http::json($response, $code);
+// Сповіщення — після відповіді браузеру: блокування вже знято, відповідь запамʼятовано
+Http::respond($response, $code, $notice === null ? null : static fn() => Workspace::notifyClient($notice));
+exit;

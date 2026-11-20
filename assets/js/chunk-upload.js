@@ -6,6 +6,7 @@
 //   onProgress — function(sentBytes, totalBytes)
 //   signal     — AbortSignal (AbortController) для скасування
 // Частини — послідовно; частина повторюється до 3 разів при збої мережі, тайм-ауті або 5xx (пауза 1, 2, 4 с); на 4xx — зупинка.
+// Відповідь з final: true (помилка обробки вже склеєного файлу; повтор отримав би ту саму запамʼятовану) не повторюється.
 // Тайм-аут частини — DesignUpload.timeouts: 120 с, останньої — 300 с (на ній сервер склеює й обробляє файл).
 // Повтор останньої частини безпечний: сервер повертає запамʼятовану відповідь (ChunkUpload::recall), а не обробляє вдруге.
 // Помилка → reject(Error): message — текст для людини (error із JSON сервера або загальний), .status, .json;
@@ -104,7 +105,7 @@
       fd.append('file', blob, 'blob');
       var timeout = index === total - 1 ? timeouts.last : timeouts.part;
       return postOnce(opts.url, fd, timeout, signal, function (share) { progress(share * blob.size); }).then(function (r) {
-        if ((r.status === 0 || r.status >= 500) && attempt < RETRIES) {
+        if ((r.status === 0 || r.status >= 500) && attempt < RETRIES && !(r.json && r.json.final)) {
           progress(0);
           return pause(BACKOFF_MS * Math.pow(2, attempt), signal).then(function () { return part(attempt + 1); });
         }

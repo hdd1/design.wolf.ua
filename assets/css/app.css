@@ -769,7 +769,7 @@ body.pvv-open{overflow:hidden}
 .lp-bar{flex:1;height:6px;border-radius:3px;background:var(--bg);overflow:hidden}
 .lp-bar span{display:block;height:100%;width:0;background:var(--orange);transition:width .2s}
 .lp-pct{font-size:.78rem;font-weight:700;color:var(--text-2);min-width:2.8em;text-align:right}
-.lp-item.is-busy{opacity:.55}
+.lp-item.is-busy,.lp-item.is-replacing{opacity:.55}
 .lp-item.is-error{border-color:var(--red);background:var(--red-soft)}
 .lp-item.is-error .lp-ext{background:#fff}
 .lp-err{color:var(--red);font-weight:600;font-size:.85rem;margin-top:.2rem}

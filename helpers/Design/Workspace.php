@@ -23,6 +23,34 @@ final class Workspace
     }
 
     /**
+     * Що сповістити клієнту після дії обраного дизайнера (прев'ю, макет): Previews::add і Layouts::add / replace / remove
+     * самі не сповіщають, а повертають це — сповіщення через api2 (спільний CalcApiGlobal без тайм-ауту) може «висіти»,
+     * тож сторінка шле його вже після відповіді браузеру (Http::respond → notifyClient)
+     * @param array $offer обрана пропозиція (Offers::get)
+     * @return array{offer_id:int, customer_id:int, designer_id:int, order_id:int}
+     */
+    public static function notice(array $offer, int $designerId): array
+    {
+        return ['offer_id' => $offer['id'], 'customer_id' => $offer['customer_id'], 'designer_id' => $designerId,
+            'order_id' => $offer['order_id']];
+    }
+
+    /**
+     * Сповістити клієнта за notice() — правило «перше непрочитане» (Messages::notifyNew). Викликати після коммиту дії;
+     * збій — лише в журнал: дію вже виконано
+     * @param array{offer_id:int, customer_id:int, designer_id:int, order_id:int} $notice
+     */
+    public static function notifyClient(array $notice): void
+    {
+        try {
+            Messages::notifyNew($notice['offer_id'], Messages::ROLE_CLIENT, $notice['customer_id'],
+                Designers::get($notice['designer_id'])['name'] ?? 'дизайнера', $notice['order_id']);
+        } catch (\Throwable $e) {
+            error_log("design: сповіщення клієнту замовлення {$notice['order_id']}: " . $e);
+        }
+    }
+
+    /**
      * Плашка «чий хід» над стрічкою для сторони role (Messages::ROLE_CLIENT / ROLE_DESIGNER) обраної пропозиції offer (Offers::get).
      * Клієнт — OrderStatus::turn з фактичною кількістю макетів; дизайнер — OrderStatus::designerTurn
      * @return array{mine:bool, text:string, sub:string, icon:string}
@@ -43,7 +71,8 @@ final class Workspace
                 ? 'Дизайнер завантажив ' . View::plural($layouts, 'макет', 'макети', 'макетів') . '. Файли відкриються після покупки'
                 : ($offer['deadline'] ? 'Термін — до ' . View::date($offer['deadline']) . '. ' : '') . 'Пишіть у чат, якщо щось змінилось';
         }
-        return $t + ['sub' => $sub, 'icon' => $t['mine'] ? 'fa-file-check' : 'fa-pencil-ruler'];
+        $done = $t['mine'] || ($offer['order_status'] === OrderStatus::IN_WORK && $layouts > 0);
+        return $t + ['sub' => $sub, 'icon' => $done ? 'fa-file-check' : 'fa-pencil-ruler'];
     }
 
     /**

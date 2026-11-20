@@ -3,7 +3,8 @@
  * Дія з макетом: POST /orders/{id}/layouts/{fileId} — action=rename (label, 1–120 символів) | delete, csrf.
  * Лише обраний дизайнер замовлення в роботі (Previews::canWork); макет — активний макет цього замовлення.
  * Відповідь — панель після дії: {layouts, count, rev, turn} (як GET /orders/{id}/layouts); помилка — {error}:
- * 403 немає доступу / застаріла сесія, 422 невірні дані або макет уже замінено / видалено, 503 замовлення зайняте, 500
+ * 403 немає доступу / застаріла сесія, 422 невірні дані або макет уже замінено / видалено, 503 замовлення зайняте, 500.
+ * Сповіщення клієнту про видалення — після відповіді браузеру (Http::respond: api2 без тайм-ауту)
  * @var array $params
  */
 use Design\DesignerException;
@@ -18,6 +19,7 @@ $me = Guard::customer();
 $orderId = (int)$params['id'];
 $fileId = (int)$params['file'];
 $gone = 'Макет не знайдено: його вже замінено або видалено';
+$notice = null;
 
 try {
     $offer = Previews::canWork($orderId, $me);
@@ -25,7 +27,7 @@ try {
     if (!Guard::csrfOk($me)) Http::json(['error' => Guard::STALE_AJAX], 403);
     // Layouts::rename/remove беруть замовлення з рядка макета — тож макет має бути саме цього замовлення
     if (!in_array($fileId, array_column(Layouts::forOrder($orderId), 'id'), true)) throw new DesignerException($gone);
-    match (Http::str($_POST, 'action')) {
+    $notice = match (Http::str($_POST, 'action')) {
         'rename' => Layouts::rename($fileId, $me, Http::str($_POST, 'label')),
         'delete' => Layouts::remove($fileId, $me),
         default => throw new DesignerException('Невідома дія'),
@@ -41,8 +43,10 @@ try {
 
 // Дію виконано: збій побудови панелі — не помилка дії (браузер перечитає панель опитуванням)
 try {
-    Http::json(Workspace::layouts($orderId) + ['turn' => Workspace::turn($offer, Messages::ROLE_DESIGNER)]);
+    $response = Workspace::layouts($orderId) + ['turn' => Workspace::turn($offer, Messages::ROLE_DESIGNER)];
 } catch (\Throwable $e) {
     error_log("design: панель макетів замовлення $orderId після дії: " . $e);
-    Http::json(['done' => true]);
+    $response = ['done' => true];
 }
+Http::respond($response, 200, $notice === null ? null : static fn() => Workspace::notifyClient($notice));
+exit;

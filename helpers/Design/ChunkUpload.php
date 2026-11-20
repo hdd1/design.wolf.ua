@@ -58,13 +58,14 @@ final class ChunkUpload
         $meta = is_array($post['meta'] ?? null) ? $post['meta'] : [];
         $fileId = $meta['fileId'] ?? null;
         $index = self::int($meta['chunkIndex'] ?? null);
-        // Межа кількості частин — від найменшої частини, яку може надіслати браузер цього сервера
+        // Межа кількості частин — від заявленого розміру (не більше ліміту) і найменшої частини, яку може надіслати браузер
+        // цього сервера: заявлені 10 МБ не розкласти на тисячі частин, що заповнили б tmp_uppy до відмови на склеюванні
         $basis = min(self::partSize(), self::MIN_CHUNK);
         $total = self::int($meta['totalChunks'] ?? null);
         $size = self::int($meta['totalSize'] ?? null);
         if (!is_string($fileId) || !preg_match('/^[A-Za-z0-9_-]{8,64}$/D', $fileId)
             || $index === null || $total === null || $size === null
-            || $total < 1 || $total > intdiv($maxBytes + $basis - 1, $basis) + 1 || $index >= $total) {
+            || $total < 1 || $total > intdiv(min($size, $maxBytes) + $basis - 1, $basis) + 1 || $index >= $total) {
             throw new DesignerException(self::ERR_META);
         }
         if ($size < 1) throw new DesignerException('Файл порожній');

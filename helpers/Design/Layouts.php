@@ -6,8 +6,9 @@ namespace Design;
  * Макети замовлення (design_files): файли для друку, які обраний дизайнер вантажить у замовлення «В роботі».
  * Лежать у Paths::layouts({orderId})/{id}.{ext} (папка 0700, файл 0600) — лише на локальному диску, назовні не віддаються.
  * Статус: 1 завантажено, 2 замінено, 3 видалено. Ліміти (кількість і сума) — лише по status = 1.
- * Кожна дія з макетом (крім перейменування) — системне повідомлення в листуванні обраної пропозиції (data.event, data.file_id)
- * і сповіщення клієнту. Замок у транзакціях — рядок замовлення (як у Previews); md5 і перевірки файла — до транзакції,
+ * Кожна дія з макетом (крім перейменування) — системне повідомлення в листуванні обраної пропозиції (data.event, data.file_id);
+ * сповіщення клієнту методи не шлють, а повертають notice (Workspace::notifyClient — сторінка шле його після відповіді).
+ * Замок у транзакціях — рядок замовлення (як у Previews); md5 і перевірки файла — до транзакції,
  * у ній лише рядки БД і rename (той самий диск, що й тимчасова папка завантаження, — миттєвий)
  */
 final class Layouts
@@ -33,7 +34,7 @@ final class Layouts
     /**
      * Новий макет із файлу $tmp (склеєне завантаження), підпис — ім'я файла без розширення (до 120 символів).
      * $tmp споживається в будь-якому разі: переноситься в папку макетів або (помилка) видаляється
-     * @return array{id:int, label:string, size:int}
+     * @return array{id:int, label:string, size:int, notice:array} notice — що сповістити клієнту (Workspace::notifyClient)
      * @throws DesignerException доступ, ліміти, файл (текст для користувача)
      */
     public static function add(int $orderId, int $designerId, string $tmp, string $originalName): array
@@ -43,7 +44,7 @@ final class Layouts
 
     /**
      * Замінює активний макет файлом $tmp: старий → status 2 (файл видаляється після коммиту), новий — з тим самим підписом.
-     * @return array{id:int, label:string, size:int} новий макет
+     * @return array{id:int, label:string, size:int, notice:array} новий макет; notice — як в add
      * @throws DesignerException
      */
     public static function replace(int $fileId, int $designerId, string $tmp, string $originalName): array
@@ -58,9 +59,10 @@ final class Layouts
 
     /**
      * Видаляє активний макет: status 3, файл видаляється з диска після коммиту
+     * @return array notice — що сповістити клієнту (Workspace::notifyClient)
      * @throws DesignerException
      */
-    public static function remove(int $fileId, int $designerId): void
+    public static function remove(int $fileId, int $designerId): array
     {
         $offer = null;
         $row = self::locked($fileId, $designerId, function (array $row, array $o) use (&$offer): void {
@@ -69,7 +71,7 @@ final class Layouts
             Messages::system($o['id'], 'Макет «' . $row['label'] . '» видалено', ['event' => 'layout_delete', 'file_id' => (int)$row['id']]);
         });
         self::deleteFile((int)$row['order_id'], (string)$row['file']);
-        self::notify($offer, $designerId);
+        return Workspace::notice($offer, $designerId);
     }
 
     /**
@@ -145,8 +147,8 @@ final class Layouts
      * 1) Без замка: доступ, розмір, папка (0700), 0600 для $tmp, md5 — усе повільне до транзакції.
      * 2) Коротка транзакція з замком рядка замовлення: повторний доступ, (replace) старий → status 2, ліміти, рядок, системне
      *    повідомлення, rename $tmp → {id}.{ext}, коммит. Помилка — відкат, готовий файл видаляється.
-     * 3) Після коммиту: видалення файла старого макета, сповіщення клієнту.
-     * @return array{id:int, label:string, size:int}
+     * 3) Після коммиту: видалення файла старого макета. Сповіщення клієнту — notice у відповіді (шле сторінка).
+     * @return array{id:int, label:string, size:int, notice:array}
      */
     private static function store(int $orderId, int $designerId, string $tmp, string $originalName, ?int $replaceId): array
     {
@@ -209,8 +211,7 @@ final class Layouts
         }
 
         if ($old !== null) self::deleteFile($orderId, (string)$old['file']);
-        self::notify($offer, $designerId);
-        return ['id' => $id, 'label' => $label, 'size' => $size];
+        return ['id' => $id, 'label' => $label, 'size' => $size, 'notice' => Workspace::notice($offer, $designerId)];
     }
 
     /**
@@ -287,17 +288,6 @@ final class Layouts
         $path = Paths::root() . '/layouts/' . $orderId . '/' . basename($file);
         if ($file !== '' && is_file($path) && !@unlink($path)) {
             error_log("design: не вдалося видалити файл макета $path");
-        }
-    }
-
-    /** Сповіщення клієнту після коммиту: його збій не скасовує дію з макетом */
-    private static function notify(array $offer, int $designerId): void
-    {
-        try {
-            Messages::notifyNew($offer['id'], Messages::ROLE_CLIENT, $offer['customer_id'],
-                Designers::get($designerId)['name'] ?? 'дизайнера', $offer['order_id']);
-        } catch (\Throwable $e) {
-            error_log("design: сповіщення про макет замовлення {$offer['order_id']}: " . $e);
         }
     }
 

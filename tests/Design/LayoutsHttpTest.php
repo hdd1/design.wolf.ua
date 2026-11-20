@@ -347,10 +347,10 @@ final class LayoutsHttpTest extends TestCase
         $this->assertSame([$a['id'], $b['id']], array_column($panel['layouts'], 'id'));
         $this->assertSame(['id', 'label', 'original_name', 'size', 'size_text', 'ext'], array_keys($panel['layouts'][0]));
         $this->assertSame('293 КБ', str_replace("\u{00A0}", ' ', $panel['layouts'][1]['size_text']));
-        $this->assertSame('Ваш хід: перевірте макети і натисніть «Купую»', $panel['turn']['text']);
+        $this->assertSame('Макети завантажено — перегляньте список. Купівля — незабаром', $panel['turn']['text']);
         [, $poll] = self::getJson("/offers/$offerId/messages?after=0", $client);
         $this->assertSame($panel['rev'], $poll['workspace']['layouts_rev']);
-        $this->assertSame('Ваш хід: перевірте макети і натисніть «Купую»', $poll['workspace']['turn']['text']);
+        $this->assertSame('Макети завантажено — перегляньте список. Купівля — незабаром', $poll['workspace']['turn']['text']);
         $this->assertSame('Дизайнер завантажив 2 макети. Файли відкриються після покупки', $poll['workspace']['turn']['sub']);
         [$code, $d] = self::getJson("/orders/$orderId/layouts", $designer);
         $this->assertSame(200, $code);
@@ -566,7 +566,7 @@ final class LayoutsHttpTest extends TestCase
         self::send($offerId, $designer, 'Дякую, вантажу');
         $this->layout($orderId, $offerId, $designer, 'Візитка.pdf', 1000);
         $this->assertSame('Макети завантажено · чекаємо, поки клієнт натисне «Купую»', $designerTurn());
-        $this->assertSame('Ваш хід: перевірте макети і натисніть «Купую»', $clientTurn());
+        $this->assertSame('Макети завантажено — перегляньте список. Купівля — незабаром', $clientTurn());
 
         // Приховане прев'ю доходить до клієнта опитуванням; без видимих прев'ю — знову «покажіть перше прев'ю»
         [, $poll] = self::getJson("/offers/$offerId/messages?after=0", $client);

@@ -266,7 +266,7 @@ final class CancelComplaintTest extends TestCase
         $this->assertSame(OfferStatus::WITHDRAWN, (int)Sql::value('SELECT status FROM design_offers WHERE id = ?', [$withdrawn]));
 
         // «Скасовано: {причина}» — «чий хід» і рядки Orders
-        $this->assertSame(['mine' => false, 'text' => 'Скасовано: Передумав'], OrderStatus::turn(OrderStatus::CANCELLED, 0, 0, false, 'Передумав'));
+        $this->assertSame('Скасовано: Передумав', OrderStatus::cancelled('Передумав'));
         $this->assertSame('Передумав', Orders::get($id, $this->client)['cancel_reason']);
         $row = array_values(array_filter(Orders::forCustomer($this->client), static fn($o) => $o['id'] === $id))[0];
         $this->assertSame('Передумав', $row['cancel_reason']);
@@ -462,6 +462,65 @@ final class CancelComplaintTest extends TestCase
         $this->assertRefused(fn() => Orders::updateDraft($id, $this->client, ['нове'], 'Нова'), '', BriefException::class);
         $this->assertRefused(fn() => Orders::publish($id, $this->client), '', BriefException::class);
         $this->assertSame(OrderStatus::CANCELLED, (int)$this->row($id)['status']);
+    }
+
+    /** Повідомлення пишеться під спільним замком рядка замовлення: скасування в процесі — чекає; після — відмова */
+    public function test_message_refused_after_cancel_under_order_lock(): void
+    {
+        [$orderId, $offerId] = $this->chosen();
+        $before = \Design\Messages::add($offerId, $this->client, \Design\Messages::ROLE_CLIENT, 'Привіт');
+        $this->assertGreaterThan(0, $before);
+
+        // Скасування в іншому з'єднанні тримає FOR UPDATE замовлення: запис повідомлення мусить чекати (тут — тайм-аут 1 с)
+        $other = new \PDO(
+            'mysql:host=' . \CdnConfig::get('db_host') . ';port=' . \CdnConfig::get('db_port') . ';dbname=w2p;charset=utf8mb4',
+            \CdnConfig::get('db_username'), \CdnConfig::get('db_password'), [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+        $other->beginTransaction();
+        $other->query("SELECT id FROM design_orders WHERE id = $orderId FOR UPDATE");
+        $timeout = (int)Sql::value('SELECT @@SESSION.innodb_lock_wait_timeout');
+        Sql::exec('SET SESSION innodb_lock_wait_timeout = 1');
+        try {
+            \Design\Messages::add($offerId, $this->designer, \Design\Messages::ROLE_DESIGNER, 'Встиг?');
+            $this->fail('запис повідомлення мав чекати замок замовлення');
+        } catch (\PDOException $e) {
+            $this->assertStringContainsString('Lock wait timeout', $e->getMessage());
+            $this->assertFalse(Sql::pdo()->inTransaction(), 'власну транзакцію відкочено');
+        } finally {
+            Sql::exec('SET SESSION innodb_lock_wait_timeout = ' . $timeout);
+        }
+        $other->exec("UPDATE design_orders SET status = 8, cancel_reason = 'Довго', cancelled_at = NOW() WHERE id = $orderId");
+        $other->commit();
+
+        foreach ([[$this->client, \Design\Messages::ROLE_CLIENT], [$this->designer, \Design\Messages::ROLE_DESIGNER]] as [$who, $role]) {
+            $this->assertRefused(fn() => \Design\Messages::add($offerId, $who, $role, 'Після скасування'), 'Замовлення скасовано — листування закрите');
+        }
+        $this->assertSame(1, (int)Sql::value('SELECT COUNT(*) FROM design_messages WHERE offer_id = ?', [$offerId]));
+
+        // Усередині чужої транзакції власної не відкриває
+        [, $offer2] = $this->chosen();
+        Sql::pdo()->beginTransaction();
+        \Design\Messages::add($offer2, $this->client, \Design\Messages::ROLE_CLIENT, 'У транзакції');
+        $this->assertTrue(Sql::pdo()->inTransaction());
+        Sql::pdo()->rollBack();
+        $this->assertSame(0, (int)Sql::value('SELECT COUNT(*) FROM design_messages WHERE offer_id = ?', [$offer2]));
+    }
+
+    /** Збій прибирання файлів після коммиту не ламає скасування: статус записано, лише журнал */
+    public function test_cleanup_failure_does_not_break_cancel(): void
+    {
+        [$orderId] = $this->chosen();
+        Orders::$afterCommit = static function (): void {
+            throw new \RuntimeException('диск недоступний');
+        };
+        $log = ini_set('error_log', $this->root . '/php.log');
+        try {
+            Orders::cancel($orderId, $this->client, 'Довго');
+        } finally {
+            Orders::$afterCommit = null;
+            ini_set('error_log', $log === false ? '' : $log);
+        }
+        $this->assertSame(OrderStatus::CANCELLED, (int)$this->row($orderId)['status']);
+        $this->assertStringContainsString("design: прибирання файлів скасованого замовлення $orderId", (string)@file_get_contents($this->root . '/php.log'));
     }
 
     // ---------- скарга ----------

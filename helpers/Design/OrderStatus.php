@@ -33,10 +33,11 @@ final class OrderStatus
     /**
      * «Чий хід» для клієнта: mine — чекаємо дії клієнта. «В роботі» з макетами — хід клієнта: «Купую» (етап 5).
      * «Доопрацювання» — як «В роботі» (layouts — нові, ще не куплені макети); «Куплено» з пропозицією доопрацювання без
-     * відповіді ($reworkPending, Rework::pending) — «Чекає вашої відповіді»; «Скасовано» — «Скасовано: {причина}» (cancelled())
+     * відповіді ($reworkPending, Rework::pending) — «Чекає вашої відповіді»; «Скасовано» — просто «Скасовано»: текст із причиною
+     * будують ті, хто її має (cancelled(): сторінка й список замовлень, Workspace::turn)
      * @return array{mine:bool, text:string}
      */
-    public static function turn(int $status, int $offers = 0, int $layouts = 0, bool $reworkPending = false, string $cancelReason = ''): array
+    public static function turn(int $status, int $offers = 0, int $layouts = 0, bool $reworkPending = false): array
     {
         return match ($status) {
             self::DRAFT => ['mine' => true, 'text' => 'Ваш хід: допишіть і опублікуйте бриф'],
@@ -54,7 +55,6 @@ final class OrderStatus
             self::REWORK => $layouts > 0
                 ? ['mine' => true, 'text' => 'Ваш хід: перевірте макети і натисніть «Купую»']
                 : ['mine' => false, 'text' => 'Дизайнер працює над змінами'],
-            self::CANCELLED => ['mine' => false, 'text' => self::cancelled($cancelReason)],
             default => ['mine' => false, 'text' => 'Скасовано'],
         };
     }

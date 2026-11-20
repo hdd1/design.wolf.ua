@@ -40,7 +40,7 @@ final class ReworkHttpTest extends TestCase
                 // Сповіщення йде після перенаправлення (fastcgi_finish_request) — чекаємо всі очікувані рядки (до 5 с), тоді прибираємо
                 $where = 'customer_id IN (?, ?) AND messenger_text LIKE ?';
                 foreach ($this->orders as $id) {
-                    $args = [self::clientId(), self::designerId(), '%доопрацювання №' . $id . '%'];
+                    $args = [self::clientId(), self::designerId(), 'Майстерня дизайну: %доопрацювання №' . $id . '%'];
                     for ($i = 0; $i < 50 && (int)Sql::value("SELECT COUNT(*) FROM n_smser WHERE $where", $args) < ($this->expected[$id] ?? 0); $i++) {
                         usleep(100000);
                     }

@@ -71,15 +71,21 @@ final class CancelComplaintHttpTest extends TestCase
 
     // ---------- n_smser ----------
 
-    /** Рядки сповіщень цього замовлення: клієнт / дизайнер (customer_id), куратор і user 1 (user_id) — «№N » або «№N.» */
+    /**
+     * Рядки сповіщень цього замовлення: клієнт / дизайнер (customer_id), куратор і user 1 (user_id), лише Майстерні дизайну
+     * (таблиця спільна з wolf.ua) і з точним початком тексту: дизайнеру про скасування, куратору про скасування, скарга
+     */
     private static function smsWhere(): string
     {
-        return '(customer_id IN (?, ?) OR user_id IN (?, 1)) AND (messenger_text LIKE ? OR messenger_text LIKE ?)';
+        return '(customer_id IN (?, ?) OR user_id IN (?, 1)) AND (messenger_text LIKE ? OR messenger_text LIKE ? OR messenger_text LIKE ?)';
     }
 
     private static function smsArgs(int $orderId): array
     {
-        return [self::clientId(), self::designerId(), self::curator(), "%№$orderId %", "%№$orderId.%"];
+        return [self::clientId(), self::designerId(), self::curator(),
+            "Майстерня дизайну: замовлення №$orderId скасовано клієнтом. %",
+            "Майстерня дизайну: клієнт % скасував замовлення №$orderId. Причина: %",
+            "Майстерня дизайну: скарга на замовлення №$orderId від клієнта %"];
     }
 
     private static function smsCount(int $orderId): int

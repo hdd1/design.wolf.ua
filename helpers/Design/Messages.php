@@ -19,7 +19,10 @@ final class Messages
     /**
      * Додає повідомлення. Права (чи може автор писати в цю пропозицію) не перевіряє.
      * data — машинна позначка (як у системних), напр. ['event' => 'decline'] для причини відмови від запрошення;
-     * replyTo — відповідь (коментар) на повідомлення чи прев'ю того самого листування
+     * replyTo — відповідь (коментар) на повідомлення чи прев'ю того самого листування.
+     * Скасоване замовлення — лише для читання: запис іде під спільним замком рядка замовлення (той самий порядок, що всюди:
+     * замовлення → пропозиція), тож повідомлення не проскочить одразу після Orders::cancel — «Замовлення скасовано — листування закрите».
+     * Викликається й усередині транзакції (Offers::decline) — тоді власної не відкриває
      */
     public static function add(int $offerId, int $authorId, int $role, string $text, array $data = [], ?int $replyTo = null): int
     {
@@ -33,14 +36,30 @@ final class Messages
         if ($replyTo !== null && Sql::value('SELECT id FROM design_messages WHERE id = ? AND offer_id = ?', [$replyTo, $offerId]) === null) {
             throw new DesignerException('Повідомлення, на яке ви відповідаєте, не знайдено');
         }
-        return Sql::insert('design_messages', [
+        $row = [
             'offer_id' => $offerId,
             'author_id' => $authorId,
             'author_role' => $role,
             'text' => $text,
             'reply_to_id' => $replyTo,
             'data' => $data === [] ? null : json_encode($data, JSON_UNESCAPED_UNICODE),
-        ]);
+        ];
+        $pdo = Sql::pdo();
+        $own = !$pdo->inTransaction();
+        if ($own) $pdo->beginTransaction();
+        try {
+            // Замок лише рядка замовлення: рядок пропозиції підзапит не блокує (locking read не поширюється на вкладений підзапит)
+            $status = Sql::value('SELECT status FROM design_orders WHERE id = (SELECT order_id FROM design_offers WHERE id = ?) FOR SHARE', [$offerId]);
+            if ($status !== null && (int)$status === OrderStatus::CANCELLED) {
+                throw new DesignerException('Замовлення скасовано — листування закрите');
+            }
+            $id = Sql::insert('design_messages', $row);
+            if ($own) $pdo->commit();
+            return $id;
+        } catch (\Throwable $e) {
+            if ($own && $pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
     }
 
     /** Повідомлення дизайнера, яким надіслано прев'ю: text — підпис (може бути порожнім, до TEXT_MAX) */

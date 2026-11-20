@@ -11,6 +11,13 @@ final class Orders
     /** Статуси, з яких клієнт може скасувати замовлення: до першої купівлі (і без проведених покупок) */
     public const CANCELLABLE = [OrderStatus::DRAFT, OrderStatus::COLLECTING, OrderStatus::WAITING_DESIGNER, OrderStatus::IN_WORK];
 
+    /**
+     * Тести: викликається після коммиту скасування, перед прибиранням файлів (щоб зламати прибирання)
+     * @internal
+     * @var (\Closure(int): void)|null
+     */
+    public static ?\Closure $afterCommit = null;
+
     public static function create(int $customerId, int $productId, array $answers, string $title = ''): int
     {
         $product = Products::get($productId);
@@ -82,9 +89,15 @@ final class Orders
             if ($pdo->inTransaction()) $pdo->rollBack();
             throw $e;
         }
-        // Файли — після коммиту (як Previews::hide): не вдався коммит — замовлення живе з усіма файлами
-        Previews::removeOrderFiles($orderId);
-        Layouts::removeUnpurchasedFiles($orderId);
+        // Файли — після коммиту (як Previews::hide): не вдався коммит — замовлення живе з усіма файлами. Збій прибирання —
+        // лише журнал: замовлення вже скасоване, клієнт має отримати перенаправлення, а дизайнери — сповіщення
+        try {
+            if (self::$afterCommit !== null) (self::$afterCommit)($orderId);
+            Previews::removeOrderFiles($orderId);
+            Layouts::removeUnpurchasedFiles($orderId);
+        } catch (\Throwable $e) {
+            error_log("design: прибирання файлів скасованого замовлення $orderId: " . $e);
+        }
     }
 
     /**

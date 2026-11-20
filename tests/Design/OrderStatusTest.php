@@ -92,8 +92,8 @@ final class OrderStatusTest extends TestCase
     /** «Скасовано: {причина}» (етап 5, Task 7): причина одним рядком; у списку — коротко з «…» */
     public function test_cancelled_turn(): void
     {
-        $this->assertSame(['mine' => false, 'text' => 'Скасовано: Знайшов іншого'], S::turn(S::CANCELLED, 3, 2, true, "  Знайшов\n\n іншого "));
-        $this->assertSame(['mine' => false, 'text' => 'Скасовано'], S::turn(S::CANCELLED, 0, 0, false, " \n"));
+        $this->assertSame('Скасовано: Знайшов іншого', S::cancelled("  Знайшов\n\n іншого "));
+        $this->assertSame('Скасовано', S::cancelled(" \n"));
         $this->assertSame('Скасовано: абвгд', S::cancelled('абвгд', 5));
         $this->assertSame('Скасовано: абвг…', S::cancelled('абвгде', 5));
         $this->assertSame('Скасовано: аб…', S::cancelled('аб   вгде', 4), 'пропуск перед «…» прибрано');

@@ -4,7 +4,9 @@ namespace Design;
 
 /**
  * Макети замовлення (design_files): файли для друку, які обраний дизайнер вантажить у замовлення «В роботі».
- * Лежать у Paths::layouts({orderId})/{id}.{ext} (папка 0755, файл 0644) — звичайні файли на локальному диску; посилання i.fastcdn на них не створюються.
+ * Лежать у Paths::layouts({orderId})/{id}.{ext} (папка 0755, файл 0644) — звичайні файли на локальному диску. Посилання
+ * i.fastcdn (cf) — лише на куплені й лише клієнту (Workspace::layouts); тут їх немає.
+ * Куплений макет (purchase_id не null) незмінний: ні заміни, ні перейменування, ні видалення.
  * Статус: 1 завантажено, 2 замінено, 3 видалено. Ліміти (кількість і сума) — лише по status = 1.
  * Кожна дія з макетом (крім перейменування) — системне повідомлення в листуванні обраної пропозиції (data.event, data.file_id);
  * сповіщення клієнту методи не шлють, а повертають notice (Workspace::notifyClient — сторінка шле його після відповіді).
@@ -22,6 +24,7 @@ final class Layouts
 
     private const ERR_ACCESS = 'Макети може завантажувати лише обраний дизайнер';
     private const ERR_GONE = 'Макет не знайдено: його вже замінено або видалено';
+    private const ERR_BOUGHT = 'Куплений макет змінити не можна';
 
     /**
      * Тести: викликається перед транзакцією (md5 і перевірки вже зроблені) — щоб перевірити, що замок замовлення вільний,
@@ -90,12 +93,12 @@ final class Layouts
     }
 
     /**
-     * Активні макети замовлення за порядком завантаження — без шляхів і посилань
-     * @return list<array{id:int, label:string, original_name:string, size:int, ext:string, created:string}>
+     * Активні макети замовлення за порядком завантаження — без шляхів і посилань; purchased — макет куплено (purchase_id)
+     * @return list<array{id:int, label:string, original_name:string, size:int, ext:string, created:string, purchased:bool}>
      */
     public static function forOrder(int $orderId): array
     {
-        $rows = Sql::all('SELECT id, label, original_name, file, size, created FROM design_files WHERE order_id = ? AND status = ? ORDER BY id',
+        $rows = Sql::all('SELECT id, label, original_name, file, size, created, purchase_id FROM design_files WHERE order_id = ? AND status = ? ORDER BY id',
             [$orderId, self::ACTIVE]);
         return array_map(static fn(array $r): array => [
             'id' => (int)$r['id'],
@@ -104,7 +107,17 @@ final class Layouts
             'size' => (int)$r['size'],
             'ext' => (string)pathinfo((string)$r['file'], PATHINFO_EXTENSION),
             'created' => (string)$r['created'],
+            'purchased' => $r['purchase_id'] !== null,
         ], $rows);
+    }
+
+    /**
+     * Файл макета на диску (без створення папок): {root}/layouts/{orderId}/{id}.{ext} — так його називає store()
+     * @param array{id:int, ext:string} $layout рядок forOrder
+     */
+    public static function path(int $orderId, array $layout): string
+    {
+        return Paths::root() . '/layouts/' . $orderId . '/' . $layout['id'] . ($layout['ext'] === '' ? '' : '.' . $layout['ext']);
     }
 
     /**
@@ -116,23 +129,24 @@ final class Layouts
     public static function precheck(int $orderId, int $designerId, int $declaredSize, ?int $replaceFileId = null): void
     {
         if (Previews::canWork($orderId, $designerId) === null) throw new DesignerException(self::ERR_ACCESS);
-        if ($replaceFileId !== null && Sql::value('SELECT id FROM design_files WHERE id = ? AND order_id = ? AND status = ?',
-                [$replaceFileId, $orderId, self::ACTIVE]) === null) {
-            throw new DesignerException(self::ERR_GONE);
+        if ($replaceFileId !== null) {
+            $old = Sql::one('SELECT purchase_id FROM design_files WHERE id = ? AND order_id = ? AND status = ?', [$replaceFileId, $orderId, self::ACTIVE]);
+            if ($old === null) throw new DesignerException(self::ERR_GONE);
+            if ($old['purchase_id'] !== null) throw new DesignerException(self::ERR_BOUGHT);
         }
         self::checkSize($declaredSize);
         self::checkLimits($orderId, $declaredSize, $replaceFileId);
     }
 
     /**
-     * Версія списку активних макетів: змінюється з додаванням, заміною, видаленням і перейменуванням
+     * Версія списку активних макетів: змінюється з додаванням, заміною, видаленням, перейменуванням і купівлею
      * (опитування листування порівнює її, щоб оновити панель «Макети» у співрозмовника)
-     * @param list<array{id:int, label:string}>|null $layouts уже прочитаний forOrder (без повторного запиту)
+     * @param list<array{id:int, label:string, purchased:bool}>|null $layouts уже прочитаний forOrder (без повторного запиту)
      */
     public static function rev(int $orderId, ?array $layouts = null): string
     {
         $layouts ??= self::forOrder($orderId);
-        return substr(sha1(json_encode(array_map(static fn(array $l): array => [$l['id'], $l['label']], $layouts),
+        return substr(sha1(json_encode(array_map(static fn(array $l): array => [$l['id'], $l['label'], $l['purchased']], $layouts),
             JSON_UNESCAPED_UNICODE)), 0, 16);
     }
 
@@ -176,9 +190,10 @@ final class Layouts
                 $old = null;
                 $label = $base;
                 if ($replaceId !== null) {
-                    $old = Sql::one('SELECT id, label, file FROM design_files WHERE id = ? AND order_id = ? AND status = ? FOR UPDATE',
+                    $old = Sql::one('SELECT id, label, file, purchase_id FROM design_files WHERE id = ? AND order_id = ? AND status = ? FOR UPDATE',
                         [$replaceId, $orderId, self::ACTIVE]);
                     if ($old === null) throw new DesignerException(self::ERR_GONE);
+                    if ($old['purchase_id'] !== null) throw new DesignerException(self::ERR_BOUGHT);
                     Sql::exec('UPDATE design_files SET status = ? WHERE id = ?', [self::REPLACED, $replaceId]);
                     $label = (string)$old['label'];
                 }
@@ -215,8 +230,8 @@ final class Layouts
     }
 
     /**
-     * Активний макет під замком замовлення: доступ дизайнера, status = 1; $fn(row, offer) виконується в транзакції.
-     * Немає макета й немає доступу — та сама відповідь (id не перебрати)
+     * Активний некуплений макет під замком замовлення: доступ дизайнера, status = 1, purchase_id null; $fn(row, offer)
+     * виконується в транзакції. Немає макета й немає доступу — та сама відповідь (id не перебрати)
      * @param \Closure(array, array): void $fn
      * @return array рядок макета (id, order_id, label, file)
      * @throws DesignerException
@@ -233,8 +248,9 @@ final class Layouts
             Sql::one('SELECT id FROM design_orders WHERE id = ? FOR UPDATE', [$orderId]);
             $offer = Previews::canWork($orderId, $designerId);
             if ($offer === null) throw new DesignerException(self::ERR_ACCESS);
-            $row = Sql::one('SELECT id, order_id, label, file FROM design_files WHERE id = ? AND status = ? FOR UPDATE', [$fileId, self::ACTIVE]);
+            $row = Sql::one('SELECT id, order_id, label, file, purchase_id FROM design_files WHERE id = ? AND status = ? FOR UPDATE', [$fileId, self::ACTIVE]);
             if ($row === null) throw new DesignerException(self::ERR_GONE);
+            if ($row['purchase_id'] !== null) throw new DesignerException(self::ERR_BOUGHT);
             $fn($row, $offer);
             $pdo->commit();
             return $row;

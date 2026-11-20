@@ -1,11 +1,15 @@
 // Майстерня дизайну: панель «Макети для друку» робочого простору і спільні дрібниці для workspace.js / workspace-buy.js.
 // - Панель (views/partials/layouts-panel.php, макети 6.5): у дизайнера — перетягування / «Обрати файли», кілька файлів
-//   паралельно (до 3 одночасно, решта чекає), у кожного прогрес і «Скасувати»; підпис олівцем, «Замінити», «Видалити»;
-//   у клієнта — лише список. Посилань на файли макетів немає ніде.
-// - window.DesignWs: el, icon, bytes, iconButton, request, failText, setTurn («чий хід» у шапці) і layouts(panel, root) —
-//   панель {refresh, rev, pick}. Підключається перед workspace.js.
+//   паралельно (до 3 одночасно, решта чекає), у кожного прогрес і «Скасувати»; підпис олівцем, «Замінити», «Видалити» —
+//   лише в некуплених, куплений — «Куплено». У клієнта — список; купленому — «Завантажити» (адреса з сервера, лише клієнту)
+//   і місце під «Скопіювати в хмару» (data-lp-cloud). Некупленим посилань немає ніде.
+// - Після кожного перемальовування — подія 'ws:layouts' на document (detail — дані панелі): workspace-buy.js вмикає «Купую».
+// - window.DesignWs: el, icon, bytes, iconButton, request, failText, setTurn («чий хід» у шапці), layouts(panel, root) —
+//   панель {refresh, render, rev, pick} і panel(orderId) — уже створена панель замовлення. Підключається перед workspace.js.
 // Увесь текст користувачів — лише через textContent.
 (function () {
+  var panels = {};
+
   function el(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -92,7 +96,7 @@
 
     // Пункт списку (як у layouts-panel.php)
     function item(l) {
-      var li = el('li', 'lp-item');
+      var li = el('li', 'lp-item' + (l.purchased ? ' is-bought' : ''));
       li.dataset.lpId = l.id;
       li.appendChild(el('span', 'lp-ext', extLabel(l.ext)));
       var info = el('div', 'lp-info');
@@ -100,15 +104,34 @@
       var text = el('span', '', l.label);
       text.dataset.lpLabel = '';
       label.appendChild(text);
-      if (edit) {
+      if (edit && !l.purchased) {
         var pen = iconButton('lp-pencil', 'fa-pen', 'Змінити підпис');
         pen.dataset.lpRename = '';
         label.appendChild(pen);
       }
       info.appendChild(label);
       info.appendChild(el('div', 'lp-meta', l.original_name + ' · ' + l.size_text));
+      if (l.download) {
+        var acts = el('div', 'lp-acts');
+        var a = el('a', 'btn btn-outline-blue btn-sm lp-download');
+        a.href = l.download;
+        a.appendChild(icon('fa-download'));
+        a.appendChild(document.createTextNode(' Завантажити'));
+        acts.appendChild(a);
+        var cloud = el('span', 'lp-cloud');
+        cloud.dataset.lpCloud = '';
+        acts.appendChild(cloud);
+        info.appendChild(acts);
+      }
       li.appendChild(info);
-      if (edit) {
+      if (l.purchased) {
+        if (!l.download) {
+          var bought = el('span', 'lp-bought');
+          bought.appendChild(icon('fa-check-circle'));
+          bought.appendChild(document.createTextNode(' Куплено'));
+          li.appendChild(bought);
+        }
+      } else if (edit) {
         var rep = iconButton('icon-btn lp-act', 'fa-sync-alt', 'Замінити');
         rep.dataset.lpReplace = '';
         li.appendChild(rep);
@@ -148,7 +171,11 @@
       document.querySelectorAll('[data-lp-count-wrap]').forEach(function (w) { w.hidden = !data.count; });
       var empty = panel.querySelector('[data-lp-empty]');
       if (empty) empty.hidden = data.count > 0;
+      // «Відкриються після покупки» — поки є некуплені або ще жодного
+      var lock = panel.querySelector('[data-lp-lock]');
+      if (lock) lock.hidden = data.count > 0 && data.layouts.every(function (l) { return l.purchased; });
       if (data.turn) setTurn(data.turn);
+      document.dispatchEvent(new CustomEvent('ws:layouts', { detail: { order: orderId, layouts: data.layouts } }));
     }
 
     // Перечитати панель; поки підпис редагується — після нього
@@ -375,8 +402,9 @@
       });
     }
 
-    return {
+    return panels[orderId] = {
       refresh: refresh,
+      render: render,
       rev: function () { return panel.dataset.rev; },
       // «Завантажити макети» у шапці: панель у поле зору, фокус на «Обрати файли»
       pick: function () {
@@ -388,5 +416,5 @@
   }
 
   window.DesignWs = { el: el, icon: icon, bytes: bytes, iconButton: iconButton, request: request, failText: failText,
-    setTurn: setTurn, layouts: layoutsPanel };
+    setTurn: setTurn, layouts: layoutsPanel, panel: function (orderId) { return panels[orderId] || null; } };
 })();

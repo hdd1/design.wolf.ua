@@ -4,8 +4,10 @@
  * і вибором (макет 6.4), стани режиму 2 «чекаємо відповіді дизайнера» / «дизайнер відмовився» / «дизайнер назвав ціну»
  * (крім «Обрати» — другорядні «Запросити іншого дизайнера» і «Збирати пропозиції», рішення власника 2026-11-19).
  * ?chat={id пропозиції} — відкрите листування (на телефоні — окремий екран), ?chat=0 — без бокової панелі; ?done=… — тост.
- * Замовлення «В роботі» з обраним дизайнером — робочий простір (макет 6.5, views/partials/workspace.php): шапка з ціною,
- * «Купую» (неактивна, «Незабаром»), «чий хід» з фактичною кількістю макетів, стрічка обраного листування і панель «Макети»
+ * Замовлення з обраним дизайнером «В роботі», «Куплено», «Доопрацювання» — робочий простір (макет 6.5,
+ * views/partials/workspace.php): шапка з ціною, «Купую» з вікном оплати (views/partials/pay-modal.php, Purchases::quote — поки
+ * замовлення можна купити), «чий хід» з фактичною кількістю макетів, стрічка обраного листування і панель «Макети»
+ * («Завантажити» в куплених)
  * Після помилки POST сторінку рендерить pages/order-update.php з $posted
  * @var array $params
  * @var ?array{error:string} $posted
@@ -22,6 +24,7 @@ use Design\OfferStatus;
 use Design\Orders;
 use Design\OrderStatus;
 use Design\Products;
+use Design\Purchases;
 use Design\View;
 use Design\Workspace;
 
@@ -64,7 +67,7 @@ $open = count(array_filter($cards, $choosable));
 $list = $state !== 'waiting' && $state !== 'declined';
 // Робочий простір: замовлення в роботі — листування обраного дизайнера; закрите листування з іншим (?chat={id}) — як на етапі 3
 $asked = Http::str($_GET, 'chat');
-$ws = $chosen !== null && $order['status'] === OrderStatus::IN_WORK && ($asked === '' || $asked === (string)$chosen['id']);
+$ws = $chosen !== null && in_array($order['status'], Workspace::STATUSES, true) && ($asked === '' || $asked === (string)$chosen['id']);
 
 // Відкрите листування: ?chat= (лише пропозиція зі списку цього замовлення; 0 — закрите), інакше обраний дизайнер
 // або перша пропозиція, яку можна обрати
@@ -133,6 +136,7 @@ $toasts = [
 
 $workspace = null;
 if ($ws && $chat !== null && $chat['workspace'] !== null) {
+    $quote = Purchases::quote($id, $me);
     $workspace = [
         'role' => 'client',
         'order' => $order,
@@ -142,18 +146,24 @@ if ($ws && $chat !== null && $chat['workspace'] !== null) {
         'whoName' => $chosen['designer_name'] !== '' ? $chosen['designer_name'] : 'Дизайнер',
         'turn' => Workspace::turn($access['offer'], Messages::ROLE_CLIENT),
         'chat' => $chat,
-        'panel' => Workspace::layouts($id),
+        'panel' => Workspace::layouts($id, true),
         'edit' => false,
         'csrf' => $csrf,
         'chunk' => $chat['workspace']['chunk'],
         'error' => $posted['error'] ?? null,
+        'quote' => $quote,
     ];
 }
 
 View::render('layout', [
     'title' => $order['title'],
     'active' => 'orders',
-    'scripts' => $chat === null ? [] : ($chat['workspace'] !== null ? ['/assets/js/chat.js', '/assets/js/workspace-layouts.js', '/assets/js/workspace.js'] : ['/assets/js/chat.js']),
+    'scripts' => match (true) {
+        $chat === null => [],
+        $chat['workspace'] === null => ['/assets/js/chat.js'],
+        default => ['/assets/js/chat.js', '/assets/js/workspace-layouts.js', '/assets/js/workspace.js',
+            ...(($workspace['quote'] ?? null) !== null ? ['/assets/js/workspace-buy.js'] : [])],
+    },
     'toast' => $posted === null ? ($toasts[Http::str($_GET, 'done')] ?? null) : null,
     'body' => View::fetch('order', [
         'order' => $order,

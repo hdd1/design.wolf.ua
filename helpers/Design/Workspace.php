@@ -6,10 +6,13 @@ namespace Design;
  * Робочий простір обраної пропозиції (етап 4, макети 6.5): плашка «чий хід» для сторони, список макетів для панелі
  * «Макети для друку» і те, що несе опитування листування, щоб зміни доходили до співрозмовника без перезавантаження:
  * «чий хід», версія списку макетів (змінилась — панель перечитує GET /orders/{id}/layouts) і приховані прев'ю.
- * Адрес макетів тут немає й бути не може: до купівлі макети не віддаються
+ * Адреса макета («Завантажити», i.fastcdn cf) — лише купленому й лише клієнту (layouts($orderId, true)); некупленим — ніде
  */
 final class Workspace
 {
+    /** Статуси замовлення, у яких сторінки показують робочий простір (після купівлі — теж: куплені макети, листування) */
+    public const STATUSES = [OrderStatus::IN_WORK, OrderStatus::PURCHASED, OrderStatus::REWORK];
+
     /**
      * Хто дивиться робочий простір замовлення: клієнт замовлення або дизайнер обраної пропозиції (як Offers::access), інакше null
      * @return array{offer:array, role:int, write:bool}|null
@@ -58,28 +61,38 @@ final class Workspace
     public static function turn(array $offer, int $role): array
     {
         $orderId = $offer['order_id'];
+        $status = $offer['order_status'];
         $layouts = Layouts::count($orderId);
         if ($role === Messages::ROLE_DESIGNER) {
             [$client, $designer] = Messages::lastIds($offer['id']);
-            $t = OrderStatus::designerTurn($client, $designer, Previews::visibleCount($orderId), $layouts);
-            return $t + ['sub' => '', 'icon' => $t['mine'] ? 'fa-hand-paper' : 'fa-hourglass-half'];
+            $t = OrderStatus::designerTurn($client, $designer, Previews::visibleCount($orderId), $layouts, $status);
+            $icon = $t['mine'] ? 'fa-hand-paper' : ($status === OrderStatus::PURCHASED ? 'fa-check-circle' : 'fa-hourglass-half');
+            return $t + ['sub' => '', 'icon' => $icon];
         }
-        $t = OrderStatus::turn($offer['order_status'], 0, $layouts);
+        $t = OrderStatus::turn($status, 0, $layouts);
         $sub = '';
-        if ($offer['order_status'] === OrderStatus::IN_WORK) {
+        if ($status === OrderStatus::IN_WORK) {
             $sub = $layouts > 0
                 ? 'Дизайнер завантажив ' . View::plural($layouts, 'макет', 'макети', 'макетів') . '. Файли відкриються після покупки'
                 : ($offer['deadline'] ? 'Термін — до ' . View::date($offer['deadline']) . '. ' : '') . 'Пишіть у чат, якщо щось змінилось';
+        } elseif ($status === OrderStatus::PURCHASED) {
+            $sub = 'Файли — у панелі «Макети»: «Завантажити»';
         }
-        $done = $t['mine'] || ($offer['order_status'] === OrderStatus::IN_WORK && $layouts > 0);
-        return $t + ['sub' => $sub, 'icon' => $done ? 'fa-file-check' : 'fa-pencil-ruler'];
+        $icon = match (true) {
+            $status === OrderStatus::PURCHASED => 'fa-check-circle',
+            $t['mine'] => 'fa-file-check',
+            default => 'fa-pencil-ruler',
+        };
+        return $t + ['sub' => $sub, 'icon' => $icon];
     }
 
     /**
-     * Активні макети замовлення для панелі: підпис, ім'я файла, розмір (size_text — «2,4 МБ»), розширення; версія списку
-     * @return array{layouts:list<array{id:int, label:string, original_name:string, size:int, size_text:string, ext:string}>, count:int, rev:string}
+     * Активні макети замовлення для панелі: підпис, ім'я файла, розмір (size_text — «2,4 МБ»), розширення, чи куплено; версія списку.
+     * download — «Завантажити» (FileGlobal::encode: симлінк у cloud-links/cf і адреса i.fastcdn з іменем «Дизайн №N — {підпис}.{розш.}»)
+     * лише для купленого макета і лише коли дивиться клієнт ($client); інакше '' і симлінк не створюється
+     * @return array{layouts:list<array{id:int, label:string, original_name:string, size:int, size_text:string, ext:string, purchased:bool, download:string}>, count:int, rev:string}
      */
-    public static function layouts(int $orderId): array
+    public static function layouts(int $orderId, bool $client): array
     {
         $list = Layouts::forOrder($orderId);
         return [
@@ -90,10 +103,25 @@ final class Workspace
                 'size' => $l['size'],
                 'size_text' => View::bytes($l['size']),
                 'ext' => $l['ext'],
+                'purchased' => $l['purchased'],
+                'download' => $client && $l['purchased'] ? self::download($orderId, $l) : '',
             ], $list),
             'count' => count($list),
             'rev' => Layouts::rev($orderId, $list),
         ];
+    }
+
+    /**
+     * Адреса «Завантажити» купленого макета ('' — файла на диску немає): симлінк і адресу будує FileGlobal::encode, а ім'я
+     * файла додаємо самі через rawurlencode. encode кодує name через http_build_query (пробіл → «+»), а nginx i.fastcdn ставить
+     * його як є в filename*=UTF-8''… — браузер розкодовує там лише %XX, і файл зберігся б як «Дизайн+№12+—+…»
+     */
+    private static function download(int $orderId, array $layout): string
+    {
+        $url = \FileGlobal::encode(Layouts::path($orderId, $layout), '', true);
+        if ($url === '') return '';
+        $name = 'Дизайн №' . $orderId . ' — ' . $layout['label'] . ($layout['ext'] === '' ? '' : '.' . $layout['ext']);
+        return $url . '&name=' . rawurlencode($name);
     }
 
     /**

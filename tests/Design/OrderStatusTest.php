@@ -17,10 +17,11 @@ final class OrderStatusTest extends TestCase
             [[S::COLLECTING, 22], true, 'Ваш хід: оберіть дизайнера · 22 пропозиції'],
             [[S::WAITING_DESIGNER], false, 'Чекаємо відповіді дизайнера'],
             [[S::IN_WORK], false, 'Дизайнер працює над макетами'],
-            // До етапу 5 («Купую» неактивна) — не «ваш хід»: клієнт не може виконати дію, до якої його закликали б
-            [[S::IN_WORK, 0, 2], false, 'Макети завантажено — перегляньте список. Купівля — незабаром'],
+            // Етап 5: «Купую» працює — макети є, отже хід клієнта
+            [[S::IN_WORK, 0, 2], true, 'Ваш хід: перевірте макети і натисніть «Купую»'],
             [[S::AWAITING_INVOICE], false, 'Чекаємо оплату рахунку — макети відкриються після неї'],
-            [[S::PURCHASED], false, 'Готово · макети у вашій хмарі wolf.ua'],
+            [[S::PURCHASED], false, 'Макети ваші'],
+            [[S::PURCHASED, 0, 3], false, 'Макети ваші'],
             [[S::REWORK], false, 'Дизайнер працює над змінами'],
             [[S::CANCELLED], false, 'Скасовано'],
         ];
@@ -52,6 +53,19 @@ final class OrderStatusTest extends TestCase
         ];
         foreach ($cases as [$args, $want]) {
             $this->assertSame($want, S::designerTurn(...$args), json_encode($args));
+        }
+    }
+
+    /** «Куплено»: дизайнеру — «Готово»; клієнт написав після купівлі (напр. просить правки) — його хід, як і «В роботі» */
+    public function test_designer_turn_purchased(): void
+    {
+        $ready = ['mine' => false, 'text' => 'Готово'];
+        $this->assertSame($ready, S::designerTurn(10, 12, 2, 1, S::PURCHASED));
+        $this->assertSame($ready, S::designerTurn(0, 0, 0, 1, S::PURCHASED));
+        $this->assertSame(['mine' => true, 'text' => 'Ваш хід: клієнт написав · відповідайте'], S::designerTurn(13, 12, 2, 1, S::PURCHASED));
+        // Тексти етапу 4 «Купівля — незабаром» ніде не лишилось
+        foreach ([S::IN_WORK, S::PURCHASED, S::REWORK] as $s) {
+            foreach ([0, 1, 5] as $n) $this->assertStringNotContainsString('незабаром', S::turn($s, 0, $n)['text']);
         }
     }
 }

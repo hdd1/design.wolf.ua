@@ -43,7 +43,7 @@ try {
 
 // Дію виконано: збій побудови панелі — не помилка дії (браузер перечитає панель опитуванням)
 try {
-    $response = Workspace::layouts($orderId) + ['turn' => Workspace::turn($offer, Messages::ROLE_DESIGNER)];
+    $response = Workspace::layouts($orderId, false) + ['turn' => Workspace::turn($offer, Messages::ROLE_DESIGNER)];
 } catch (\Throwable $e) {
     error_log("design: панель макетів замовлення $orderId після дії: " . $e);
     $response = ['done' => true];

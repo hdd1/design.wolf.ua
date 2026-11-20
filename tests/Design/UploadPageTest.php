@@ -272,7 +272,7 @@ final class UploadPageTest extends TestCase
         [$code, $json] = $this->part($orderId, $designer, ['chunkIndex' => 1] + $meta, substr($bytes, 1000), $fields);
         $this->assertSame(200, $code, json_encode($json, JSON_UNESCAPED_UNICODE));
         $this->assertTrue($json['done']);
-        $this->assertSame(['id', 'label', 'original_name', 'size', 'ext', 'created'], array_keys($json['layout']));
+        $this->assertSame(['id', 'label', 'original_name', 'size', 'ext', 'created', 'purchased'], array_keys($json['layout']));
         $this->assertSame('Флаєр', $json['layout']['label']);
         $this->assertCount(1, array_filter(self::log(), static fn(array $e): bool => $e['event'] === 'notify'), 'сповіщення було');
         $this->assertSame([200, $json], $this->part($orderId, $designer, ['chunkIndex' => 1] + $meta, substr($bytes, 1000), $fields));

@@ -31,12 +31,12 @@ final class Guard
         return $id;
     }
 
-    /** Відповідь чекає JS: будь-який не-GET (дії сторінок) і GET-маршрути, що віддають JSON (список макетів, листування) */
+    /** Відповідь чекає JS: будь-який не-GET (дії сторінок) і GET-маршрути, що віддають JSON (список макетів, листування, вікно оплати) */
     private static function wantsJson(): bool
     {
         if (!in_array($_SERVER['REQUEST_METHOD'] ?? 'GET', ['GET', 'HEAD'], true)) return true;
         $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
-        return in_array(Router::match('GET', $path)['page'] ?? '', ['order-layouts', 'offer-messages'], true);
+        return in_array(Router::match('GET', $path)['page'] ?? '', ['order-layouts', 'offer-messages', 'order-buy-quote'], true);
     }
 
     public const STALE = 'Сесія застаріла: нічого не збережено. Перевірте відповіді і натисніть ще раз.';

@@ -1,10 +1,11 @@
 <?php
 /**
- * Робочий простір замовлення «В роботі» (макети 6.5): шапка замовлення (ціна й термін окремим блоком, головна кнопка),
- * «чий хід», бриф, широка стрічка листування і панель «Макети для друку» праворуч; на телефоні — вкладки «Чат / Макети».
- * Однаковий для обох сторін: views/order.php (клієнт) і views/feed-order.php (дизайнер).
- * Клієнт: «Ціна · Термін», «Купую» неактивна з «Незабаром». Дизайнер: «Ви отримаєте D грн · клієнт побачить P грн», «Термін до …»
- * (без «Змінити»: ціна й термін після вибору не змінюються), «Завантажити макети» (веде до панелі)
+ * Робочий простір замовлення «В роботі», «Куплено», «Доопрацювання» (макети 6.5): шапка замовлення (ціна й термін окремим блоком,
+ * головна кнопка), «чий хід», бриф, широка стрічка листування і панель «Макети для друку» праворуч; на телефоні — вкладки
+ * «Чат / Макети». Однаковий для обох сторін: views/order.php (клієнт) і views/feed-order.php (дизайнер).
+ * Клієнт: «Ціна · Термін», «Купую» (поки замовлення можна купити; вимкнена, поки немає нових макетів) з вікном
+ * «Оплата: звідки?» (partials/pay-modal, assets/js/workspace-buy.js). Дизайнер: «Ви отримаєте D грн · клієнт побачить P грн»,
+ * «Термін до …» (без «Змінити»: ціна й термін після вибору не змінюються), «Завантажити макети» (веде до панелі)
  * @var string $role         client | designer
  * @var array $order         Orders::get / Orders::find (id, title, product_name, status, answers)
  * @var array $offer         обрана пропозиція (Offers::get): price_designer, price_client, deadline
@@ -18,6 +19,7 @@
  * @var string $csrf
  * @var int $chunk
  * @var ?string $error       помилка дії з форми сторінки (POST, що повернув сторінку з 422), null — немає
+ * @var ?array $quote        клієнт: Purchases::quote — замовлення можна купити («Купую» і вікно оплати); null — ні (і в дизайнера)
  */
 use Design\Chat;
 use Design\OrderStatus;
@@ -27,6 +29,9 @@ $id = $order['id'];
 $designer = $role === 'designer';
 $filled = count(array_filter($order['answers'], static fn($p) => $p['a'] !== ''));
 $error ??= null;
+$quote = $designer ? null : ($quote ?? null);
+$cta = $designer ? $edit : $quote !== null;
+$newLayouts = $quote['new_layouts'] ?? 0;
 $deadline = $offer['deadline'] ? 'до ' . View::date($offer['deadline']) : '—';
 ?>
 <div class="ws-top">
@@ -41,7 +46,7 @@ $deadline = $offer['deadline'] ? 'до ' . View::date($offer['deadline']) : '—
       <div class="ws-head-main">
         <div class="ws-title-row">
           <h1 class="ws-title"><?= View::e($order['title']) ?></h1>
-          <?php View::render('partials/status', ['status' => $order['status']]) ?>
+          <span class="ws-status" data-ws-status><?php View::render('partials/status', ['status' => $order['status']]) ?></span>
         </div>
         <div class="ws-who"><span class="avatar avatar-xs"><?= View::e(Chat::initials($whoName)) ?></span><span><span class="ws-num">№<?= $id ?> · </span><?= View::e($who) ?></span></div>
       </div>
@@ -53,14 +58,17 @@ $deadline = $offer['deadline'] ? 'до ' . View::date($offer['deadline']) : '—
         <?php endif ?>
         <div class="ws-term ws-deadline"><span class="lbl">Термін</span> <b class="val-sm"><?= View::e($deadline) ?></b></div>
       </div>
+      <?php if ($cta): ?>
       <div class="ws-cta">
         <?php if ($designer): ?>
-          <?php if ($edit): ?><button type="button" class="btn btn-primary btn-lg" data-ws-upload><i class="fal fa-upload"></i> Завантажити макети</button><?php endif ?>
+          <button type="button" class="btn btn-primary btn-lg" data-ws-upload><i class="fal fa-upload"></i> Завантажити макети</button>
         <?php else: ?>
-          <button type="button" class="btn btn-primary btn-lg ws-buy" disabled aria-describedby="ws-soon-<?= $id ?>"><i class="fal fa-shopping-bag"></i> Купую</button>
-          <div class="ws-soon" id="ws-soon-<?= $id ?>">Незабаром</div>
+          <button type="button" class="btn btn-primary btn-lg ws-buy" data-ws-buy aria-haspopup="dialog" aria-controls="pay-<?= $id ?>"
+            aria-describedby="ws-buy-hint-<?= $id ?>"<?= $newLayouts > 0 ? '' : ' disabled' ?>><i class="fal fa-shopping-bag"></i> Купую</button>
+          <div class="ws-soon" id="ws-buy-hint-<?= $id ?>" data-ws-buy-hint<?= $newLayouts > 0 ? ' hidden' : '' ?>>Коли дизайнер завантажить макети</div>
         <?php endif ?>
       </div>
+      <?php endif ?>
     </div>
     <?php if ($error !== null): ?>
     <div class="alert-d error ws-turn" role="alert"><i class="fal fa-exclamation-circle mt-1"></i><div class="fw-semibold"><?= View::e($error) ?></div></div>
@@ -81,12 +89,15 @@ $deadline = $offer['deadline'] ? 'до ' . View::date($offer['deadline']) : '—
 </div>
 <div class="ws-tabs" role="tablist" aria-label="Робочий простір" data-ws-tabs>
   <button type="button" role="tab" class="active" aria-selected="true" aria-controls="ws-feed-<?= $id ?>" data-ws-tab="chat">Чат</button>
-  <button type="button" role="tab" aria-selected="false" aria-controls="ws-side-<?= $id ?>" data-ws-tab="layouts"><i class="fal <?= $designer ? 'fa-file-upload' : 'fa-lock-alt' ?>"></i><span>Макети<span data-lp-count-wrap<?= $panel['count'] ? '' : ' hidden' ?>> · <span data-lp-count><?= $panel['count'] ?></span></span></span></button>
+  <button type="button" role="tab" aria-selected="false" aria-controls="ws-side-<?= $id ?>" data-ws-tab="layouts"><i class="fal <?= $designer ? ($edit ? 'fa-file-upload' : 'fa-folder') : ($quote !== null ? 'fa-lock-alt' : 'fa-folder') ?>" data-ws-tab-icon></i><span>Макети<span data-lp-count-wrap<?= $panel['count'] ? '' : ' hidden' ?>> · <span data-lp-count><?= $panel['count'] ?></span></span></span></button>
 </div>
 <div class="container ws-body" data-ws-body data-tab="chat">
   <div class="ws-grid">
     <div class="ws-feed" id="ws-feed-<?= $id ?>" role="tabpanel"><?php View::render('partials/chat', $chat) ?></div>
     <aside class="ws-side" id="ws-side-<?= $id ?>" role="tabpanel"><?php View::render('partials/layouts-panel', [
-        'orderId' => $id, 'panel' => $panel, 'edit' => $edit, 'csrf' => $csrf, 'chunk' => $chunk]) ?></aside>
+        'orderId' => $id, 'panel' => $panel, 'edit' => $edit, 'client' => !$designer, 'csrf' => $csrf, 'chunk' => $chunk]) ?></aside>
   </div>
 </div>
+<?php if ($quote !== null): ?>
+<?php View::render('partials/pay-modal', ['orderId' => $id, 'quote' => $quote, 'csrf' => $csrf]) ?>
+<?php endif ?>

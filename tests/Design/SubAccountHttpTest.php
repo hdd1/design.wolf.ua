@@ -156,10 +156,19 @@ final class SubAccountHttpTest extends TestCase
         $this->assertEquals($had, Sql::value('SELECT COUNT(*) FROM design_designers WHERE customer_id = ?', [$me]));
     }
 
+    public function test_post_buy_is_rejected_with_json(): void
+    {
+        self::becomeSub();
+        [$code, $h, $body] = self::fetch('/orders/1/buy', ['amount' => '1', 'csrf' => Csrf::token(self::me())]);
+        $this->assertSame(403, $code);
+        $this->assertMatchesRegularExpression('#^content-type:\s*application/json#mi', $h);
+        $this->assertStringContainsString('субакаунта', json_decode($body, true)['error'] ?? '');
+    }
+
     public function test_ajax_get_json_endpoints_get_json_403(): void
     {
         self::becomeSub();
-        foreach (['/orders/1/layouts', '/offers/1/messages'] as $path) {
+        foreach (['/orders/1/layouts', '/offers/1/messages', '/orders/1/buy'] as $path) {
             [$code, $h, $body] = self::fetch($path);
             $this->assertSame(403, $code, $path);
             $this->assertMatchesRegularExpression('#^content-type:\s*application/json#mi', $h, $path);

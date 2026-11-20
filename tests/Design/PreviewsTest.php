@@ -334,7 +334,7 @@ final class PreviewsTest extends TestCase
         $v2 = Previews::add($orderId, self::A, $this->upload(), 'v2', null);
         $v3 = Previews::add($orderId, self::A, $this->upload(), 'v3', null);
         $list = Previews::forOrder($orderId);   // url → ImageGlobal::encode створює симлінки
-        $link = static fn(string $url): string => CdnLinksGuard::ROOT . '/' . substr($url, strpos($url, '/ci/') + 4);
+        $link = static fn(string $url): string => CdnLinksGuard::ROOTS[0] . '/' . substr($url, strpos($url, '/ci/') + 4);
         $links = static fn(array $p): array => array_map($link, [$p['urls'][0]['view'], $p['urls'][0]['card']]);
         $file = fn(int $id, string $size): string => $this->root . "/previews/$orderId/$id-p1-$size.webp";
         foreach ([$v1, $v2, $v3] as $v) {

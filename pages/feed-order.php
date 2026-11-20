@@ -3,8 +3,9 @@
  * Бриф для дизайнера: GET /feed/{id}/ — повний бриф, своя пропозиція або запрошення, листування.
  * Бачить схвалений дизайнер: бриф у зборі пропозицій режиму 1 або замовлення, де в нього є пропозиція / запрошення.
  * ?form=propose|edit|take|decline — відкрита форма; ?done=… — тост після дії.
- * Обраний дизайнер замовлення «В роботі» — робочий простір (макет 6.5, views/partials/workspace.php): шапка «Ви отримаєте ·
- * клієнт побачить», «Термін до …», «Завантажити макети», «чий хід» дизайнера, стрічка і панель «Макети для друку».
+ * Обраний дизайнер замовлення «В роботі», «Куплено», «Доопрацювання» — робочий простір (макет 6.5, views/partials/workspace.php):
+ * шапка «Ви отримаєте · клієнт побачить», «Термін до …», «Завантажити макети» (поки можна працювати), «чий хід» дизайнера,
+ * стрічка і панель «Макети для друку» (куплені — без змін, без посилань).
  * Після помилки POST сторінку рендерить pages/feed-offer.php з $posted (form, values, error)
  * @var array $params
  * @var ?array{form:string, values:array{text:string,price:string,deadline:string,reason:string}, error:string} $posted
@@ -97,7 +98,7 @@ $toasts = [
 ];
 
 $workspace = null;
-if ($chat !== null && $chat['workspace'] !== null && $order['status'] === OrderStatus::IN_WORK) {
+if ($chat !== null && $chat['workspace'] !== null && in_array($order['status'], Workspace::STATUSES, true)) {
     $workspace = [
         'role' => 'designer',
         'order' => $order,
@@ -107,7 +108,7 @@ if ($chat !== null && $chat['workspace'] !== null && $order['status'] === OrderS
         'whoName' => $client,
         'turn' => Workspace::turn($access['offer'], Messages::ROLE_DESIGNER),
         'chat' => $chat,
-        'panel' => Workspace::layouts($id),
+        'panel' => Workspace::layouts($id, false),
         'edit' => $chat['workspace']['upload'],
         'csrf' => $csrf,
         'chunk' => $chat['workspace']['chunk'],

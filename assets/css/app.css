@@ -64,17 +64,20 @@ main{flex:1 0 auto}
 .brand{display:flex;align-items:center;gap:var(--s-3);text-decoration:none;color:var(--text)}
 .brand img{height:56px;width:auto}
 @media (max-width:575px){.brand img{height:44px}}
-@media (min-width:992px){.brand .brand-title{white-space:nowrap}}
+@media (min-width:992px){.nav-wide .brand .brand-title{white-space:nowrap}}
 .brand .brand-text{border-left:1px solid var(--border);padding-left:var(--s-3);line-height:1.15}
 .brand .brand-title{font-family:var(--font-head);font-weight:600;font-size:1.2rem;color:var(--text)}
 .brand .brand-sub{font-size:.8rem;color:var(--text-2)}
-.main-nav{display:flex;gap:0;align-self:stretch}
-.main-nav a,.main-nav span{display:flex;align-items:center;white-space:nowrap;padding:0 .7rem;color:var(--text-2);text-decoration:none;font-weight:500;border-bottom:3px solid transparent}
+.main-nav{display:flex;gap:var(--s-2);align-self:stretch}
+.nav-wide .main-nav{gap:0}
+.main-nav a,.main-nav span{display:flex;align-items:center;padding:0 var(--s-3);color:var(--text-2);text-decoration:none;font-weight:500;border-bottom:3px solid transparent}
+.nav-wide .main-nav a{white-space:nowrap;padding:0 .7rem}
 .main-nav a:hover{color:var(--text)}
 .main-nav a.active{color:var(--text);font-weight:700;border-bottom-color:var(--orange)}
 .balance{display:inline-flex;align-items:center;gap:var(--s-2);background:var(--bg);border-radius:var(--r-pill);padding:.45rem .9rem;font-weight:700;font-size:.92rem}
 .avatar{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;background:var(--orange-soft);color:#9A5B00;font-weight:700;font-size:.85rem;flex:none}
-.user{display:flex;align-items:center;gap:var(--s-2);font-weight:600;white-space:nowrap}
+.user{display:flex;align-items:center;gap:var(--s-2);font-weight:600}
+.nav-wide .user{white-space:nowrap}
 @media (max-width:991px){.main-nav,.balance .label{display:none}.brand .brand-sub{display:none}.user .short{display:none}}
 .mobile-nav{display:none}
 /* Меню дизайнера (5 пунктів) у шапку на десктопі не вміщається вужче 1400px — до того те саме, що й на мобільному: другий рядок */

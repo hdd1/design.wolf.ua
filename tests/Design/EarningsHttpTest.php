@@ -63,7 +63,7 @@ final class EarningsHttpTest extends TestCase
     }
 
     /** Замовлення клієнта з обраною пропозицією дизайнера і проведеною покупкою на $amountDesigner (гонорар) */
-    private function purchase(int $designerId, int $amountDesigner, string $title, string $paidAt, int $status = 2): int
+    private function purchase(int $designerId, int $amountDesigner, string $title, ?string $paidAt, int $status = 2): int
     {
         $orderId = Sql::insert('design_orders', [
             'customer_id' => self::clientId(), 'product_id' => Products::visible()[0]['id'], 'mode' => 1, 'status' => OrderStatus::PURCHASED,
@@ -178,6 +178,37 @@ final class EarningsHttpTest extends TestCase
         $this->assertMatchesRegularExpression('#<a href="/earnings/" class="active">Заробіток#', $html);
         $this->assertStringNotContainsString('<form', $main, 'кнопки виведення немає');
         $this->assertStringNotContainsString('Вивести', $main);
+    }
+
+    /** Рядок заробітку веде в робочий простір замовлення «Куплено» (не 404); дата без року — як у решті сайту, року немає лише в поточному; NULL paid_at — без 1970 */
+    public function test_row_link_opens_workspace_and_dates(): void
+    {
+        $designer = $this->designer();
+        $a = $this->purchase($designer, 1000, 'Флаєр СТО', date('Y-m-d') . ' 10:30:00');
+        $old = $this->purchase($designer, 500, 'Старе замовлення', '2025-03-05 09:00:00');
+        $nullDate = $this->purchase($designer, 300, 'Без дати', null);
+
+        $main = self::main($this->html('/earnings/', $designer));
+        $this->assertStringContainsString('href="/feed/' . $a . '/"', $main);
+        $this->assertStringContainsString('5 березня 2025', $main);
+        $this->assertStringNotContainsString('1970', $main);
+        $this->assertStringNotContainsString('01.01', $main);
+        $this->assertStringContainsString('Без дати', $main);
+
+        [$code, , $html] = self::fetch('/feed/' . $a . '/', $designer);
+        $this->assertSame(200, $code, 'рядок заробітку → робочий простір, не 404');
+        $this->assertStringContainsString('Ще не закінчили', $html, 'робочий простір «Куплено»');
+        $this->assertStringContainsString('data-chat=', $html);
+        $this->assertStringNotContainsString('client-facts', $html, 'у робочому просторі фактів про клієнта немає');
+        $this->assertSame(200, self::fetch('/feed/' . $old . '/', $designer)[0]);
+        $this->assertSame(200, self::fetch('/feed/' . $nullDate . '/', $designer)[0]);
+    }
+
+    private function html(string $path, int $as): string
+    {
+        [$code, , $body] = self::fetch($path, $as);
+        $this->assertSame(200, $code, "GET $path");
+        return $body;
     }
 
     public function test_empty_state(): void

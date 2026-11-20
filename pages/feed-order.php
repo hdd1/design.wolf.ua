@@ -146,7 +146,7 @@ View::render('layout', [
         'order' => $order,
         'offer' => $offer,
         'client' => $client,
-        'facts' => Customers::factsLine(Customers::facts($order['customer_id'])),
+        'facts' => $workspace === null ? Customers::factsLine(Customers::facts($order['customer_id'])) : '',
         'forms' => $forms,
         'form' => $form,
         'values' => $values,

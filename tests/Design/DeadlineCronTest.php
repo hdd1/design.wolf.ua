@@ -129,7 +129,12 @@ final class DeadlineCronTest extends TestCase
         $this->assertArrayNotHasKey('customer_id', $sent[0]);
         $this->assertSame('Майстерня дизайну: №' . $inWork . ' — термін минув, макети не куплено (клієнт ' . $name . ', id ' . $client . ')', $sent[0]['msg']);
         $this->assertSame('Майстерня дизайну: №' . $inWork . ' — термін минув, макети не куплено. design.wolf.ua', $sent[0]['msgSMS']);
-        $this->assertCount(1, $this->sentFor([$rework]));
+        // «Доопрацювання»: макети вже купувались — без «не куплено»
+        $sentRework = $this->sentFor([$rework]);
+        $this->assertCount(1, $sentRework);
+        $this->assertSame('Майстерня дизайну: №' . $rework . ' — термін доопрацювання минув (клієнт ' . $name . ', id ' . $client . ')', $sentRework[0]['msg']);
+        $this->assertSame('Майстерня дизайну: №' . $rework . ' — термін доопрацювання минув. design.wolf.ua', $sentRework[0]['msgSMS']);
+        $this->assertStringNotContainsString('не куплено', $sentRework[0]['msg'] . $sentRework[0]['msgSMS']);
 
         // повтор: відмітка стоїть — куратору нічого не йде
         Notify::$sent = [];

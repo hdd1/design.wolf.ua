@@ -26,7 +26,7 @@ use Design\View;
     <div class="card-d earn-list">
       <?php foreach ($rows as $r): ?>
         <a class="earn-row" href="/feed/<?= $r['order_id'] ?>/">
-          <span class="when"><?= View::e(date("d.m.Y", strtotime($r["paid_at"]))) ?></span>
+          <span class="when"><?= View::e(View::date($r['paid_at']) . ($r['paid_at'] !== '' && substr($r['paid_at'], 0, 4) !== date('Y') ? ' ' . substr($r['paid_at'], 0, 4) : '')) ?></span>
           <span class="num">№<?= $r['order_id'] ?></span>
           <span class="title"><?= View::e($r['title']) ?></span>
           <span class="sum">+<?= View::e(View::price($r['amount_designer'])) ?></span>

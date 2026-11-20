@@ -768,7 +768,7 @@ final class Offers
     public static function notifyDeadline(): int
     {
         $rows = Sql::all(
-            'SELECT o.id, o.customer_id FROM design_orders o JOIN design_offers f ON f.id = o.chosen_offer_id
+            'SELECT o.id, o.customer_id, o.status FROM design_orders o JOIN design_offers f ON f.id = o.chosen_offer_id
              WHERE o.status IN (?, ?) AND o.notified_deadline_at IS NULL AND f.deadline < CURDATE() ORDER BY o.id',
             [OrderStatus::IN_WORK, OrderStatus::REWORK]);
 
@@ -783,9 +783,11 @@ final class Offers
             $done++;
             $customerId = (int)$r['customer_id'];
             $client = Customers::header($customerId)['name'] ?? 'Клієнт';
+            // «Доопрацювання»: макети вже купувались раз — «не куплено» було б неправдою
+            $what = (int)$r['status'] === OrderStatus::REWORK ? 'термін доопрацювання минув' : 'термін минув, макети не куплено';
             Notify::curator($customerId,
-                'Майстерня дизайну: №' . $r['id'] . ' — термін минув, макети не куплено (клієнт ' . $client . ', id ' . $customerId . ')',
-                'Майстерня дизайну: №' . $r['id'] . ' — термін минув, макети не куплено. design.wolf.ua');
+                'Майстерня дизайну: №' . $r['id'] . ' — ' . $what . ' (клієнт ' . $client . ', id ' . $customerId . ')',
+                'Майстерня дизайну: №' . $r['id'] . ' — ' . $what . '. design.wolf.ua');
         }
         return $done;
     }

@@ -28,6 +28,7 @@ final class CloudCopyTest extends TestCase
     private string|false $oldWork;
     private string|false $oldCloud;
     private int $maxCloud = 0;
+    private ?array $links = null;
     /** @var list<int> */
     private array $orders = [];
     /** @var list<string> імена файлів у хмарі, які міг створити тест */
@@ -42,6 +43,9 @@ final class CloudCopyTest extends TestCase
         $this->client = (int)getenv('DESIGN_TEST_CUSTOMER_ID');
         $this->designer = (int)getenv('DESIGN_TEST_DESIGNER_ID');
         if ($this->client <= 0 || $this->designer <= 0) self::markTestSkipped('DESIGN_TEST_CUSTOMER_ID / DESIGN_TEST_DESIGNER_ID не задані');
+        // Workspace::layouts(…, true) будує «Завантажити» купленого (FileGlobal::encode → симлінк у cloud-links/cf на файл
+        // у тимчасовій папці) — знімок до тесту, прибирання в tearDown
+        $this->links = CdnLinksGuard::snapshot();
         $this->maxCloud = (int)Sql::value('SELECT COALESCE(MAX(id), 0) FROM customers_cloud');
         $base = sys_get_temp_dir() . '/design-cloud-' . bin2hex(random_bytes(4));
         $this->work = "$base/work";
@@ -76,6 +80,7 @@ final class CloudCopyTest extends TestCase
                 Sql::exec("DELETE FROM design_offers WHERE order_id IN ($in)");
                 Sql::exec("DELETE FROM design_orders WHERE id IN ($in)");
             },
+            fn() => $this->links === null ? null : CdnLinksGuard::cleanup($this->links),
             fn() => exec('rm -rf ' . escapeshellarg(dirname($this->work))),
             static function (): void {
                 CloudCopy::$timeout = 20;

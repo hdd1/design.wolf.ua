@@ -33,6 +33,18 @@ final class CdnLinksGuard
         }
     }
 
+    /** @return list<string> каталоги й симлінки дерев шардів, власник яких — користувач цього процесу (одним find) */
+    public static function owned(): array
+    {
+        $out = [];
+        $roots = array_filter(self::ROOTS, 'is_dir');
+        if ($roots) {
+            exec('find ' . implode(' ', array_map('escapeshellarg', $roots)) . ' -mindepth 1 -maxdepth 4 -uid ' . posix_geteuid()
+                . ' \( -type d -o -type l \)', $out);
+        }
+        return $out;
+    }
+
     /** @return list<string> каталоги (d) або симлінки (l) у деревах шардів */
     private static function find(string $type): array
     {
@@ -43,3 +55,4 @@ final class CdnLinksGuard
         return $out;
     }
 }
+

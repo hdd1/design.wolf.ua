@@ -3,15 +3,17 @@
  * Панель «Макети для друку» робочого простору (макети 6.5 «дизайнер · завантаження макетів», «клієнт · макети завантажено»).
  * Дизайнер (edit): перетягування / «Обрати файли» (кілька одночасно, у кожного прогрес і «Скасувати»), підпис з олівцем,
  * «Замінити», «Видалити» — лише в некуплених; куплений — з позначкою «Куплено», без змін. Клієнт: список — підпис, ім'я
- * файла, розмір; купленому — «Завантажити» (адреса i.fastcdn з Workspace::layouts, лише клієнту) і місце під «Скопіювати
- * в хмару» (data-lp-cloud). Некупленим посилань немає ніде. Оживляє assets/js/workspace-layouts.js (той самий вигляд пунктів)
+ * файла, розмір; купленому — «Завантажити» (адреса i.fastcdn з Workspace::layouts, лише клієнту) і «Скопіювати в хмару»
+ * (data-lp-cloud: стан cloud_status — кнопка / «Копіюємо…» / «У хмарі ✓» / «Не вдалося, спробуйте ще»). Некупленим посилань
+ * немає ніде. Оживляє assets/js/workspace-layouts.js (той самий вигляд пунктів)
  * @var int $orderId
- * @var array{layouts:list<array{id:int, label:string, original_name:string, size:int, size_text:string, ext:string, purchased:bool, download:string}>, count:int, rev:string} $panel Workspace::layouts
+ * @var array{layouts:list<array{id:int, label:string, original_name:string, size:int, size_text:string, ext:string, purchased:bool, download:string, cloud_status:int}>, count:int, rev:string} $panel Workspace::layouts
  * @var bool $edit       дизайнер може змінювати (Previews::canWork)
  * @var bool $client     дивиться клієнт замовлення
  * @var string $csrf
  * @var int $chunk       розмір частини завантаження (ChunkUpload::partSize)
  */
+use Design\CloudCopy;
 use Design\Layouts;
 use Design\Settings;
 use Design\View;
@@ -22,7 +24,7 @@ $ext = static fn(string $e): string => $e === '' ? 'ФАЙЛ' : mb_strtoupper(mb
 $locked = $panel['count'] === 0 || in_array(false, array_column($panel['layouts'], 'purchased'), true);
 ?>
 <section class="lp card-d" id="layouts" tabindex="-1" data-layouts data-order="<?= (int)$orderId ?>" data-rev="<?= View::e($panel['rev']) ?>"
-  data-edit="<?= $edit ? '1' : '0' ?>"<?php if ($edit): ?> data-csrf="<?= View::e($csrf) ?>" data-chunk="<?= (int)$chunk ?>"
+  data-edit="<?= $edit ? '1' : '0' ?>"<?php if ($edit || $client): ?> data-csrf="<?= View::e($csrf) ?>"<?php endif ?><?php if ($edit): ?> data-chunk="<?= (int)$chunk ?>"
   data-max="<?= Settings::layoutMaxBytes() ?>" data-max-text="<?= View::e(View::bytes(Settings::layoutMaxBytes())) ?>" data-label-max="<?= Layouts::LABEL_MAX ?>"<?php endif ?>>
   <h2 class="lp-title">
     <?php if ($edit): ?><i class="fal fa-file-upload"></i><span>Макети для друку</span>
@@ -53,7 +55,12 @@ $locked = $panel['count'] === 0 || in_array(false, array_column($panel['layouts'
         <?php if ($l['download'] !== ''): ?>
         <div class="lp-acts">
           <a class="btn btn-outline-blue btn-sm lp-download" href="<?= View::e($l['download']) ?>"><i class="fal fa-download"></i> Завантажити</a>
-          <span class="lp-cloud" data-lp-cloud></span>
+          <span class="lp-cloud" data-lp-cloud="<?= (int)($l['cloud_status'] ?? 0) ?>"><?php switch ((int)($l['cloud_status'] ?? 0)):
+            case CloudCopy::QUEUED: ?><span class="lp-cloud-state"><i class="fal fa-spinner fa-spin"></i> Копіюємо…</span><?php break;
+            case CloudCopy::DONE: ?><span class="lp-cloud-state is-done"><i class="fal fa-cloud"></i> У хмарі ✓</span><?php break;
+            case CloudCopy::FAILED: ?><button type="button" class="btn btn-link btn-sm lp-cloud-go is-error" data-lp-cloud-go><i class="fal fa-redo"></i> Не вдалося, спробуйте ще</button><?php break;
+            default: ?><button type="button" class="btn btn-outline-blue btn-sm lp-cloud-go" data-lp-cloud-go><i class="fal fa-cloud-upload"></i> Скопіювати в хмару</button><?php
+          endswitch ?></span>
         </div>
         <?php endif ?>
       </div>
@@ -68,6 +75,9 @@ $locked = $panel['count'] === 0 || in_array(false, array_column($panel['layouts'
     </li>
     <?php endforeach ?>
   </ul>
+  <?php if (!$edit && $client): ?>
+  <p class="chat-error" data-lp-error role="alert" hidden></p>
+  <?php endif ?>
   <?php if ($edit): ?>
   <ul class="lp-list" data-lp-uploads aria-live="polite"></ul>
   <p class="chat-error" data-lp-error role="alert" hidden></p>

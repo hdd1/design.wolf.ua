@@ -2,7 +2,9 @@
 // - Панель (views/partials/layouts-panel.php, макети 6.5): у дизайнера — перетягування / «Обрати файли», кілька файлів
 //   паралельно (до 3 одночасно, решта чекає), у кожного прогрес і «Скасувати»; підпис олівцем, «Замінити», «Видалити» —
 //   лише в некуплених, куплений — «Куплено». У клієнта — список; купленому — «Завантажити» (адреса з сервера, лише клієнту)
-//   і місце під «Скопіювати в хмару» (data-lp-cloud). Некупленим посилань немає ніде.
+//   і «Скопіювати в хмару» (data-lp-cloud, стан cloud_status): натиск — POST …/layouts/{id}/cloud (лише черга, копіює крон),
+//   далі «Копіюємо…» і опитування GET /orders/{id}/layouts раз на 10 с, поки є макети в черзі → «У хмарі ✓» або
+//   «Не вдалося, спробуйте ще» (натиск — повтор). Некупленим посилань немає ніде.
 // - Після кожного перемальовування — подія 'ws:layouts' на document (detail — дані панелі): workspace-buy.js вмикає «Купую».
 // - window.DesignWs: el, icon, bytes, iconButton, request, failText, setTurn («чий хід» у шапці), layouts(panel, root) —
 //   панель {refresh, render, rev, pick} і panel(orderId) — уже створена панель замовлення. Підключається перед workspace.js.
@@ -83,6 +85,9 @@
     var list = panel.querySelector('[data-lp-list]');
     var errorBox = panel.querySelector('[data-lp-error]');
     var loading = false, again = false, renaming = null;
+    // Опитування стану копій у хмару: раз на 10 с, поки є макет у черзі (data-cloud-poll — інший інтервал для тестів)
+    var cloudTimer = null;
+    var CLOUD_POLL = +panel.dataset.cloudPoll || 10000;
     // id макетів, заміна яких ще завантажується: у їхніх пунктах «Замінити», «Видалити» й олівець вимкнено
     var replacing = {};
 
@@ -118,9 +123,7 @@
         a.appendChild(icon('fa-download'));
         a.appendChild(document.createTextNode(' Завантажити'));
         acts.appendChild(a);
-        var cloud = el('span', 'lp-cloud');
-        cloud.dataset.lpCloud = '';
-        acts.appendChild(cloud);
+        acts.appendChild(cloudBox(l.cloud_status || 0));
         info.appendChild(acts);
       }
       li.appendChild(info);
@@ -145,6 +148,45 @@
         li.appendChild(lock);
       }
       return li;
+    }
+
+    // «Скопіювати в хмару» (як у layouts-panel.php): 0 кнопка, 1 «Копіюємо…», 2 «У хмарі ✓», 3 «Не вдалося, спробуйте ще»
+    function cloudBox(status) {
+      var box = el('span', 'lp-cloud');
+      box.dataset.lpCloud = status;
+      if (status === 1 || status === 2) {
+        var st = el('span', 'lp-cloud-state' + (status === 2 ? ' is-done' : ''));
+        st.appendChild(icon(status === 2 ? 'fa-cloud' : 'fa-spinner fa-spin'));
+        st.appendChild(document.createTextNode(status === 2 ? ' У хмарі ✓' : ' Копіюємо…'));
+        box.appendChild(st);
+      } else {
+        var b = el('button', status === 3 ? 'btn btn-link btn-sm lp-cloud-go is-error' : 'btn btn-outline-blue btn-sm lp-cloud-go');
+        b.type = 'button';
+        b.dataset.lpCloudGo = '';
+        b.appendChild(icon(status === 3 ? 'fa-redo' : 'fa-cloud-upload'));
+        b.appendChild(document.createTextNode(status === 3 ? ' Не вдалося, спробуйте ще' : ' Скопіювати в хмару'));
+        box.appendChild(b);
+      }
+      return box;
+    }
+
+    // Поки хоч один макет у черзі хмари — перечитати панель за CLOUD_POLL (один таймер на панель)
+    function cloudPoll() {
+      clearTimeout(cloudTimer);
+      cloudTimer = null;
+      if (list.querySelector('[data-lp-cloud="1"]')) cloudTimer = setTimeout(refresh, CLOUD_POLL);
+    }
+
+    // Натиск «Скопіювати в хмару» / «Спробуйте ще»: сервер лише ставить у чергу → панель з відповіді, далі опитування
+    function cloudRequest(li, button) {
+      button.disabled = true;
+      error('');
+      request('POST', '/orders/' + orderId + '/layouts/' + li.dataset.lpId + '/cloud', { csrf: panel.dataset.csrf }, function (status, json) {
+        if (status === 200 && json && json.layouts) { render(json); return; }
+        button.disabled = false;
+        error(failText(status, json, 'Не вдалося поставити копію в чергу — спробуйте ще раз'));
+        if (status === 422) refresh();
+      });
     }
 
     // Пункт макета, який зараз замінюється: кнопки вимкнено, щоб друга заміна / видалення не зустрілись із першою
@@ -175,6 +217,7 @@
       var lock = panel.querySelector('[data-lp-lock]');
       if (lock) lock.hidden = data.count > 0 && data.layouts.every(function (l) { return l.purchased; });
       if (data.turn) setTurn(data.turn);
+      cloudPoll();
       document.dispatchEvent(new CustomEvent('ws:layouts', { detail: { order: orderId, layouts: data.layouts } }));
     }
 
@@ -185,6 +228,7 @@
       request('GET', '/orders/' + orderId + '/layouts', null, function (status, json) {
         loading = false;
         if (status === 200 && json && json.layouts) render(json);
+        else cloudPoll();   // збій звʼязку — опитування копій у хмару не зупиняється
         if (again) { again = false; refresh(); }
       });
     }
@@ -250,6 +294,8 @@
 
     list.addEventListener('click', function (e) {
       var li = e.target.closest('.lp-item');
+      var go = e.target.closest('[data-lp-cloud-go]');
+      if (li && go && !go.disabled) { cloudRequest(li, go); return; }
       if (!li || !edit || replacing[li.dataset.lpId]) return;
       if (e.target.closest('[data-lp-rename]')) startRename(li);
       else if (e.target.closest('[data-lp-replace]')) {
@@ -401,6 +447,8 @@
         if (running || queue.length) { e.preventDefault(); e.returnValue = ''; }
       });
     }
+
+    cloudPoll();   // сторінка відкрилась, коли копія ще в черзі
 
     return panels[orderId] = {
       refresh: refresh,

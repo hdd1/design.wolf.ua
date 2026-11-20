@@ -345,8 +345,8 @@ final class LayoutsHttpTest extends TestCase
         $this->assertSame(200, $code);
         $this->assertSame(2, $panel['count']);
         $this->assertSame([$a['id'], $b['id']], array_column($panel['layouts'], 'id'));
-        $this->assertSame(['id', 'label', 'original_name', 'size', 'size_text', 'ext', 'purchased', 'download'], array_keys($panel['layouts'][0]));
-        $this->assertSame([[false, ''], [false, '']], array_map(static fn($l) => [$l['purchased'], $l['download']], $panel['layouts']));
+        $this->assertSame(['id', 'label', 'original_name', 'size', 'size_text', 'ext', 'purchased', 'download', 'cloud_status'], array_keys($panel['layouts'][0]));
+        $this->assertSame([[false, '', 0], [false, '', 0]], array_map(static fn($l) => [$l['purchased'], $l['download'], $l['cloud_status']], $panel['layouts']));
         $this->assertSame('293 КБ', str_replace("\u{00A0}", ' ', $panel['layouts'][1]['size_text']));
         $this->assertSame('Ваш хід: перевірте макети і натисніть «Купую»', $panel['turn']['text']);
         [, $poll] = self::getJson("/offers/$offerId/messages?after=0", $client);

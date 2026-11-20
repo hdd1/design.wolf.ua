@@ -22,6 +22,7 @@ final class Router
         ['POST', '#^/orders/(?<id>' . self::ID . ')/previews/(?<preview>' . self::ID . ')$#', 'order-preview'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/layouts$#', 'order-layouts'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')/layouts/(?<file>' . self::ID . ')$#', 'order-layout'],
+        ['POST', '#^/orders/(?<id>' . self::ID . ')/layouts/(?<file>' . self::ID . ')/cloud$#', 'order-cloud'],
         ['GET', '#^/orders/(?<id>' . self::ID . ')/buy$#', 'order-buy-quote'],
         ['POST', '#^/orders/(?<id>' . self::ID . ')/buy$#', 'order-buy'],
         ['GET', '#^/designer/$#', 'designer'],

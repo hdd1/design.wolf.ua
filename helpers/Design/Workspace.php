@@ -6,7 +6,8 @@ namespace Design;
  * Робочий простір обраної пропозиції (етап 4, макети 6.5): плашка «чий хід» для сторони, список макетів для панелі
  * «Макети для друку» і те, що несе опитування листування, щоб зміни доходили до співрозмовника без перезавантаження:
  * «чий хід», версія списку макетів (змінилась — панель перечитує GET /orders/{id}/layouts) і приховані прев'ю.
- * Адреса макета («Завантажити», i.fastcdn cf) — лише купленому й лише клієнту (layouts($orderId, true)); некупленим — ніде
+ * Адреса макета («Завантажити», i.fastcdn cf) і стан копії в хмару — лише купленому й лише клієнту (layouts($orderId, true));
+ * некупленим — ніде
  */
 final class Workspace
 {
@@ -89,12 +90,14 @@ final class Workspace
     /**
      * Активні макети замовлення для панелі: підпис, ім'я файла, розмір (size_text — «2,4 МБ»), розширення, чи куплено; версія списку.
      * download — «Завантажити» (FileGlobal::encode: симлінк у cloud-links/cf і адреса i.fastcdn з іменем «Дизайн №N — {підпис}.{розш.}»)
-     * лише для купленого макета і лише коли дивиться клієнт ($client); інакше '' і симлінк не створюється
-     * @return array{layouts:list<array{id:int, label:string, original_name:string, size:int, size_text:string, ext:string, purchased:bool, download:string}>, count:int, rev:string}
+     * лише для купленого макета і лише коли дивиться клієнт ($client); інакше '' і симлінк не створюється. cloud_status — стан
+     * копії в хмару (CloudCopy::statuses) теж лише купленому й клієнту, інакше 0
+     * @return array{layouts:list<array{id:int, label:string, original_name:string, size:int, size_text:string, ext:string, purchased:bool, download:string, cloud_status:int}>, count:int, rev:string}
      */
     public static function layouts(int $orderId, bool $client): array
     {
         $list = Layouts::forOrder($orderId);
+        $cloud = $client ? CloudCopy::statuses($orderId) : [];
         return [
             'layouts' => array_map(static fn(array $l): array => [
                 'id' => $l['id'],
@@ -105,6 +108,8 @@ final class Workspace
                 'ext' => $l['ext'],
                 'purchased' => $l['purchased'],
                 'download' => $client && $l['purchased'] ? self::download($orderId, $l) : '',
+                // «Скопіювати в хмару» — лише клієнту й лише купленим: 0 немає, 1 у черзі, 2 у хмарі, 3 помилка (CloudCopy)
+                'cloud_status' => $client && $l['purchased'] ? ($cloud[$l['id']] ?? CloudCopy::NONE) : CloudCopy::NONE,
             ], $list),
             'count' => count($list),
             'rev' => Layouts::rev($orderId, $list),

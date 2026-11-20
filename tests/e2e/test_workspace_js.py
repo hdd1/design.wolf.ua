@@ -7,7 +7,9 @@ page.route (адреса https://ws.test/ вигадана — у мережу �
 (3) системне повідомлення з адресою в тексті chat.js показує текстом, без посилання;
 (4) «Купую» (справжні partials/workspace і pay-modal, workspace-buy.js, bootstrap): вікно перечитує суму, подвійний натиск
 «Оплатити» — один запит, успіх — «Завантажити» в панелі, «чий хід» і статус оновлено, «Купую» зникла; відмова — текст
-і свіжий вміст вікна.
+і свіжий вміст вікна;
+(5) «Скопіювати в хмару» купленого макета: подвійний натиск — один запит, «Копіюємо…» з опитуванням панелі, поки макет у
+черзі, → «У хмарі ✓» (опитування зупинилось); помилка — «Не вдалося, спробуйте ще», натиск — повторний запит.
 Запуск: python3 -m pytest tests/e2e/test_workspace_js.py -q
 """
 import json, os, re, subprocess
@@ -61,6 +63,8 @@ class Site:
         self.html = html or page_html()
         self.upload = None
         self.buy = None
+        self.cloud = None
+        self.layout_gets = 0
         self.quotes = 0
         self.uploads = []
         self.layouts = [{'id': 7, 'label': 'Візитка', 'original_name': 'Візитка.pdf', 'size': 1000, 'size_text': '1000 Б', 'ext': 'pdf'}]
@@ -86,7 +90,10 @@ class Site:
                               '<button type="button" class="btn" data-pay-submit data-amount="1200">Оплатити</button>'})
         elif path == '/orders/1/buy':
             self.buy(route, request)
+        elif path == '/orders/1/layouts/7/cloud' and request.method == 'POST':
+            self.cloud(route, request)
         elif path == '/orders/1/layouts':
+            self.layout_gets += 1
             self.json(route, {'layouts': self.layouts, 'count': len(self.layouts), 'rev': 'r%d' % len(self.uploads)})
         elif path == '/offers/1/messages':
             msgs, self.messages = self.messages, []
@@ -275,3 +282,59 @@ def test_buy_refusal_without_window_no_retry_reload_on_close():
             pg.click('[data-pay] [data-bs-dismiss="modal"]')
         assert pg.evaluate('() => window.__stay') is None, 'сторінку перезавантажено'
     run(test, buy_html())
+
+
+def cloud_layout(status):
+    return {'id': 7, 'label': 'Візитка', 'original_name': 'Візитка.pdf', 'size': 1000, 'size_text': '1000 Б', 'ext': 'pdf',
+            'purchased': True, 'download': 'https://dev.i.fastcdn.kiev.ua/cf/aa/bb/cc/dd.pdf?name=x&download=1', 'cloud_status': status}
+
+
+def cloud_html() -> str:
+    # Клієнт, куплений макет (cloud_status 0); опитування копій — раз на 300 мс замість 10 с
+    render = RENDER_BUY.replace('"purchased" => false, "download" => ""',
+                                '"purchased" => true, "download" => "https://dev.i.fastcdn.kiev.ua/cf/aa/bb/cc/dd.pdf", "cloud_status" => 0')
+    html = page_html(render, ('vendor/bootstrap-5.3.3/js/bootstrap.bundle.min.js', 'chat.js', 'workspace-layouts.js',
+                              'workspace.js', 'workspace-buy.js'))
+    return html.replace('data-layouts ', 'data-layouts data-cloud-poll="300" ', 1)
+
+
+def test_cloud_copy_button_states():
+    def test(pg, site):
+        cloud = '.lp-item[data-lp-id="7"] [data-lp-cloud]'
+        held = []
+        site.cloud = lambda route, request: held.append((route, request))
+        assert pg.inner_text(cloud).strip() == 'Скопіювати в хмару'
+        pg.dblclick(cloud + ' [data-lp-cloud-go]')
+        pg.wait_for_timeout(300)
+        assert len(held) == 1, 'подвійний натиск — один запит'
+        route, request = held.pop()
+        assert 'name="csrf"\r\n\r\nx' in (request.post_data or '')
+        site.layouts = [cloud_layout(1)]
+        site.json(route, {'layouts': [cloud_layout(1)], 'count': 1, 'rev': 'r2'})
+        pg.wait_for_function('s => document.querySelector(s).dataset.lpCloud === "1"', arg=cloud)
+        assert pg.inner_text(cloud).strip() == 'Копіюємо…'
+
+        # У черзі — панель перечитується; крон скопіював — «У хмарі ✓», опитування зупинилось
+        gets = site.layout_gets
+        pg.wait_for_timeout(900)
+        assert site.layout_gets >= gets + 2, 'опитування, поки макет у черзі'
+        site.layouts = [cloud_layout(2)]
+        pg.wait_for_function('s => document.querySelector(s).dataset.lpCloud === "2"', arg=cloud)
+        assert pg.inner_text(cloud).strip() == 'У хмарі ✓'
+        assert pg.eval_on_selector_all(cloud + ' button', 'b => b.length') == 0
+        gets = site.layout_gets
+        pg.wait_for_timeout(900)
+        assert site.layout_gets == gets, 'у хмарі — опитування зупинилось'
+
+        # Помилка копіювання — «Не вдалося, спробуйте ще»; натиск — новий запит у чергу
+        pg.evaluate("() => window.DesignWs.panel('1').render({layouts: [%s], count: 1, rev: 'r3'})" % json.dumps(cloud_layout(3)))
+        assert pg.inner_text(cloud).strip() == 'Не вдалося, спробуйте ще'
+        pg.click(cloud + ' [data-lp-cloud-go]')
+        pg.wait_for_timeout(300)
+        assert len(held) == 1, 'повтор після помилки'
+        route, _ = held.pop()
+        site.json(route, {'error': 'Сесія застаріла — оновіть сторінку'}, 403)
+        pg.wait_for_function('() => !document.querySelector("[data-lp-error]").hidden')
+        assert pg.inner_text('[data-lp-error]') == 'Сесія застаріла — оновіть сторінку'
+        assert pg.is_enabled(cloud + ' [data-lp-cloud-go]'), 'після відмови можна натиснути знову'
+    run(test, cloud_html())

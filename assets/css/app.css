@@ -784,6 +784,10 @@ body.pvv-open{overflow:hidden}
 .lp-acts{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-2);margin-top:var(--s-2)}
 .lp-download{display:inline-flex;align-items:center;gap:.4rem;font-weight:600}
 .lp-cloud:empty{display:none}
+.lp-cloud-go{display:inline-flex;align-items:center;gap:.4rem}
+.lp-cloud-go.is-error{color:var(--red);padding-left:0;padding-right:0}
+.lp-cloud-state{display:inline-flex;align-items:center;gap:.4rem;font-size:.875rem;color:var(--text-2)}
+.lp-cloud-state.is-done{color:var(--green);font-weight:600}
 .lp-bought{display:inline-flex;align-items:center;gap:.3rem;flex:none;font-size:.78rem;font-weight:700;color:var(--green);background:var(--green-soft);border-radius:var(--r-pill);padding:.2rem .6rem}
 .lp-lock[hidden],.ws-soon[hidden]{display:none}
 .ws-status{display:inline-flex}

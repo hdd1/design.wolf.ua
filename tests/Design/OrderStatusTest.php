@@ -68,4 +68,24 @@ final class OrderStatusTest extends TestCase
             foreach ([0, 1, 5] as $n) $this->assertStringNotContainsString('незабаром', S::turn($s, 0, $n)['text']);
         }
     }
+
+    /**
+     * Доопрацювання: пропозиція без відповіді — «Чекає вашої відповіді» (хід клієнта) / «Чекаємо відповіді клієнта»;
+     * «Доопрацювання» — як «В роботі» (layouts — нові, ще не куплені макети)
+     */
+    public function test_rework_turns(): void
+    {
+        $this->assertSame(['mine' => true, 'text' => 'Чекає вашої відповіді'], S::turn(S::PURCHASED, 0, 0, true));
+        $this->assertSame(['mine' => false, 'text' => 'Макети ваші'], S::turn(S::PURCHASED, 0, 0, false));
+        $this->assertSame(['mine' => true, 'text' => 'Ваш хід: перевірте макети і натисніть «Купую»'], S::turn(S::REWORK, 0, 1));
+        $this->assertSame(['mine' => false, 'text' => 'Дизайнер працює над змінами'], S::turn(S::REWORK, 0, 0));
+        $this->assertSame(['mine' => false, 'text' => 'Дизайнер працює над змінами'], S::turn(S::REWORK, 0, 0, true), 'pending — лише для «Куплено»');
+
+        $this->assertSame(['mine' => false, 'text' => 'Чекаємо відповіді клієнта'], S::designerTurn(10, 12, 2, 0, S::PURCHASED, true));
+        $this->assertSame(['mine' => true, 'text' => 'Ваш хід: клієнт написав · відповідайте'], S::designerTurn(13, 12, 2, 0, S::PURCHASED, true));
+        $this->assertSame(['mine' => false, 'text' => 'Готово'], S::designerTurn(10, 12, 2, 0, S::PURCHASED, false));
+        $this->assertSame(['mine' => false, 'text' => "Коли клієнт погодить прев'ю — завантажте макети"], S::designerTurn(10, 12, 2, 0, S::REWORK));
+        $this->assertSame(['mine' => false, 'text' => 'Макети завантажено · чекаємо, поки клієнт натисне «Купую»'], S::designerTurn(10, 12, 2, 1, S::REWORK));
+        $this->assertSame(['mine' => true, 'text' => 'Ваш хід: клієнт написав · відповідайте'], S::designerTurn(13, 12, 2, 1, S::REWORK));
+    }
 }

@@ -7,7 +7,8 @@
  * Замовлення з обраним дизайнером «В роботі», «Куплено», «Доопрацювання» — робочий простір (макет 6.5,
  * views/partials/workspace.php): шапка з ціною, «Купую» з вікном оплати (views/partials/pay-modal.php, Purchases::quote — поки
  * замовлення можна купити), «чий хід» з фактичною кількістю макетів, стрічка обраного листування і панель «Макети»
- * («Завантажити» в куплених)
+ * («Завантажити» в куплених). Доопрацювання: «Прийняти» / «Відмовитися» на пропозицію дизайнера, «Скасувати доопрацювання»
+ * (POST /orders/{id}/rework; після помилки сторінку рендерить pages/order-rework.php з $posted)
  * Після помилки POST сторінку рендерить pages/order-update.php з $posted
  * @var array $params
  * @var ?array{error:string} $posted
@@ -25,6 +26,7 @@ use Design\Orders;
 use Design\OrderStatus;
 use Design\Products;
 use Design\Purchases;
+use Design\Rework;
 use Design\View;
 use Design\Workspace;
 
@@ -132,11 +134,15 @@ $toasts = [
     'chosen' => 'Дизайнера обрано — він отримав сповіщення',
     'invited' => 'Запрошення надіслано — дизайнер отримав сповіщення',
     'collect' => 'Бриф опубліковано — дизайнери вже бачать його',
+    'rework-accepted' => 'Доопрацювання прийнято — дизайнер отримав сповіщення',
+    'rework-declined' => 'Ви відмовилися від доопрацювання',
+    'rework-cancelled' => 'Доопрацювання скасовано',
 ];
 
 $workspace = null;
 if ($ws && $chat !== null && $chat['workspace'] !== null) {
     $quote = Purchases::quote($id, $me);
+    $reworkOrder = Rework::order($id);
     $workspace = [
         'role' => 'client',
         'order' => $order,
@@ -144,7 +150,7 @@ if ($ws && $chat !== null && $chat['workspace'] !== null) {
         'back' => ['href' => '/orders/', 'label' => 'Мої замовлення'],
         'who' => trim('Дизайнер ' . $chosen['designer_name']),
         'whoName' => $chosen['designer_name'] !== '' ? $chosen['designer_name'] : 'Дизайнер',
-        'turn' => Workspace::turn($access['offer'], Messages::ROLE_CLIENT),
+        'turn' => Workspace::turn($access['offer'], Messages::ROLE_CLIENT, $reworkOrder),
         'chat' => $chat,
         'panel' => Workspace::layouts($id, true),
         'edit' => false,
@@ -152,6 +158,7 @@ if ($ws && $chat !== null && $chat['workspace'] !== null) {
         'chunk' => $chat['workspace']['chunk'],
         'error' => $posted['error'] ?? null,
         'quote' => $quote,
+        'rework' => Workspace::rework($access['offer'], Messages::ROLE_CLIENT, $reworkOrder),
     ];
 }
 

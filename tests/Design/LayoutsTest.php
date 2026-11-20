@@ -455,11 +455,16 @@ final class LayoutsTest extends TestCase
         $try(self::A, $orderId, $mine['id']);
         Sql::exec('UPDATE design_designers SET status = ? WHERE customer_id = ?', [DesignerStatus::APPROVED, self::A]);
 
-        // замовлення не «В роботі» (рахунок, куплено, скасовано, чернетка)
-        foreach ([OrderStatus::AWAITING_INVOICE, OrderStatus::PURCHASED, OrderStatus::REWORK, OrderStatus::CANCELLED, OrderStatus::COLLECTING] as $status) {
+        // замовлення не «В роботі» і не «Доопрацювання» (рахунок, куплено, скасовано, чернетка)
+        foreach ([OrderStatus::AWAITING_INVOICE, OrderStatus::PURCHASED, OrderStatus::CANCELLED, OrderStatus::COLLECTING] as $status) {
             Sql::exec('UPDATE design_orders SET status = ? WHERE id = ?', [$status, $orderId]);
             $try(self::A, $orderId, $mine['id']);
         }
+        // «Доопрацювання» — дизайнер працює як «В роботі» (етап 5)
+        Sql::exec('UPDATE design_orders SET status = ? WHERE id = ?', [OrderStatus::REWORK, $orderId]);
+        Layouts::rename($mine['id'], self::A, 'Доопрацьований');
+        $this->assertSame('Доопрацьований', (string)Sql::value('SELECT label FROM design_files WHERE id = ?', [$mine['id']]));
+        Layouts::rename($mine['id'], self::A, 'mine');
         Sql::exec('UPDATE design_orders SET status = ? WHERE id = ?', [OrderStatus::IN_WORK, $orderId]);
 
         // пропозицію не «обрано»

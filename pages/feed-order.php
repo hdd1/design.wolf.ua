@@ -5,8 +5,9 @@
  * ?form=propose|edit|take|decline — відкрита форма; ?done=… — тост після дії.
  * Обраний дизайнер замовлення «В роботі», «Куплено», «Доопрацювання» — робочий простір (макет 6.5, views/partials/workspace.php):
  * шапка «Ви отримаєте · клієнт побачить», «Термін до …», «Завантажити макети» (поки можна працювати), «чий хід» дизайнера,
- * стрічка і панель «Макети для друку» (куплені — без змін, без посилань).
- * Після помилки POST сторінку рендерить pages/feed-offer.php з $posted (form, values, error)
+ * стрічка і панель «Макети для друку» (куплені — без змін, без посилань). «Куплено» — «Ще не закінчили» (?form=rework — форма
+ * пропозиції доопрацювання, POST /orders/{id}/rework), «чий хід» з пропозицією без відповіді; «Доопрацювання» — як «В роботі».
+ * Після помилки POST сторінку рендерить pages/feed-offer.php (або pages/order-rework.php, form = rework) з $posted (form, values, error)
  * @var array $params
  * @var ?array{form:string, values:array{text:string,price:string,deadline:string,reason:string}, error:string} $posted
  */
@@ -24,6 +25,7 @@ use Design\OfferStatus;
 use Design\Orders;
 use Design\OrderStatus;
 use Design\Previews;
+use Design\Rework;
 use Design\Settings;
 use Design\View;
 use Design\Workspace;
@@ -95,10 +97,18 @@ $toasts = [
     'withdrawn' => 'Пропозицію відкликано',
     'accepted' => 'Ви взяли замовлення — клієнт побачить вашу пропозицію',
     'declined' => 'Ви відмовилися від замовлення',
+    'rework-sent' => 'Пропозицію доопрацювання надіслано — клієнт отримав сповіщення',
 ];
 
 $workspace = null;
 if ($chat !== null && $chat['workspace'] !== null && in_array($order['status'], Workspace::STATUSES, true)) {
+    $reworkOrder = Rework::order($id);
+    $rework = Workspace::rework($access['offer'], Messages::ROLE_DESIGNER, $reworkOrder);
+    // Форма «Ще не закінчили»: після помилки — введене; інакше сума = уже нараховане (та сама — правка без доплати), дата порожня
+    $rework['form'] = ($posted['form'] ?? Http::str($_GET, 'form')) === 'rework';
+    $rework['values'] = ($posted['form'] ?? '') === 'rework'
+        ? ['price' => $posted['values']['price'], 'deadline' => $posted['values']['deadline']]
+        : ['price' => (string)$rework['paid_designer'], 'deadline' => ''];
     $workspace = [
         'role' => 'designer',
         'order' => $order,
@@ -106,13 +116,14 @@ if ($chat !== null && $chat['workspace'] !== null && in_array($order['status'], 
         'back' => ['href' => '/my-offers/?tab=work', 'label' => 'Мої пропозиції'],
         'who' => 'Клієнт ' . $client,
         'whoName' => $client,
-        'turn' => Workspace::turn($access['offer'], Messages::ROLE_DESIGNER),
+        'turn' => Workspace::turn($access['offer'], Messages::ROLE_DESIGNER, $reworkOrder),
         'chat' => $chat,
         'panel' => Workspace::layouts($id, false),
         'edit' => $chat['workspace']['upload'],
         'csrf' => $csrf,
         'chunk' => $chat['workspace']['chunk'],
         'error' => $posted['error'] ?? null,
+        'rework' => $rework,
     ];
 }
 

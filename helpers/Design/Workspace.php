@@ -56,35 +56,88 @@ final class Workspace
 
     /**
      * Плашка «чий хід» над стрічкою для сторони role (Messages::ROLE_CLIENT / ROLE_DESIGNER) обраної пропозиції offer (Offers::get).
-     * Клієнт — OrderStatus::turn з фактичною кількістю макетів; дизайнер — OrderStatus::designerTurn
+     * Клієнт — OrderStatus::turn, дизайнер — OrderStatus::designerTurn; «В роботі» і «Доопрацювання» — з кількістю нових (ще не
+     * куплених) макетів, «Куплено» — з пропозицією доопрацювання без відповіді (Rework::pending: сума доплати й дата в sub).
+     * $order — Rework::order (немає — читається тут)
      * @return array{mine:bool, text:string, sub:string, icon:string}
      */
-    public static function turn(array $offer, int $role): array
+    public static function turn(array $offer, int $role, ?array $order = null): array
     {
         $orderId = $offer['order_id'];
         $status = $offer['order_status'];
-        $layouts = Layouts::count($orderId);
+        $order ??= Rework::order($orderId);
+        $pending = $order !== null && $order['status'] === $status ? Rework::pending($order) : null;
+        $layouts = in_array($status, [OrderStatus::IN_WORK, OrderStatus::REWORK], true) ? Layouts::countNew($orderId) : 0;
+        $until = $pending !== null ? View::date($pending['deadline']) : '';
         if ($role === Messages::ROLE_DESIGNER) {
             [$client, $designer] = Messages::lastIds($offer['id']);
-            $t = OrderStatus::designerTurn($client, $designer, Previews::visibleCount($orderId), $layouts, $status);
-            $icon = $t['mine'] ? 'fa-hand-paper' : ($status === OrderStatus::PURCHASED ? 'fa-check-circle' : 'fa-hourglass-half');
-            return $t + ['sub' => '', 'icon' => $icon];
+            $t = OrderStatus::designerTurn($client, $designer, Previews::visibleCount($orderId), $layouts, $status, $pending !== null);
+            $sub = $pending !== null && !$t['mine']
+                ? 'Ви запропонували доопрацювання: ' . View::price($pending['price_designer']) . ' на руки, до ' . $until
+                    . ($pending['extra'] > 0 ? ' · клієнт доплатить +' . View::price($pending['extra']) : ' · для клієнта без доплати')
+                : '';
+            $icon = match (true) {
+                $t['mine'] => 'fa-hand-paper',
+                $status === OrderStatus::PURCHASED && $pending === null => 'fa-check-circle',
+                default => 'fa-hourglass-half',
+            };
+            return $t + ['sub' => $sub, 'icon' => $icon];
         }
-        $t = OrderStatus::turn($status, 0, $layouts);
+        $t = OrderStatus::turn($status, 0, $layouts, $pending !== null);
         $sub = '';
-        if ($status === OrderStatus::IN_WORK) {
+        if ($status === OrderStatus::IN_WORK || $status === OrderStatus::REWORK) {
             $sub = $layouts > 0
-                ? 'Дизайнер завантажив ' . View::plural($layouts, 'макет', 'макети', 'макетів') . '. Файли відкриються після покупки'
+                ? 'Дизайнер завантажив ' . View::plural($layouts, ($status === OrderStatus::REWORK ? 'новий ' : '') . 'макет',
+                    ($status === OrderStatus::REWORK ? 'нові ' : '') . 'макети', ($status === OrderStatus::REWORK ? 'нових ' : '') . 'макетів')
+                    . '. Файли відкриються після покупки'
                 : ($offer['deadline'] ? 'Термін — до ' . View::date($offer['deadline']) . '. ' : '') . 'Пишіть у чат, якщо щось змінилось';
+        } elseif ($pending !== null) {
+            $sub = 'Дизайнер пропонує доопрацювання: ' . ($pending['extra'] > 0 ? '+' . View::price($pending['extra']) : 'без доплати')
+                . ', до ' . date('d.m.Y', strtotime($pending['deadline']));
         } elseif ($status === OrderStatus::PURCHASED) {
             $sub = 'Файли — у панелі «Макети»: «Завантажити»';
         }
         $icon = match (true) {
+            $pending !== null => 'fa-hand-paper',
             $status === OrderStatus::PURCHASED => 'fa-check-circle',
             $t['mine'] => 'fa-file-check',
             default => 'fa-pencil-ruler',
         };
         return $t + ['sub' => $sub, 'icon' => $icon];
+    }
+
+    /**
+     * Доопрацювання для шапки робочого простору (views/partials/workspace.php): pending — пропозиція без відповіді (Rework::pending);
+     * propose — дизайнер може натиснути «Ще не закінчили» (обраний схвалений дизайнер, «Куплено», пропозиції немає);
+     * answer — клієнт може «Прийняти» / «Відмовитися»; cancel — клієнт може «Скасувати доопрацювання»;
+     * paid_* — уже сплачене / нараховане, k — націнка обраної пропозиції, round — крок округлення (форма і її жива підказка);
+     * stage — стан для опитування (змінився — сторінка перечитується)
+     * @return array{pending:?array, propose:bool, answer:bool, cancel:bool, paid_client:int, paid_designer:int, k:float, round:int, stage:string}
+     */
+    public static function rework(array $offer, int $role, ?array $order = null): array
+    {
+        $order ??= Rework::order($offer['order_id']);
+        $status = $order['status'] ?? $offer['order_status'];
+        $pending = $order !== null ? Rework::pending($order) : null;
+        $designer = $role === Messages::ROLE_DESIGNER;
+        return [
+            'pending' => $pending,
+            'propose' => $designer && $status === OrderStatus::PURCHASED && $pending === null
+                && Designers::status($offer['designer_id']) === DesignerStatus::APPROVED,
+            'answer' => !$designer && $pending !== null,
+            'cancel' => !$designer && $status === OrderStatus::REWORK,
+            'paid_client' => $order['paid_client'] ?? 0,
+            'paid_designer' => $order['paid_designer'] ?? 0,
+            'k' => $offer['markup_percent'] ?? 0.0,
+            'round' => Settings::priceRound(),
+            'stage' => self::stage($status, $pending !== null),
+        ];
+    }
+
+    /** Стан замовлення для опитування: статус і «є пропозиція доопрацювання» («6», «6p», «7») */
+    public static function stage(int $status, bool $pending): string
+    {
+        return $status . ($pending ? 'p' : '');
     }
 
     /**
@@ -130,13 +183,17 @@ final class Workspace
     }
 
     /**
-     * Додаток до відповіді опитування листування обраної пропозиції
-     * @return array{turn:array, layouts_rev:string, hidden_previews:list<int>}
+     * Додаток до відповіді опитування листування обраної пропозиції; stage — стан замовлення (статус, пропозиція доопрацювання):
+     * змінився — сторінка перечитується (кнопки доопрацювання, «Купую», завантаження макетів залежать від нього)
+     * @return array{turn:array, stage:string, layouts_rev:string, hidden_previews:list<int>}
      */
     public static function poll(array $offer, int $role): array
     {
+        $order = Rework::order($offer['order_id']);
+        $status = $order['status'] ?? $offer['order_status'];
         return [
-            'turn' => self::turn($offer, $role),
+            'turn' => self::turn(['order_status' => $status] + $offer, $role, $order),
+            'stage' => self::stage($status, $order !== null && Rework::pending($order) !== null),
             'layouts_rev' => Layouts::rev($offer['order_id']),
             'hidden_previews' => Previews::hiddenIds($offer['order_id']),
         ];

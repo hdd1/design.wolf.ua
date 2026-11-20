@@ -5,6 +5,10 @@
 //   по одному прев'ю за раз.
 // - Панель «Макети для друку» — assets/js/workspace-layouts.js (window.DesignWs, підключається раніше).
 // - Шапка (views/partials/workspace.php): «чий хід», вкладки «Чат / Макети» на телефоні, «Завантажити макети» веде до панелі.
+// - Доопрацювання (звичайні форми POST /orders/{id}/rework): жива підказка «Клієнт доплатить +N грн» у формі «Ще не закінчили»
+//   (як Rework::propose: P' = max(D'·(1 + k/100) вгору до кроку, сплачене)), підтвердження «Відмовитися» / «Скасувати
+//   доопрацювання» (data-ws-confirm). Опитування несе stage (статус і «є пропозиція»): змінився — сторінка перечитується, щойно
+//   це нічого не зламає (порожнє поле чату, немає прев'ю чи макета в дорозі) — кнопки й форми залежать від стану.
 // Дані — data-previews секції (перший рендер), подія 'chat:message' з chat.js (нові прев'ю з опитування чи відправки) і
 // 'chat:poll' (workspace: «чий хід»; layouts_rev — змінилась, то панель перечитує GET /orders/{id}/layouts; hidden_previews —
 // прев'ю, які співрозмовник приховав: картки стають заглушками без перезавантаження).
@@ -49,6 +53,59 @@
     return { show: show };
   }
 
+  // 1020 → «1 020 грн» (нерозривні пробіли, як View::price)
+  function money(n) {
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + '\u00a0грн';
+  }
+
+  // Як Price::client: P = D·(1 + k/100) вгору до кроку; цілі числа (соті частки відсотка) — без похибки float
+  function clientPrice(d, k, round) {
+    round = Math.max(1, round);
+    var num = d * (10000 + Math.round(k * 100));
+    var den = 10000 * round;
+    return Math.floor((num + den - 1) / den) * round;
+  }
+
+  // Форма «Ще не закінчили»: скільки доплатить клієнт (сервер рахує так само й однаково перевіряє)
+  document.querySelectorAll('[data-ws-rework]').forEach(function (form) {
+    var input = form.querySelector('[data-rework-price]');
+    var out = form.querySelector('[data-rework-client]');
+    var k = parseFloat(form.dataset.k) || 0;
+    var round = parseInt(form.dataset.round, 10) || 1;
+    var paidClient = +form.dataset.paidClient || 0;
+    var paidDesigner = +form.dataset.paidDesigner || 0;
+    function update() {
+      var digits = input.value.replace(/[\s\u00a0\u202f]/g, '');
+      if (!/^\d{1,7}$/.test(digits) || +digits < 1) { out.textContent = 'Вкажіть суму — покажемо доплату клієнта'; return; }
+      if (+digits < paidDesigner) { out.textContent = 'Не менше вже нарахованих ' + money(paidDesigner); return; }
+      var extra = Math.max(clientPrice(+digits, k, round), paidClient) - paidClient;
+      out.textContent = extra > 0 ? 'Клієнт доплатить +' + money(extra) : 'Для клієнта — без доплати';
+    }
+    input.addEventListener('input', update);
+    update();
+  });
+
+  // Підтвердження раніше за data-lock з app.js: скасоване не блокує форму
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (form.dataset && form.dataset.wsConfirm && !window.confirm(form.dataset.wsConfirm)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+
+  // Стан замовлення змінився (співрозмовник запропонував / прийняв / скасував доопрацювання, клієнт купив): перечитати сторінку,
+  // коли нічого не загубиться; інакше — на наступному опитуванні
+  function stageChanged(stage) {
+    var box = document.querySelector('[data-ws-turn][data-ws-stage]');
+    if (!box || !stage || box.dataset.wsStage === stage) return;
+    var input = document.querySelector('[data-chat-input]');
+    var compose = document.querySelector('[data-pv-compose]');
+    var busy = (input && input.value.trim() !== '') || (compose && !compose.hidden)
+      || document.querySelector('.lp-item.is-uploading, .lp-item.is-busy, .modal.show, [data-ws-rework]');
+    if (!busy) window.location.reload();
+  }
+
   function init(root) {
     if (root.dataset.wsReady || !root.dataset.order) return;
     root.dataset.wsReady = '1';
@@ -91,6 +148,7 @@
       var w = e.detail && e.detail.workspace;
       if (!w) return;
       setTurn(w.turn);
+      stageChanged(w.stage);
       if (layouts && w.layouts_rev && w.layouts_rev !== layouts.rev()) layouts.refresh();
       (w.hidden_previews || []).forEach(function (id) {
         var i = byPreview(id);

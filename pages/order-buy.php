@@ -2,8 +2,9 @@
 /**
  * «Купую» → «Оплатити» / «Відкрити макети»: POST /orders/{id}/buy — amount (сума, яку клієнт бачив у вікні, ціле ≥ 0), csrf.
  * Лише клієнт замовлення (Workspace::access, роль клієнта); гроші — Purchases::buy однією транзакцією.
- * Відповідь 200 — {ok, layouts, count, rev, turn, status_html, balance_text}: панель «Макети» (у куплених — «Завантажити»),
- * «чий хід», статус і баланс («3 800 грн», як у шапці layout) для шапки; сповіщення дизайнеру — після відповіді браузеру (Http::respond: api2 без тайм-ауту).
+ * Відповідь 200 — {ok, layouts, count, rev, turn, status_html, balance_text, stage}: панель «Макети» (у куплених — «Завантажити»),
+ * «чий хід», статус і баланс («3 800 грн», як у шапці layout) для шапки, stage — новий стан для опитування (Workspace::stage);
+ * сповіщення дизайнеру — після відповіді браузеру (Http::respond: api2 без тайм-ауту).
  * Помилка — {error}: 400 відмова купівлі (нестача, ціна змінилася, вже куплено, …) — ще й html свіжого вмісту вікна,
  * якщо замовлення досі можна купити; 403 застаріла сесія; 404 не клієнт; 503 замовлення зайняте (замок, взаємоблокування) або
  * 500 — без подробиць (подробиці — у журнал)
@@ -53,6 +54,7 @@ try {
         'turn' => Workspace::turn($offer, Messages::ROLE_CLIENT),
         'status_html' => View::fetch('partials/status', ['status' => $offer['order_status']]),
         'balance_text' => View::price(Customers::header($me)['balance'] ?? 0),
+        'stage' => Workspace::stage($offer['order_status'], false),
     ];
 } catch (\Throwable $e) {
     error_log("design: відповідь після купівлі замовлення $orderId: " . $e);

@@ -23,17 +23,19 @@ final class Previews
     public static ?\Closure $beforeRender = null;
 
     /**
-     * Обрана пропозиція, якщо дизайнер може працювати з прев'ю замовлення: замовлення «В роботі», його chosen_offer_id —
+     * Обрана пропозиція, якщо дизайнер може працювати з прев'ю (і макетами — Layouts) замовлення: замовлення «В роботі» або
+     * «Доопрацювання» (дизайнер працює як «В роботі»), його chosen_offer_id —
      * пропозиція цього дизайнера в статусі «обрано», дизайнер схвалений. Інакше null
      * @return array|null пропозиція у вигляді Offers::get
      */
     public static function canWork(int $orderId, int $designerId): ?array
     {
-        $chosen = Sql::value('SELECT chosen_offer_id FROM design_orders WHERE id = ? AND status = ?', [$orderId, OrderStatus::IN_WORK]);
+        $chosen = Sql::value('SELECT chosen_offer_id FROM design_orders WHERE id = ? AND status IN (?, ?)',
+            [$orderId, OrderStatus::IN_WORK, OrderStatus::REWORK]);
         if ($chosen === null) return null;
         $offer = Offers::get((int)$chosen);
         if ($offer === null || $offer['designer_id'] !== $designerId || $offer['status'] !== OfferStatus::CHOSEN
-            || $offer['order_status'] !== OrderStatus::IN_WORK) {
+            || !in_array($offer['order_status'], [OrderStatus::IN_WORK, OrderStatus::REWORK], true)) {
             return null;
         }
         return Designers::status($designerId) === DesignerStatus::APPROVED ? $offer : null;

@@ -31,10 +31,12 @@ final class OrderStatus
     }
 
     /**
-     * «Чий хід» для клієнта: mine — чекаємо дії клієнта. «В роботі» з макетами — хід клієнта: «Купую» (етап 5)
+     * «Чий хід» для клієнта: mine — чекаємо дії клієнта. «В роботі» з макетами — хід клієнта: «Купую» (етап 5).
+     * «Доопрацювання» — як «В роботі» (layouts — нові, ще не куплені макети); «Куплено» з пропозицією доопрацювання без
+     * відповіді ($reworkPending, Rework::pending) — «Чекає вашої відповіді»
      * @return array{mine:bool, text:string}
      */
-    public static function turn(int $status, int $offers = 0, int $layouts = 0): array
+    public static function turn(int $status, int $offers = 0, int $layouts = 0, bool $reworkPending = false): array
     {
         return match ($status) {
             self::DRAFT => ['mine' => true, 'text' => 'Ваш хід: допишіть і опублікуйте бриф'],
@@ -46,8 +48,12 @@ final class OrderStatus
                 ? ['mine' => true, 'text' => 'Ваш хід: перевірте макети і натисніть «Купую»']
                 : ['mine' => false, 'text' => 'Дизайнер працює над макетами'],
             self::AWAITING_INVOICE => ['mine' => false, 'text' => 'Чекаємо оплату рахунку — макети відкриються після неї'],
-            self::PURCHASED => ['mine' => false, 'text' => 'Макети ваші'],
-            self::REWORK => ['mine' => false, 'text' => 'Дизайнер працює над змінами'],
+            self::PURCHASED => $reworkPending
+                ? ['mine' => true, 'text' => 'Чекає вашої відповіді']
+                : ['mine' => false, 'text' => 'Макети ваші'],
+            self::REWORK => $layouts > 0
+                ? ['mine' => true, 'text' => 'Ваш хід: перевірте макети і натисніть «Купую»']
+                : ['mine' => false, 'text' => 'Дизайнер працює над змінами'],
             default => ['mine' => false, 'text' => 'Скасовано'],
         };
     }
@@ -56,15 +62,20 @@ final class OrderStatus
      * «Чий хід» для обраного дизайнера замовлення «В роботі» — перше правило, що підходить:
      * 1) останнє повідомлення клієнта новіше за останнє повідомлення / прев'ю дизайнера; 2) прев'ю ще немає;
      * 3) є прев'ю, макетів немає; 4) є макети. mine — чекаємо дії дизайнера.
-     * «Куплено» — «Готово»; правило 1 діє й тут (клієнт пише після купівлі — напр. просить правки, і дизайнер має це бачити).
+     * «Куплено» — «Готово», з пропозицією доопрацювання без відповіді ($reworkPending) — «Чекаємо відповіді клієнта»; правило 1
+     * діє й тут (клієнт пише після купівлі — напр. просить правки, і дизайнер має це бачити). «Доопрацювання» — як «В роботі»
+     * (layouts — нові, ще не куплені макети).
      * lastClientMsgId / lastDesignerMsgId — id останніх повідомлень сторін (без системних; 0 — немає), previews — неприховані прев'ю
      * @return array{mine:bool, text:string}
      */
-    public static function designerTurn(int $lastClientMsgId, int $lastDesignerMsgId, int $previews, int $layouts, int $status = self::IN_WORK): array
+    public static function designerTurn(int $lastClientMsgId, int $lastDesignerMsgId, int $previews, int $layouts, int $status = self::IN_WORK,
+                                        bool $reworkPending = false): array
     {
         return match (true) {
             $lastClientMsgId > $lastDesignerMsgId => ['mine' => true, 'text' => 'Ваш хід: клієнт написав · відповідайте'],
-            $status === self::PURCHASED => ['mine' => false, 'text' => 'Готово'],
+            $status === self::PURCHASED => $reworkPending
+                ? ['mine' => false, 'text' => 'Чекаємо відповіді клієнта']
+                : ['mine' => false, 'text' => 'Готово'],
             $previews <= 0 => ['mine' => true, 'text' => "Ваш хід: покажіть перше прев'ю"],
             $layouts <= 0 => ['mine' => false, 'text' => "Коли клієнт погодить прев'ю — завантажте макети"],
             default => ['mine' => false, 'text' => 'Макети завантажено · чекаємо, поки клієнт натисне «Купую»'],

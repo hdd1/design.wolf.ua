@@ -82,8 +82,9 @@ final class Orders
 
     /**
      * Замовлення клієнта для «Мої замовлення», нові зверху. offers — пропозиції, які можна обрати (надіслані схваленими
-     * дизайнерами) — для «чий хід»; designer / price — обраний дизайнер і ціна для клієнта, поки не обрано — '' і 0
-     * @return list<array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, created:string, published_at:?string, offers:int, designer:string, price:int}>
+     * дизайнерами) — для «чий хід»; designer / price — обраний дизайнер і ціна для клієнта, поки не обрано — '' і 0;
+     * rework — є пропозиція доопрацювання без відповіді (Rework::pending)
+     * @return list<array{id:int, status:int, mode:int, product_id:int, product_name:string, title:string, created:string, published_at:?string, offers:int, designer:string, price:int, rework:bool}>
      */
     public static function forCustomer(int $customerId): array
     {
@@ -91,7 +92,7 @@ final class Orders
             'SELECT o.id, o.status, o.mode, o.title, o.product_id, p.name AS product_name, o.created, o.published_at,
                     (SELECT COUNT(*) FROM design_offers f JOIN design_designers d ON d.customer_id = f.designer_id
                      WHERE f.order_id = o.id AND f.status = ? AND d.status = ?) AS offers,
-                    cd.name AS designer, c.price_client AS price
+                    cd.name AS designer, c.price_client AS price, o.paid_client, o.rework_price_designer, o.rework_price_client, o.rework_deadline
              FROM design_orders o
              JOIN design_products p ON p.id = o.product_id
              LEFT JOIN design_offers c ON c.id = o.chosen_offer_id
@@ -101,6 +102,7 @@ final class Orders
             'offers' => (int)$r['offers'],
             'designer' => (string)$r['designer'],
             'price' => (int)$r['price'],
+            'rework' => Rework::pending($r) !== null,
         ], $rows);
     }
 

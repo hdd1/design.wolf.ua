@@ -9,7 +9,9 @@ page.route (адреса https://ws.test/ вигадана — у мережу �
 «Оплатити» — один запит, успіх — «Завантажити» в панелі, «чий хід» і статус оновлено, «Купую» зникла; відмова — текст
 і свіжий вміст вікна;
 (5) «Скопіювати в хмару» купленого макета: подвійний натиск — один запит, «Копіюємо…» з опитуванням панелі, поки макет у
-черзі, → «У хмарі ✓» (опитування зупинилось); помилка — «Не вдалося, спробуйте ще», натиск — повторний запит.
+черзі, → «У хмарі ✓» (опитування зупинилось); помилка — «Не вдалося, спробуйте ще», натиск — повторний запит;
+(6) доопрацювання: жива підказка доплати у формі «Ще не закінчили»; «Відмовитися» з підтвердженням (скасоване — нічого не
+шле і форму не блокує); stage з опитування змінився — сторінка перечитується, але не поки в полі чату є текст.
 Запуск: python3 -m pytest tests/e2e/test_workspace_js.py -q
 """
 import json, os, re, subprocess
@@ -69,6 +71,7 @@ class Site:
         self.uploads = []
         self.layouts = [{'id': 7, 'label': 'Візитка', 'original_name': 'Візитка.pdf', 'size': 1000, 'size_text': '1000 Б', 'ext': 'pdf'}]
         self.messages = []
+        self.reworks = []
         page.route(BASE + '/**', self.handle)
 
     def json(self, route, data, status=200):
@@ -90,6 +93,9 @@ class Site:
                               '<button type="button" class="btn" data-pay-submit data-amount="1200">Оплатити</button>'})
         elif path == '/orders/1/buy':
             self.buy(route, request)
+        elif path == '/orders/1/rework' and request.method == 'POST':
+            self.reworks.append(request.post_data or '')
+            route.fulfill(content_type='text/html; charset=utf-8', body=self.html)
         elif path == '/orders/1/layouts/7/cloud' and request.method == 'POST':
             self.cloud(route, request)
         elif path == '/orders/1/layouts':
@@ -338,3 +344,90 @@ def test_cloud_copy_button_states():
         assert pg.inner_text('[data-lp-error]') == 'Сесія застаріла — оновіть сторінку'
         assert pg.is_enabled(cloud + ' [data-lp-cloud-go]'), 'після відмови можна натиснути знову'
     run(test, cloud_html())
+
+
+# Робочий простір купленого замовлення: дизайнер з відкритою формою «Ще не закінчили» / клієнт з пропозицією без відповіді
+RENDER_REWORK = r"""
+require "helpers/Design/bootstrap.php";
+use Design\View;
+$designer = getenv("WS_ROLE") === "designer";
+$panel = ["layouts" => [["id" => 7, "label" => "Візитка", "original_name" => "Візитка.pdf", "size" => 1000,
+    "size_text" => "1000 Б", "ext" => "pdf", "purchased" => true, "download" => "", "cloud_status" => 0]], "count" => 1, "rev" => "r1"];
+$chat = ["offerId" => 1, "title" => "Х", "subtitle" => "", "note" => null, "csrf" => "x", "messages" => [], "write" => true,
+    "footer" => null, "workspace" => ["orderId" => 1, "upload" => false, "hide" => false, "chunk" => 1048576]];
+$pending = $designer ? null : ["price_client" => 1560, "extra" => 360, "deadline" => "2026-12-01", "price_designer" => 1300];
+echo View::fetch("partials/workspace", ["role" => $designer ? "designer" : "client", "order" => ["id" => 1, "title" => "Візитка",
+    "product_name" => "Візитка", "status" => 6, "answers" => []], "offer" => ["price_designer" => 1000, "price_client" => 1200, "deadline" => null],
+    "back" => ["href" => "/", "label" => "Назад"], "who" => "Х", "whoName" => "Х",
+    "turn" => ["mine" => !$designer, "text" => $designer ? "Готово" : "Чекає вашої відповіді", "sub" => "", "icon" => "fa-hand-paper"],
+    "chat" => $chat, "panel" => $panel, "edit" => false, "csrf" => "x", "chunk" => 1048576, "quote" => null,
+    "rework" => ["pending" => $pending, "propose" => $designer, "answer" => !$designer, "cancel" => false, "paid_client" => 1200,
+        "paid_designer" => 1000, "k" => 20.0, "round" => 10, "stage" => $designer ? "6" : "6p", "form" => $designer,
+        "values" => ["price" => "1000", "deadline" => ""]]]);
+"""
+
+
+def rework_html(role: str) -> str:
+    os.environ['WS_ROLE'] = role
+    try:
+        return page_html(RENDER_REWORK, ('app.js', 'chat.js', 'workspace-layouts.js', 'workspace.js'))
+    finally:
+        del os.environ['WS_ROLE']
+
+
+NB = ' '
+
+
+def test_rework_form_live_hint():
+    def test(pg, site):
+        hint = '[data-ws-rework] [data-rework-client]'
+        assert pg.inner_text(hint) == 'Для клієнта — без доплати', 'та сама сума — без доплати'
+        pg.fill('[data-rework-price]', '1 300')
+        assert pg.inner_text(hint) == 'Клієнт доплатить +360' + NB + 'грн', '1 300·1,2 = 1 560 − 1 200'
+        pg.fill('[data-rework-price]', '1005')
+        assert pg.inner_text(hint) == 'Клієнт доплатить +10' + NB + 'грн', '1 206 → 1 210 (крок 10)'
+        pg.fill('[data-rework-price]', '900')
+        assert pg.inner_text(hint) == 'Не менше вже нарахованих 1' + NB + '000' + NB + 'грн'
+        pg.fill('[data-rework-price]', '')
+        assert pg.inner_text(hint) == 'Вкажіть суму — покажемо доплату клієнта'
+        # Відкрита форма — опитування зі зміненим stage сторінку не перечитує
+        pg.evaluate('() => { window.__stay = 1; }')
+        pg.evaluate("""() => document.querySelector('[data-chat]').dispatchEvent(new CustomEvent('chat:poll',
+            {detail: {workspace: {stage: '6p', turn: {mine: false, text: 'Чекаємо відповіді клієнта', sub: '', icon: 'fa-hourglass-half'},
+             layouts_rev: 'r1', hidden_previews: []}}}))""")
+        pg.wait_for_timeout(300)
+        assert pg.evaluate('() => window.__stay') == 1
+    run(test, rework_html('designer'))
+
+
+def test_rework_decline_confirm_and_stage_reload():
+    def test(pg, site):
+        assert pg.is_visible('form[action="/orders/1/rework"] button:has-text("Прийняти")')
+        decline = 'form[action="/orders/1/rework"]:has(input[value="decline"]) button'
+        pg.once('dialog', lambda d: d.dismiss())
+        pg.click(decline)
+        pg.wait_for_timeout(300)
+        assert site.reworks == [], 'скасоване підтвердження — нічого не надіслано'
+        assert pg.get_attribute(decline, 'aria-disabled') is None, 'і форма не заблокована'
+        pg.once('dialog', lambda d: d.accept())
+        with pg.expect_navigation():
+            pg.click(decline)
+        assert len(site.reworks) == 1 and 'action=decline' in site.reworks[0]
+
+        # Співрозмовник змінив стан: у полі чату текст — не перечитуємо; поле порожнє — перечитуємо
+        poll = """() => document.querySelector('[data-chat]').dispatchEvent(new CustomEvent('chat:poll',
+            {detail: {workspace: {stage: '7', turn: {mine: false, text: 'Дизайнер працює над змінами', sub: '', icon: 'fa-pencil-ruler'},
+             layouts_rev: 'r1', hidden_previews: []}}}))"""
+        pg.evaluate('() => { window.__stay = 1; }')
+        pg.fill('[data-chat-input]', 'Ще одне')
+        pg.evaluate(poll)
+        pg.wait_for_timeout(300)
+        assert pg.evaluate('() => window.__stay') == 1, 'чернетку в чаті не губимо'
+        pg.evaluate(poll.replace("stage: '7'", "stage: '6p'"))
+        pg.fill('[data-chat-input]', '')
+        pg.wait_for_timeout(200)
+        assert pg.evaluate('() => window.__stay') == 1, 'той самий stage — нічого'
+        with pg.expect_navigation():
+            pg.evaluate(poll)
+        assert pg.evaluate('() => window.__stay') is None, 'сторінку перезавантажено'
+    run(test, rework_html('client'))

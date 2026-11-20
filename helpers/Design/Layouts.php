@@ -156,6 +156,12 @@ final class Layouts
         return (int)Sql::value('SELECT COUNT(*) FROM design_files WHERE order_id = ? AND status = ?', [$orderId, self::ACTIVE]);
     }
 
+    /** Кількість активних ще не куплених макетів (для «чий хід» «В роботі» і «Доопрацювання») */
+    public static function countNew(int $orderId): int
+    {
+        return (int)Sql::value('SELECT COUNT(*) FROM design_files WHERE order_id = ? AND status = ? AND purchase_id IS NULL', [$orderId, self::ACTIVE]);
+    }
+
     /**
      * Спільна частина add/replace.
      * 1) Без замка: доступ, розмір, папка (0755), 0644 для $tmp, md5 — усе повільне до транзакції.

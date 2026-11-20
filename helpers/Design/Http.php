@@ -64,10 +64,24 @@ final class Http
         }
     }
 
-    public static function redirect(string $url, int $code = 302): never
+    /** $after — як у respond(): виконується, коли браузер уже отримав перенаправлення (сповіщення після дії форми) */
+    public static function redirect(string $url, int $code = 302, ?\Closure $after = null): never
     {
         http_response_code($code);
         header('Location: ' . $url);
+        if ($after !== null) {
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } else {
+                while (ob_get_level() > 0) ob_end_flush();
+                flush();
+            }
+            try {
+                $after();
+            } catch (\Throwable $e) {
+                error_log('design: робота після відповіді ' . ($_SERVER['REQUEST_URI'] ?? '') . ': ' . $e);
+            }
+        }
         exit;
     }
 

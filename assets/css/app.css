@@ -731,6 +731,10 @@ body.pvv-open{overflow:hidden}
 .ws-cta .btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;white-space:nowrap}
 .ws-buy:disabled{background:#ECECEC;border-color:#ECECEC;color:var(--text-3);opacity:1}
 .ws-soon{font-size:.8rem;color:var(--text-3)}
+.ws-cta form{margin:0}
+.ws-rework-cancel .btn{padding:.3rem .5rem;font-size:.9rem}
+.ws-rework{margin-top:var(--s-4);border:2px solid var(--blue);scroll-margin-top:140px}
+.ws-rework-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s-4);margin-top:var(--s-4);max-width:640px}
 .ws-turn{margin-top:var(--s-4)}
 .ws-turn [hidden]{display:none}
 .ws-brief{margin-top:var(--s-3)}
@@ -843,6 +847,9 @@ body.pvv-open{overflow:hidden}
   .ws-term .sep{display:inline}
   .ws-cta{flex:1 1 100%;width:auto}
   .ws-cta:has([data-ws-upload]){display:none}
+  .ws-rework-fields{grid-template-columns:minmax(0,1fr)}
+  .ws-rework .sheet-actions{flex-direction:column-reverse;align-items:stretch}
+  .ws-rework .sheet-actions .btn{width:100%}
   .ws-turn{margin-top:var(--s-3)}
   .ws-turn .ic{width:40px;height:40px}
   .ws-tabs{display:flex;background:#fff;border-bottom:1px solid var(--border)}

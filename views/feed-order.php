@@ -6,6 +6,7 @@
  * @var array<string,bool> $forms доступні форми @var string $form відкрита форма ('' — жодної)
  * @var array{text:string,price:string,deadline:string,reason:string} $values @var ?string $error
  * @var string $csrf @var ?array $chat параметри partials/chat @var float $k @var int $round
+ * @var ?array $workspace параметри partials/workspace — обраний дизайнер замовлення в роботі (макет 6.5); тоді решта не показується
  */
 use Design\Chat;
 use Design\Messages;
@@ -13,6 +14,10 @@ use Design\OfferStatus;
 use Design\OrderStatus;
 use Design\View;
 
+if ($workspace !== null) {
+    View::render('partials/workspace', $workspace);
+    return;
+}
 $id = $order['id'];
 $url = "/feed/$id/";
 $status = $offer['status'] ?? null;

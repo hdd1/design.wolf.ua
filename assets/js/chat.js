@@ -1,7 +1,8 @@
 // Майстерня дизайну: листування по пропозиції (views/partials/chat.php) — відправка без перезавантаження і опитування раз на 15 с.
 // Робочий простір (data-order): картки прев'ю, цитати, відповідь на повідомлення / коментар до прев'ю (reply_to).
-// Для assets/js/workspace.js: подія 'chat:message' на секції (detail — нове повідомлення з опитування чи відправки) і
-// window.DesignChat.append / replace / reply / clearQuoteThumbs.
+// Для assets/js/workspace.js: подія 'chat:message' на секції (detail — нове повідомлення з опитування чи відправки),
+// 'chat:poll' (detail — уся відповідь опитування: у робочому просторі в ній є workspace — «чий хід», версія макетів,
+// приховані прев'ю) і window.DesignChat.append / replace / reply / poll.
 (function () {
   var POLL_MS = 15000;
   var MONTHS = ['січня', 'лютого', 'березня', 'квітня', 'травня', 'червня', 'липня', 'серпня', 'вересня', 'жовтня', 'листопада', 'грудня'];
@@ -325,6 +326,7 @@
             if (m.id > after) after = m.id;
           });
           if (json.messages.length) { pendingToEnd(); if (stick) toBottom(); }
+          root.dispatchEvent(new CustomEvent('chat:poll', { detail: json }));
           if (!json.write) { setWritable(false); return; }
         }
         schedule();

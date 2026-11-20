@@ -7,11 +7,16 @@
  * @var ?array $chosen обрана пропозиція @var \Closure $choosable @var ?array $waiting @var ?array $refused @var ?array $offered картки режиму 2
  * @var ?array $reason повідомлення дизайнера з причиною відмови @var int $sel відкрите листування
  * @var ?array $chat параметри partials/chat @var bool $chatOpen @var string $csrf
+ * @var ?array $workspace параметри partials/workspace — замовлення в роботі (макет 6.5); тоді решта не показується
  */
 use Design\Chat;
 use Design\OrderStatus;
 use Design\View;
 
+if ($workspace !== null) {
+    View::render('partials/workspace', $workspace);
+    return;
+}
 $id = $order['id'];
 $filled = count(array_filter($order['answers'], static fn($p) => $p['a'] !== ''));
 ?>

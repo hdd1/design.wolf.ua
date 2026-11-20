@@ -3,6 +3,8 @@
  * Бриф для дизайнера: GET /feed/{id}/ — повний бриф, своя пропозиція або запрошення, листування.
  * Бачить схвалений дизайнер: бриф у зборі пропозицій режиму 1 або замовлення, де в нього є пропозиція / запрошення.
  * ?form=propose|edit|take|decline — відкрита форма; ?done=… — тост після дії.
+ * Обраний дизайнер замовлення «В роботі» — робочий простір (макет 6.5, views/partials/workspace.php): шапка «Ви отримаєте ·
+ * клієнт побачить», «Термін до …», «Завантажити макети», «чий хід» дизайнера, стрічка і панель «Макети для друку».
  * Після помилки POST сторінку рендерить pages/feed-offer.php з $posted (form, values, error)
  * @var array $params
  * @var ?array{form:string, values:array{text:string,price:string,deadline:string,reason:string}, error:string} $posted
@@ -23,6 +25,7 @@ use Design\OrderStatus;
 use Design\Previews;
 use Design\Settings;
 use Design\View;
+use Design\Workspace;
 
 $me = Guard::customer();
 if (Designers::status($me) !== DesignerStatus::APPROVED) Http::notFound();
@@ -93,6 +96,25 @@ $toasts = [
     'declined' => 'Ви відмовилися від замовлення',
 ];
 
+$workspace = null;
+if ($chat !== null && $chat['workspace'] !== null && $order['status'] === OrderStatus::IN_WORK) {
+    $workspace = [
+        'role' => 'designer',
+        'order' => $order,
+        'offer' => $access['offer'],
+        'back' => ['href' => '/my-offers/?tab=work', 'label' => 'Мої пропозиції'],
+        'who' => 'Клієнт ' . $client,
+        'whoName' => $client,
+        'turn' => Workspace::turn($access['offer'], Messages::ROLE_DESIGNER),
+        'chat' => $chat,
+        'panel' => Workspace::layouts($id),
+        'edit' => $chat['workspace']['upload'],
+        'csrf' => $csrf,
+        'chunk' => $chat['workspace']['chunk'],
+        'error' => $posted['error'] ?? null,
+    ];
+}
+
 $scripts = ['/assets/js/offer-form.js'];
 if ($chat !== null) $scripts[] = '/assets/js/chat.js';
 if ($chat['workspace'] ?? null) {
@@ -116,5 +138,6 @@ View::render('layout', [
         'chat' => $chat,
         'k' => Settings::markupPercent(),
         'round' => Settings::priceRound(),
+        'workspace' => $workspace,
     ]),
 ]);
